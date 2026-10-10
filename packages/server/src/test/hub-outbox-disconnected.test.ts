@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
+import { removeTestDb } from './helpers/testDb';
 import { HubClient } from '../hub/hubClient';
 
 describe('HubClient.recordEvent while disconnected', () => {
@@ -31,12 +32,9 @@ describe('HubClient.recordEvent while disconnected', () => {
     await storage.init({ path: dbPath });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     delete process.env.AGENFK_HUB_OUTBOX_CAP;
-    for (const suffix of ['', '-shm', '-wal']) {
-      const f = `${dbPath}${suffix}`;
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
+    await removeTestDb(dbPath, () => storage.shutdown());
   });
 
   it('appends to the outbox with the pending-org sentinel instead of dropping', () => {
@@ -110,12 +108,9 @@ describe('cap and flusher respect ownership of pending rows', () => {
     await storage.init({ path: dbPath });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     delete process.env.AGENFK_HUB_OUTBOX_CAP;
-    for (const suffix of ['', '-shm', '-wal']) {
-      const f = `${dbPath}${suffix}`;
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
+    await removeTestDb(dbPath, () => storage.shutdown());
   });
 
   it('the cap never prunes stamped real-org rows (post-logout scenario)', () => {

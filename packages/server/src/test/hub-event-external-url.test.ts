@@ -7,7 +7,7 @@
  * Behaviour-based: enable the outbox, link an item, trigger a real event for
  * it, and read what lands in hub_outbox.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 
@@ -17,7 +17,7 @@ vi.hoisted(() => {
   process.env.AGENFK_HUB_ORG = process.env.AGENFK_HUB_ORG || 'test-org';
 });
 
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import * as fs from 'fs';
 
 let server: import('http').Server;
@@ -42,10 +42,10 @@ async function waitForOutbox(predicate: (p: any) => boolean, timeoutMs = 5000): 
 describe('hub events carry the tracker URL of a linked item', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
+  afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
 
   it('sends the stored externalUrl beside externalId on a later event for the item', async () => {
     const project = (await agent().post('/projects').send({ name: 'ExtUrl' })).body;

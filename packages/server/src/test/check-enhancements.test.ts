@@ -12,7 +12,7 @@
  *  - several reports are read as one run, and a missing one is named;
  *  - `.gitignore` is content (a suite can read it).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -32,7 +32,7 @@ const TEST_DB = testDbPath('check-enhancements-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN, reportOwned } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, reportOwned } from '../server';
 import { surfaceOf } from '../stepRecords';
 import { formatCheckResults, describeCapture, EVALUATORS } from '../checkEngine';
 import { posixShell, shellQuote } from './helpers/posixShell';
@@ -50,8 +50,8 @@ beforeAll(async () => {
 });
 afterAll(() => { process.env.HOME = savedHome; });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) { const f = `${TEST_DB}${suffix}`; if (fs.existsSync(f)) fs.unlinkSync(f); }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 });
 

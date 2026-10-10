@@ -16,7 +16,7 @@
  * Hub config is forced via env BEFORE importing the server module (hubClient
  * captures config at import) and global fetch is stubbed, so no network is hit.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -60,7 +60,7 @@ const ENV_KEYS = [
 const savedEnv: Record<string, string | undefined> = {};
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-jira-hub-routes-'));
 
-let app: any, initStorage: any, clearHubJiraStatusCache: any;
+let app: any, initStorage: any, closeStorage: any, clearHubJiraStatusCache: any;
 let __server: any;
 const agent = () => request(__server);
 
@@ -140,20 +140,20 @@ describe('JIRA routes on a hub-joined installation', () => {
     process.env.JIRA_CLIENT_ID = 'local-cid';
     process.env.JIRA_CLIENT_SECRET = 'local-secret';
     stubHub();
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-    ({ app, initStorage } = await import('../server'));
+    await removeTestDb(TEST_DB); // the server is not loaded yet: nothing is open
+    ({ app, initStorage, closeStorage } = await import('../server'));
     ({ clearHubJiraStatusCache } = await import('../jira/hubJira'));
     __server = app.listen(0);
     await initStorage();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     vi.unstubAllGlobals();
     for (const k of ENV_KEYS) {
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k]!;
     }
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     fs.rmSync(sandboxHome, { recursive: true, force: true });
   });
 
@@ -174,7 +174,7 @@ describe('JIRA routes on a hub-joined installation', () => {
     fs.writeFileSync(path.join(sandboxHome, '.agenfk', 'jira-token.json'), JSON.stringify({
       access_token: 'local-at', refresh_token: 'local-rt', cloudId: 'local-cloud', cloudUrl: LOCAL_CLOUD_URL, email: 'me@local.test',
     }));
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
     stubHub();
   });

@@ -20,3 +20,18 @@ export function testDbPath(name: string): string {
   fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, name);
 }
+
+/**
+ * Delete a test database and its -wal/-shm sidecars (GitHub #208).
+ *
+ * `close` runs first - the server's `closeStorage`, or a spec's own provider's
+ * `shutdown` - because Windows refuses to delete a file that is still open
+ * (EBUSY), which POSIX allows. The retries cover the moment the OS takes to
+ * let go of a handle that was just closed.
+ */
+export async function removeTestDb(dbPath: string, close?: () => Promise<unknown>): Promise<void> {
+  await close?.();
+  for (const suffix of ['', '-wal', '-shm']) {
+    fs.rmSync(dbPath + suffix, { force: true, maxRetries: 5, retryDelay: 50 });
+  }
+}

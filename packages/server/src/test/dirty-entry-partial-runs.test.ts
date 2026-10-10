@@ -9,7 +9,7 @@
  * capture records its tree's per-file content, and "what changed since the
  * step began" compares that with the tree now, dirty or not.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,7 +23,7 @@ const TEST_DB = testDbPath('dirty-entry-partial-runs-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { describeCapture } from '../checkEngine';
 import { posixShell } from './helpers/posixShell';
 
@@ -32,8 +32,8 @@ const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 });
 

@@ -6,7 +6,7 @@
  * gates, check-history and warnings endpoints, the list already strips them,
  * and a PUT does not take them - so they are opt-in: ?records=1.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,7 +23,7 @@ const TEST_DB = testDbPath('get-item-records-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage } from '../server';
+import { app, initStorage, closeStorage, storage } from '../server';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -44,10 +44,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await new Promise<void>(r => __server.close(() => r()));
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 describe('GET /items/:id', () => {

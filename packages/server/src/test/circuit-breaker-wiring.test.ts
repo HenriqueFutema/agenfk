@@ -14,11 +14,11 @@
  * evidence of a good attempt. The card reaching DONE clears, because that is
  * the one event that means the work landed.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, storage } from '../server';
 
 const TEST_DB = testDbPath('circuit-breaker-wiring-test-db.sqlite');
 
@@ -35,12 +35,12 @@ const agent = () => request(__server);
  */
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   __server = app.listen(0);
   await initStorage();
 });
 afterAll(async () => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await new Promise<void>(r => __server.close(() => r()));
 });
 

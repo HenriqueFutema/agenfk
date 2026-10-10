@@ -87,6 +87,7 @@ describe('rollups_daily gains child_hub_id on an existing hub', () => {
     seedOldSchema(false);
     const db = await openDb(DB);
     const cols = await db.all<{ name: string }>("SELECT name FROM pragma_table_info('rollups_daily')");
+    await db.close();
     expect(cols.map(c => c.name)).toEqual(expect.arrayContaining(['child_hub_id', 'prs_opened']));
   });
 

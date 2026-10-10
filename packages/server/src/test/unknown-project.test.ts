@@ -16,7 +16,7 @@
  *    card's state), with or without a cwd - never a 500.
  *  - A non-string projectId is a 400, not a 500.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -28,18 +28,15 @@ const TEST_DB = testDbPath('unknown-project-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, storage } from '../server';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 /**

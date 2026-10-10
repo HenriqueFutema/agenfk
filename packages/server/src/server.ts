@@ -1469,6 +1469,9 @@ const initStorage = async () => {
     dbPath = remapped;
   }
 
+  // #208: re-entry used to drop the previous provider still open - a leaked
+  // handle on every OS, and on Windows a database nobody could delete.
+  await closeStorage();
   // ec325925: every record write keeps only the captures something still reads.
   storage = withRecordRetention(new SQLiteStorageProvider());
 
@@ -1499,6 +1502,24 @@ const initStorage = async () => {
   }
 
   startHubSubsystems();
+};
+
+/**
+ * Close the database and stop the hub subsystems that hold it (#208). Safe to
+ * call with nothing open, and twice. The storage stays closed - a read after
+ * it fails loudly instead of reaching a file that may be gone - until the
+ * next initStorage().
+ */
+const closeStorage = async (): Promise<void> => {
+  hubFlusher?.stop();
+  hubFlusher = null;
+  flowSyncHandle?.stop();
+  flowSyncHandle = null;
+  upgradeSyncHandle?.stop();
+  upgradeSyncHandle = null;
+  repointSyncHandle?.stop();
+  repointSyncHandle = null;
+  await storage?.shutdown?.();
 };
 
 /**
@@ -12380,4 +12401,4 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
 
 /* v8 ignore stop */
 
-export { initStorage, storage, performBackup };
+export { initStorage, closeStorage, storage, performBackup };

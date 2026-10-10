@@ -6,10 +6,10 @@
  * proxies REST) returns 409. New writes default to source='local' and refuse
  * to honour a body-supplied source override.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage } from '../server';
+import { app, initStorage, closeStorage, storage } from '../server';
 import * as fs from 'fs';
 
 /**
@@ -34,16 +34,16 @@ const TEST_DB = testDbPath('flow-guard-test-db.sqlite');
 describe('local flow read-only guard', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
 
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   beforeEach(async () => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
 

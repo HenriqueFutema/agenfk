@@ -6,11 +6,11 @@
  * parent silently lagged behind its children forever. Only allDone -> DONE
  * worked, because DONE is an anchor every flow has.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -36,10 +36,10 @@ describe('parent propagation on a custom flow (CGLAB-82)', () => {
 
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
+  afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
 
   beforeEach(async () => {
     await initStorage();

@@ -16,11 +16,11 @@
  * precisely the collision this feature exists to prevent. A failure nobody can
  * see is worse than no feature.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage, VERIFY_TOKEN, shouldAutoWorktree, noteWorktreeFailure } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, shouldAutoWorktree, noteWorktreeFailure } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -47,10 +47,10 @@ describe('who gets an automatic worktree', () => {
 
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
+  afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
   beforeEach(async () => {
     await initStorage();
     const p = await internal(agent().post('/projects')).send({ name: 'wt-guards' });

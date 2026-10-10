@@ -31,6 +31,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
+import { removeTestDb } from './helpers/testDb';
 import { Flusher, defaultDeadletterPath } from '../hub/flusher';
 
 const HUB_CONFIG = { url: 'http://hub.test', token: 't', orgId: 'acme' };
@@ -61,11 +62,8 @@ describe('Flusher org boundary + deadletter (CGLAB-117)', () => {
     await storage.init({ path: dbPath });
   });
 
-  afterEach(() => {
-    for (const suffix of ['', '-shm', '-wal']) {
-      const f = `${dbPath}${suffix}`;
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
+  afterEach(async () => {
+    await removeTestDb(dbPath, () => storage.shutdown());
     if (fs.existsSync(dlPath)) fs.unlinkSync(dlPath);
   });
 

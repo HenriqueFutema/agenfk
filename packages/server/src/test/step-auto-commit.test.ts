@@ -4,7 +4,7 @@
  * `step(<STEP>): <title> [<id>]`, the sha on the exit record, and a reply that
  * says what happened. requireCommit turns a missing commit into a refusal.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -18,7 +18,7 @@ const TEST_DB = testDbPath('step-auto-commit-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
@@ -26,8 +26,8 @@ const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 });
 const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();

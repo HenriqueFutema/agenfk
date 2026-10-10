@@ -28,7 +28,7 @@
  * Same server message feeds the CLI (`agenfk verify`) and MCP
  * `validate_progress`, so fixing it here fixes both clients.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -55,7 +55,7 @@ const LOG_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-verifytest-'));
 setVerifyLogRootForTests(LOG_ROOT);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests, storage } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 /** Item log dir for one item, under the temp root. */
@@ -86,15 +86,12 @@ const FAILING_NOISE =
   `node -e "for (let i=1;i<=60;i++) console.log('noise line ' + i); console.log('THE_REAL_LAST_LINE'); process.exit(1)"`;
 
 beforeAll(async () => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 });
 
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   rmrf(LOG_ROOT);
   // process.env is process-global and vitest reuses workers: leaving this set
   // would redirect a sibling test file that expects the default root.

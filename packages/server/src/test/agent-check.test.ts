@@ -2,7 +2,7 @@
  * efcacdeb (C3) - an agent-run check: the step's instruction, carried out by
  * the coding agent and reported with verify; labelled agent-reported.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -25,7 +25,7 @@ const STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-agentcheck-pk-')
 const STORE = path.join(STORE_DIR, 'passkeys.json');
 process.env.AGENFK_PASSKEY_STORE = STORE;
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { SoftAuthenticator } from './softAuthenticator';
 import { posixShell } from './helpers/posixShell';
 
@@ -34,11 +34,8 @@ const agent = () => request(__server);
 const repos: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true });
 });
 beforeEach(() => { fs.rmSync(STORE, { force: true }); });

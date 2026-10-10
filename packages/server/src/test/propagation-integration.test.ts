@@ -8,14 +8,14 @@
  * consults it against the tree the next card would inherit. A gate that is
  * correct and never called is the exact failure mode this whole epic is about.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
@@ -27,12 +27,12 @@ const repos: string[] = [];
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   __server = app.listen(0);
   await initStorage();
 });
 afterAll(async () => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await new Promise<void>(r => __server.close(() => r()));
   for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
 });

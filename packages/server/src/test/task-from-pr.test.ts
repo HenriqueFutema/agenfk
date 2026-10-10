@@ -14,14 +14,14 @@
  * production and would pass even if the argv were wrong. A script on PATH is
  * exercised by the same `execFileSync` the real one is.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -129,13 +129,13 @@ const post = (body: Record<string, unknown>) =>
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
   binDir = installFakeGh();
   realPath = process.env.PATH ?? '';
 });
-afterAll(() => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   fs.rmSync(binDir, { recursive: true, force: true });
   process.env.PATH = realPath;
 });

@@ -9,7 +9,7 @@
  * maxConcurrentSuiteRuns: 0 is automatic (half the CPUs, at least 1),
  * anything else is used as given, up to the CPU count.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,7 +23,7 @@ const TEST_DB = testDbPath('suite-slots-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { posixShell } from './helpers/posixShell';
 // Loaded per test: the module is new, and a test file that fails to import has no tests to track.
 const slotsModule = () => import('../suiteSlots');
@@ -36,8 +36,8 @@ afterAll(async () => {
   await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
   await new Promise<void>(r => __server.close(() => r()));
 });
-afterAll(() => {
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 });
 

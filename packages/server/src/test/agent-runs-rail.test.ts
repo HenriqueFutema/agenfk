@@ -15,12 +15,12 @@
  * server reports what it stored; the client decides what counts as live from
  * the recency of `run:event`.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import { randomUUID } from 'crypto';
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -48,10 +48,10 @@ describe('GET /agent-runs', () => {
 
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
+  afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
 
   beforeEach(async () => {
     await initStorage();
@@ -193,6 +193,8 @@ describe('GET /agent-runs', () => {
  * rows never age out of the filter on their own.
  */
 describe('which runs the rail gets', () => {
+  beforeEach(async () => { await initStorage(); });
+
   it('returns the NEWEST runs when there are more than the limit', async () => {
     const p = await agent().post('/projects').send({ name: 'ordering' });
     const i = await agent().post('/items')

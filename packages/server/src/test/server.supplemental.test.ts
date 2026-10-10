@@ -3,11 +3,11 @@
  * Focuses on: simple info routes, db/backup, bulk updates, verify edge cases,
  * jira status/disconnect/projects, releases/latest, and error branches.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { makeProject, makeItem } from './helpers/fixtures';
-import { app, initStorage, oauthStateStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests, storage } from '../server';
+import { app, initStorage, closeStorage, oauthStateStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests, storage } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
@@ -100,12 +100,12 @@ beforeAll(async () => {
     globalSavedToken = fs.readFileSync(GLOBAL_TOKEN_PATH, 'utf8');
   }
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 
 });
 
-afterAll(() => {
+afterAll(async () => {
   // Restore ambient state: process.env is process-global and vitest reuses
   // workers, so leaving the override set would redirect a sibling file.
   setVerifyLogRootForTests(null);
@@ -117,14 +117,14 @@ afterAll(() => {
     fs.unlinkSync(GLOBAL_TOKEN_PATH);
   }
   // Clean up test DB
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   vi.mocked(os.homedir).mockRestore();
   try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 
-afterEach(() => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+afterEach(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 // ── mapJiraTypeToAgEnFK unit tests ───────────────────────────────────────────

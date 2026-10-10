@@ -9,7 +9,7 @@
  * warnings endpoints serve them), so the list leaves them out; GET /items/:id
  * still carries them.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -20,13 +20,13 @@ const TEST_DB = testDbPath('items-list-slim-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage } from '../server';
+import { app, initStorage, closeStorage, storage } from '../server';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => { for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s); });
+afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
 
 const tests = Array.from({ length: 2000 }, (_, i) => ({ name: `t ${i}`, file: `f${i % 40}.test.js`, status: 'passed' }));
 const capture = { step: 'WORK', kind: 'capture', at: '2026-09-28T10:00:00.000Z', available: true, exitCode: 0, tests };

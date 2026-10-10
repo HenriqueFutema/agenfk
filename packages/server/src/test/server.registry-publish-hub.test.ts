@@ -16,7 +16,7 @@
  * Hub config is forced via env BEFORE the dynamic server import, as in
  * server.registry-hub.test.ts.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -30,7 +30,7 @@ const ENV_KEYS = [
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let app: any, initStorage: any;
+let app: any, initStorage: any, closeStorage: any;
 let __server: any;
 const agent = () => request(__server);
 
@@ -102,8 +102,8 @@ describe('POST /registry/flows/publish with a hub connection (CGLAB-367)', () =>
     process.env.AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS = '3600000';
     process.env.AGENFK_DB_PATH = TEST_DB;
     stubFetch();
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-    ({ app, initStorage } = await import('../server'));
+    await removeTestDb(TEST_DB); // the server is not loaded yet: nothing is open
+    ({ app, initStorage, closeStorage } = await import('../server'));
     __server = app.listen(0);
     await initStorage();
     const made = await agent().post('/flows').send(FLOW);
@@ -118,10 +118,7 @@ describe('POST /registry/flows/publish with a hub connection (CGLAB-367)', () =>
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k]!;
     }
-    for (const suffix of ['', '-wal', '-shm']) {
-      const f = TEST_DB + suffix;
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   beforeEach(() => {

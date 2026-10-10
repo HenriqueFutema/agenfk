@@ -30,7 +30,7 @@
  *  - an intermediate step with no command still advances without running
  *    anything (unchanged behaviour, pinned so the fix does not overreach).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -48,7 +48,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, storage } from '../server';
 
 // One listening server for the file (BUG 9de0c99c): per-call ephemeral servers
 // churn sockets and surface as confident wrong assertions elsewhere.
@@ -56,11 +56,8 @@ let __server: import('http').Server;
 const agent = () => request(__server);
 beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });

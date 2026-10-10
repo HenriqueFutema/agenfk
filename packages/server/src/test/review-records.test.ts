@@ -13,7 +13,7 @@
  * verify also records WHO advanced the card (the author identity the CLI
  * reports from its harness), which S5-T2's check compares the reviewer with.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -33,7 +33,7 @@ const TEST_DB = testDbPath('review-records-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { posixShell } from './helpers/posixShell';
 
@@ -50,12 +50,9 @@ beforeAll(async () => {
   __server = app.listen(0);
 });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
+afterAll(async () => {
   process.env.HOME = savedHome;
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+  await removeTestDb(TEST_DB, closeStorage);
   for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true });
 });
 

@@ -13,7 +13,7 @@
  * These reflect future functionality and are expected to fail until the server
  * resolves the caller cwd to the project root.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeEach, afterAll, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -32,7 +32,7 @@ const TEST_DB = testDbPath('verify-cwd-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, storage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -55,11 +55,8 @@ afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); 
 let projRoot: string;
 let subDir: string;
 
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   if (projRoot && fs.existsSync(projRoot)) fs.rmSync(projRoot, { recursive: true, force: true });
 });
 

@@ -17,14 +17,14 @@
  * Branches and worktrees are tracked on top-level items only, so a child card
  * has no worktreePath of its own — its tree is its top-level ancestor's.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { app, initStorage, VERIFY_TOKEN, autoGitCommit, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, autoGitCommit, storage } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 let __server: import('http').Server;
@@ -128,10 +128,10 @@ const step = (itemId: string) => validate(itemId, {});
 describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
   });
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
   beforeEach(async () => {
     scratch = [];
