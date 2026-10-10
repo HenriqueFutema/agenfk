@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 const load = async (): Promise<any> => {
   const mod = await import('../stepRecords').catch(() => null);
@@ -464,7 +465,8 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
         fs.writeFileSync(path.join(dir, 'tests/real.ts'), 'x');
         // One loop is enough to show the walk following symlinks; two make an
         // unfixed walk run for minutes (2^20 paths), freezing the server.
-        fs.symlinkSync('.', path.join(dir, 'tests/l0'));
+        // (A junction on Windows, where a symlink needs admin: lstat calls it a link too.)
+        linkDir('.', path.join(dir, 'tests/l0'));
         const start = Date.now();
         const s = mod.surfaceOf(dir, [], ['tests']);
         expect(Date.now() - start).toBeLessThan(1000);

@@ -13,10 +13,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, rmSync, symlinkSync, cpSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, cpSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { defaultSelfExtract } from '../hub/upgradeSync';
+import { fakeBin, hostTar } from '../../../cli/src/test/helpers/fakeBin';
 
 let work: string;
 let binDir: string;
@@ -35,22 +36,21 @@ beforeAll(() => {
   mkdirSync(path.join(stage, 'bin'), { recursive: true });
   cpSync(path.join(__dirname, '../../../../bin/sync-install-dir.mjs'), path.join(stage, 'bin', 'sync-install-dir.mjs'));
   tarball = path.join(work, 'dist.tar.gz');
-  spawnSync('tar', ['-czf', tarball, '-C', stage, 'commands', 'bin'], { encoding: 'utf8' });
+  spawnSync(hostTar(), ['-czf', tarball, '-C', stage, 'commands', 'bin'], { encoding: 'utf8' });
 
   // Offline PATH: real tar/gzip, a curl that copies the local archive, and an
-  // npm that records that it was invoked instead of installing anything.
-  binDir = path.join(work, 'bin');
-  mkdirSync(binDir, { recursive: true });
-  for (const tool of ['tar', 'gzip', 'cp', 'sh']) {
-    const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
-    if (found) symlinkSync(found, path.join(binDir, tool));
-  }
-  writeFileSync(path.join(binDir, 'curl'),
-    `#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) shift; out="$1";; esac; shift; done\n` +
-    `cp ${JSON.stringify(tarball)} "$out"\n`, 'utf8');
-  chmodSync(path.join(binDir, 'curl'), 0o755);
-  writeFileSync(path.join(binDir, 'npm'), `#!/bin/sh\necho "$@" > "$PWD/.npm-was-called"\n`, 'utf8');
-  chmodSync(path.join(binDir, 'npm'), 0o755);
+  // npm that records that it was invoked instead of installing anything. The
+  // stubs are node scripts behind a launcher, so cmd.exe finds them too
+  // (`npm.cmd` on Windows, which is what self-extract runs there).
+  binDir = fakeBin(path.join(work, 'bin'), {
+    tools: ['tar', 'gzip'],
+    stubs: {
+      curl: `const args = process.argv.slice(2);
+require('fs').copyFileSync(${JSON.stringify(tarball)}, args[args.indexOf('-o') + 1]);
+`,
+      npm: `require('fs').writeFileSync('.npm-was-called', process.argv.slice(2).join(' ') + '\\n');`,
+    },
+  }).dir;
 });
 
 afterAll(() => rmSync(work, { recursive: true, force: true }));

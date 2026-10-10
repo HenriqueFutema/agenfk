@@ -14,10 +14,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, cpSync, rmSync, symlinkSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, cpSync, rmSync, readFileSync, existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { REPO_ROOT } from './helpers/runInstaller';
+import { fakeBin, type FakeBin } from './helpers/fakeBin';
 import { newestChannelTag } from '../../../../bin/version-utils.mjs';
 
 let work: string;
@@ -38,16 +39,13 @@ const RELEASES: Rel[] = [
   rel('v2.0.1-beta.1', true, '2026-10-01T00:00:00Z'),
 ];
 
-/** A PATH with node, tar, gzip and stub curl/gh. `api` false makes every GitHub API call fail. */
+/**
+ * A PATH with node, git and stub curl/gh. `api` false makes every GitHub API call fail.
+ * The stubs are node scripts behind a launcher (helpers/fakeBin), so the same
+ * stub answers through sh and through cmd.exe (GitHub #208).
+ */
 function makeBin(opts: { api: boolean; latest: string; releases?: Rel[]; listFails?: boolean; ghDown?: boolean }) {
   const releases = opts.releases ?? RELEASES;
-  const binDir = mkdtempSync(path.join(work, 'bin-'));
-  symlinkSync(process.execPath, path.join(binDir, 'node'));
-  // git: packages/create refuses to start without it; on an existing install it never clones.
-  for (const tool of ['tar', 'gzip', 'cat', 'printf', 'git']) {
-    const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
-    if (found) symlinkSync(found, path.join(binDir, tool));
-  }
   const data = path.join(work, `data-${Math.random().toString(36).slice(2)}`);
   mkdirSync(data);
   writeFileSync(path.join(data, 'list.json'), JSON.stringify(releases));
@@ -57,31 +55,34 @@ function makeBin(opts: { api: boolean; latest: string; releases?: Rel[]; listFai
   writeFileSync(path.join(data, 'gh-first.txt'), releases[0]?.tag_name ?? '');
   const ghArgs = path.join(data, 'gh-args.log');
   const log = path.join(data, 'downloads.log');
-  writeFileSync(path.join(binDir, 'curl'), `#!/bin/sh
-out=""; url=""
-while [ $# -gt 0 ]; do case "$1" in -o) shift; out="$1";; http*) url="$1";; esac; shift; done
-if [ -n "$out" ]; then printf '%s\\n' "$url" >> ${JSON.stringify(log)}; exit 22; fi
-${opts.api ? '' : 'exit 22'}
-case "$url" in
-  */releases/latest) cat ${JSON.stringify(path.join(data, 'latest.json'))};;
-  */releases\\?*) ${opts.listFails ? 'exit 22' : `cat ${JSON.stringify(path.join(data, 'list.json'))}`};;
-  *) exit 22;;
-esac
-`);
-  writeFileSync(path.join(binDir, 'gh'), `#!/bin/sh
-printf '%s\\n' "$*" >> ${JSON.stringify(path.join(data, 'gh-args.log'))}
-${opts.ghDown ? 'exit 1' : ''}
-case "$2" in
-  list) case "$*" in *"--limit 1 "*) cat ${JSON.stringify(path.join(data, 'gh-first.txt'))};; *) cat ${JSON.stringify(path.join(data, 'gh-list.json'))};; esac;;
-  view) printf '%s' ${JSON.stringify(opts.latest)};;
-  download) printf '%s\\n' "gh:$3" >> ${JSON.stringify(log)}; exit 1;;
-  *) exit 1;;
-esac
-`);
-  chmodSync(path.join(binDir, 'curl'), 0o755);
-  chmodSync(path.join(binDir, 'gh'), 0o755);
+  const STUB_HEAD = `const fs = require('fs');
+const args = process.argv.slice(2);
+const cat = (f) => process.stdout.write(fs.readFileSync(f));
+const record = (f, line) => fs.appendFileSync(f, line + '\\n');
+`;
+  const curl = `${STUB_HEAD}
+let out = '', url = '';
+for (let i = 0; i < args.length; i++) { if (args[i] === '-o') out = args[++i]; else if (args[i].startsWith('http')) url = args[i]; }
+if (out) { record(${JSON.stringify(log)}, url); process.exit(22); }
+${opts.api ? '' : 'process.exit(22);'}
+if (url.endsWith('/releases/latest')) cat(${JSON.stringify(path.join(data, 'latest.json'))});
+else if (url.includes('/releases?')) { ${opts.listFails ? 'process.exit(22);' : `cat(${JSON.stringify(path.join(data, 'list.json'))});`} }
+else process.exit(22);
+`;
+  const gh = `${STUB_HEAD}
+record(${JSON.stringify(ghArgs)}, args.join(' '));
+${opts.ghDown ? 'process.exit(1);' : ''}
+switch (args[1]) {
+  case 'list': cat(args.join(' ').includes('--limit 1 ') ? ${JSON.stringify(path.join(data, 'gh-first.txt'))} : ${JSON.stringify(path.join(data, 'gh-list.json'))}); break;
+  case 'view': process.stdout.write(${JSON.stringify(opts.latest)}); break;
+  case 'download': record(${JSON.stringify(log)}, 'gh:' + args[2]); process.exit(1);
+  default: process.exit(1);
+}
+`;
+  // git: packages/create refuses to start without it; on an existing install it never clones.
+  const bin = fakeBin(mkdtempSync(path.join(work, 'bin-')), { node: true, tools: ['tar', 'gzip', 'git'], stubs: { curl, gh } });
   return {
-    binDir,
+    bin,
     downloads: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []),
     ghCalls: () => (existsSync(ghArgs) ? readFileSync(ghArgs, 'utf8').trim().split('\n').filter(Boolean) : []),
   };
@@ -108,21 +109,21 @@ function oldInstall(home: string) {
   writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'agenfk', version: '0.0.1' }));
 }
 
-function runRoot(args: string[], bin: string) {
+function runRoot(args: string[], bin: FakeBin) {
   const home = mkdtempSync(path.join(work, 'home-'));
   oldInstall(home);
   return spawnSync(process.execPath, [path.join(rootSource(), 'bin', 'agenfk.js'), ...args], {
     encoding: 'utf8', timeout: 180_000,
-    env: { HOME: home, USERPROFILE: home, PATH: bin, NODE_ENV: 'production', VITEST: '1' },
+    env: bin.env({ HOME: home, USERPROFILE: home, NODE_ENV: 'production', VITEST: '1' }),
   });
 }
 
-function runCreate(bin: string) {
+function runCreate(bin: FakeBin) {
   const home = mkdtempSync(path.join(work, 'home-'));
   oldInstall(home);
   return spawnSync(process.execPath, [path.join(REPO_ROOT, 'packages', 'create', 'bin', 'agenfk.js')], {
     encoding: 'utf8', timeout: 60_000,
-    env: { HOME: home, USERPROFILE: home, PATH: bin, NODE_ENV: 'production', VITEST: '1' },
+    env: bin.env({ HOME: home, USERPROFILE: home, NODE_ENV: 'production', VITEST: '1' }),
   });
 }
 
@@ -152,19 +153,19 @@ describe('newestChannelTag (bin/version-utils.mjs)', () => {
 describe('npx github:cglab-public/agenfk (bin/agenfk.js) downloads the right release', () => {
   it('--beta: the newest framework prerelease by version', () => {
     const b = makeBin({ api: true, latest: 'hub-v2.1.0' });
-    const r = runRoot(['--beta'], b.binDir);
+    const r = runRoot(['--beta'], b.bin);
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.1-beta.2');
   });
 
   it('stable: the newest framework stable by version, even when /releases/latest is a hub tag', () => {
     const b = makeBin({ api: true, latest: 'hub-v2.1.0' });
-    const r = runRoot([], b.binDir);
+    const r = runRoot([], b.bin);
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.0');
   });
 
   it('--beta through the gh fallback (GitHub API down): same rule, not `--limit 1` of any kind', () => {
     const b = makeBin({ api: false, latest: 'hub-v2.1.0' });
-    const r = runRoot(['--beta'], b.binDir);
+    const r = runRoot(['--beta'], b.bin);
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.1-beta.2');
   });
 });
@@ -175,33 +176,33 @@ describe('bin/agenfk.js, review round (BUG 4bd98e16)', () => {
 
   it('--beta takes the stable that graduates the beta', () => {
     const b = makeBin({ api: true, latest: 'v2.0.0', releases: GRADUATED });
-    runRoot(['--beta'], b.binDir);
+    runRoot(['--beta'], b.bin);
     expect(tagOf(b.downloads())).toBe('v2.0.0');
   });
 
   it("stable: GitHub's latest is a real candidate, kept when the list request fails", () => {
     // gh down too, so only the REST path can answer: it must keep latest.
     const b = makeBin({ api: true, latest: 'v2.0.0', listFails: true, ghDown: true });
-    runRoot([], b.binDir);
+    runRoot([], b.bin);
     expect(tagOf(b.downloads())).toBe('v2.0.0');
   });
 
   it("stable: GitHub's latest counts beside a list that holds no stable", () => {
     const b = makeBin({ api: true, latest: 'v1.1.20', releases: [rel('v2.0.0-beta.23', true, '2026-10-01T00:00:00Z')], ghDown: true });
-    runRoot([], b.binDir);
+    runRoot([], b.bin);
     expect(tagOf(b.downloads())).toBe('v1.1.20');
   });
 
   it('--beta with a failed list asks gh for the beta rather than settling for the stable latest', () => {
     const b = makeBin({ api: true, latest: 'v2.0.0', listFails: true,
       releases: [rel('v2.1.0-beta.3', true, '2026-10-06T00:00:00Z'), rel('v2.0.0', false, '2026-10-01T00:00:00Z')] });
-    runRoot(['--beta'], b.binDir);
+    runRoot(['--beta'], b.bin);
     expect(tagOf(b.downloads())).toBe('v2.1.0-beta.3');
   });
 
   it('the gh fallback asks for the list without drafts', () => {
     const b = makeBin({ api: false, latest: 'hub-v2.1.0' });
-    runRoot(['--beta'], b.binDir);
+    runRoot(['--beta'], b.bin);
     expect(b.ghCalls().find(c => c.startsWith('release list'))).toMatch(/--exclude-drafts/);
   });
 });
@@ -209,25 +210,25 @@ describe('bin/agenfk.js, review round (BUG 4bd98e16)', () => {
 describe('npx agenfk (packages/create) downloads the right release', () => {
   it('stable: never a hub tag, newest stable by version', () => {
     const b = makeBin({ api: true, latest: 'hub-v2.1.0' });
-    const r = runCreate(b.binDir);
+    const r = runCreate(b.bin);
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.0');
   });
 
   it('through the gh fallback (GitHub API down): same rule', () => {
     const b = makeBin({ api: false, latest: 'hub-v2.1.0' });
-    const r = runCreate(b.binDir);
+    const r = runCreate(b.bin);
     expect(tagOf(b.downloads()), `${r.stdout}${r.stderr}`.slice(-2000)).toBe('v2.0.0');
   });
 
   it("keeps GitHub's latest when the list request fails (gh down too)", () => {
     const b = makeBin({ api: true, latest: 'v2.0.0', listFails: true, ghDown: true });
-    runCreate(b.binDir);
+    runCreate(b.bin);
     expect(tagOf(b.downloads())).toBe('v2.0.0');
   });
 
   it('the gh fallback asks for the list without drafts', () => {
     const b = makeBin({ api: false, latest: 'hub-v2.1.0' });
-    runCreate(b.binDir);
+    runCreate(b.bin);
     expect(b.ghCalls().find(c => c.startsWith('release list'))).toMatch(/--exclude-drafts/);
   });
 });

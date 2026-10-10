@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import fs, { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'fs';
+import fs, { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { linkDir } from '../../../cli/src/test/helpers/links';
+import { makeUnreadable } from './helpers/unreadableDir';
 // The npx bootstrap (bin/agenfk.js) is dependency-light and cannot import
 // @agenfk/core at clone time, so the prune lives in its own .mjs sibling and is
 // exercised here directly — the same code the bootstrap runs.
@@ -212,7 +214,9 @@ describe('pruneInstallDir refuses to destroy data', () => {
     try {
       seed(src, 'commands/agenfk.md');
       seed(outside, 'precious/notes.md', 'do not delete\n');
-      symlinkSync(outside, path.join(dst, 'commands'));
+      // A junction on Windows, where a symlink needs admin - and where a junction
+      // is the link a user would actually have made.
+      linkDir(outside, path.join(dst, 'commands'));
 
       const { removed, failed } = pruneInstallDir(src, dst);
 
@@ -400,14 +404,14 @@ describe('pruneInstallDir fails closed on an unreadable source tree', () => {
     seed(src, 'commands/locked/hidden.md');
     seed(dst, 'commands/agenfk.md');
     seed(dst, 'commands/dead.md');
-    const locked = path.join(src, 'commands', 'locked');
-    fs.chmodSync(locked, 0o000);
+    // chmod 000 off Windows; a deny-list ACE on it, where chmod cannot hide a directory.
+    const restore = makeUnreadable(path.join(src, 'commands', 'locked'));
     try {
       pruneInstallDir(src, dst);
       expect(existsSync(path.join(dst, 'commands/dead.md'))).toBe(true);
       expect(existsSync(path.join(dst, 'commands/agenfk.md'))).toBe(true);
     } finally {
-      fs.chmodSync(locked, 0o755);
+      restore();
     }
   });
 });
@@ -424,14 +428,13 @@ describe('pruneInstallDir does not abort an upgrade over an unreadable install d
     seed(dst, 'commands/agenfk.md');
     seed(dst, 'commands/dead.md');
     seed(dst, 'commands/locked/x.md');
-    const locked = path.join(dst, 'commands', 'locked');
-    fs.chmodSync(locked, 0o000);
+    const restore = makeUnreadable(path.join(dst, 'commands', 'locked'));
     try {
       expect(() => pruneInstallDir(src, dst)).not.toThrow();
       expect(existsSync(path.join(dst, 'commands', 'dead.md'))).toBe(false);
       expect(existsSync(path.join(dst, 'commands', 'agenfk.md'))).toBe(true);
     } finally {
-      fs.chmodSync(locked, 0o755);
+      restore();
     }
   });
 });

@@ -27,6 +27,7 @@ vi.mock('child_process', async (orig) => ({
 }));
 
 import { defaultSelfExtract } from '../hub/upgradeSync';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 beforeEach(() => { execSync.mockClear(); });
 
@@ -65,7 +66,8 @@ describe('defaultSelfExtract on a development checkout', () => {
     const real = path.join(os.homedir(), '.agenfk-system');
     fs.mkdirSync(path.join(real, '.git'), { recursive: true });
     const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-link-')), 'agenfk-system');
-    fs.symlinkSync(real, link);
+    // A junction on Windows, where a symlink needs admin: the same directory either way.
+    linkDir(real, link);
     try {
       await defaultSelfExtract({ installRoot: link, targetVersion: '9.9.9' });
       expect(String((execSync.mock.calls[0] as unknown[] | undefined)?.[0] ?? '')).toMatch(/curl/);

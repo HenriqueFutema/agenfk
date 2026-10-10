@@ -30,6 +30,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { posixShell, shellQuote } from './helpers/posixShell';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -178,8 +179,14 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
   it('a symlinked spelling is refused: the tree is what git lists, not a link to it', async () => {
     const t = await setup();
     const link = path.join(path.dirname(t.root), 'link-to-wt2');
-    fs.symlinkSync(t.wt2, link);
-    expect((await put(t.child, { worktree: link })).status).toBe(400);
+    // A junction on Windows, where a symlink needs admin: lstat calls it a link too.
+    linkDir(t.wt2, link);
+    // Guard: the tree's own spelling is accepted, so the refusal below is about
+    // the link - not a refusal of every path, which a bare 400 cannot tell apart.
+    expect((await put(t.child, { worktree: t.wt2 })).status).toBe(200);
+    const res = await put(t.child, { worktree: link });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${link} is not a checkout of this project's repository`);
   });
 
   it("'inherit' clears the choice: the card follows its parent again", async () => {

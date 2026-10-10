@@ -19,14 +19,15 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, cpSync, rmSync, symlinkSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, cpSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { REPO_ROOT } from './helpers/runInstaller';
+import { fakeBin, hostTar, type FakeBin } from './helpers/fakeBin';
 
 let root: string;
 let home: string;
-let binDir: string;
+let bin: FakeBin;
 let tarball: string;
 let run: ReturnType<typeof spawnSync>;
 
@@ -60,17 +61,11 @@ beforeAll(() => {
   const stage = path.join(work, 'stage');
   cpSync(path.join(REPO_ROOT, 'commands'), path.join(stage, 'commands'), { recursive: true });
   tarball = path.join(work, 'agenfk-dist.tar.gz');
-  spawnSync('tar', ['-czf', tarball, '-C', stage, 'commands'], { encoding: 'utf8' });
+  spawnSync(hostTar(), ['-czf', tarball, '-C', stage, 'commands'], { encoding: 'utf8' });
 
   // PATH holds only what step 1a legitimately needs: node, and tar/gzip for the
   // archive listing. curl and gh stay absent, so nothing can reach the network.
-  binDir = path.join(work, 'bin');
-  mkdirSync(binDir, { recursive: true });
-  symlinkSync(process.execPath, path.join(binDir, 'node'));
-  for (const tool of ['tar', 'gzip']) {
-    const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
-    if (found) symlinkSync(found, path.join(binDir, tool));
-  }
+  bin = fakeBin(path.join(work, 'bin'), { node: true, tools: ['tar', 'gzip'] });
 
   run = spawnSync(process.execPath,
     [path.join(root, 'scripts', 'install.mjs'), '--rules-scope=global', '--debuglog', `--dist-tarball=${tarball}`],
@@ -78,7 +73,7 @@ beforeAll(() => {
       encoding: 'utf8',
       timeout: 180_000,
       cwd: root,
-      env: { HOME: home, USERPROFILE: home, PATH: binDir, NODE_ENV: 'production', VITEST: '1' },
+      env: bin.env({ HOME: home, USERPROFILE: home, NODE_ENV: 'production', VITEST: '1' }),
     });
 });
 
@@ -151,7 +146,7 @@ describe('step 1a refuses to prune a developer working tree', () => {
         encoding: 'utf8',
         timeout: 180_000,
         cwd: devRoot,
-        env: { HOME: devHome, USERPROFILE: devHome, PATH: binDir, NODE_ENV: 'production', VITEST: '1' },
+        env: bin.env({ HOME: devHome, USERPROFILE: devHome, NODE_ENV: 'production', VITEST: '1' }),
       });
   });
 
@@ -198,10 +193,10 @@ describe('install.mjs takes the archive path from AGENFK_DIST_TARBALL', () => {
         encoding: 'utf8',
         timeout: 180_000,
         cwd: envRoot,
-        env: {
-          HOME: envHome, USERPROFILE: envHome, PATH: binDir, NODE_ENV: 'production', VITEST: '1',
+        env: bin.env({
+          HOME: envHome, USERPROFILE: envHome, NODE_ENV: 'production', VITEST: '1',
           AGENFK_DIST_TARBALL: tarball,
-        },
+        }),
       });
   });
 

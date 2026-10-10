@@ -26,6 +26,7 @@ vi.mock('fs', async (orig) => {
 import * as os from 'os';
 import * as path from 'path';
 import { isDevCheckout, sameDirectory } from '../../../../scripts/install-helpers.mjs';
+import { linkDir } from './helpers/links';
 
 const tmp = (name: string) => fs.mkdtempSync(path.join(os.tmpdir(), `agenfk-${name}-`));
 
@@ -48,9 +49,10 @@ describe('isDevCheckout', () => {
     const installDir = path.join(home, '.agenfk-system');
     fs.mkdirSync(path.join(installDir, '.git'), { recursive: true });
     expect(isDevCheckout(installDir, home)).toBe(false);
-    // Reached through a symlink: the same directory, so still the install.
+    // Reached through a symlink (a junction on Windows, where a symlink needs
+    // admin): the same directory, so still the install.
     const link = path.join(tmp('link'), 'agenfk');
-    fs.symlinkSync(installDir, link);
+    linkDir(installDir, link);
     expect(sameDirectory(link, installDir)).toBe(true);
     expect(isDevCheckout(link, home)).toBe(false);
   });

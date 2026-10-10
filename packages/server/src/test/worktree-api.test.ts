@@ -15,6 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, defaultWorktreeRoot, findProjectRoot, autoGitCommit } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -160,7 +161,9 @@ describe('POST /items/:id/worktree', () => {
     fs.mkdirSync(insideBase, { recursive: true });
     const link = path.join(insideBase, 'escapes');
     try { fs.unlinkSync(link); } catch { /* first run */ }
-    fs.symlinkSync(victim, link, 'dir');
+    // A junction on Windows, where a symlink needs admin - and the link `npm
+    // install` makes there for a workspace package.
+    linkDir(victim, link);
 
     try {
       const item = await makeItem();

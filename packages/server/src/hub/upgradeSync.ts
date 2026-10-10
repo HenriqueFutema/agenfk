@@ -88,6 +88,47 @@ function isDevCheckout(root: string): boolean {
   }
 }
 
+/** The part of bin/tar-flags.mjs the self-extract uses. */
+export interface TarRule {
+  needsForceLocal(platform: string, versionText: string): boolean;
+  tarPathFor(p: string, platform: string, versionText: string): string;
+  tarVersionText(): string;
+}
+
+/**
+ * The self-extract's tar commands (GitHub #208). GNU tar on Windows (Git
+ * Bash's) reads `C:` as a remote host and unescapes backslashes, so it gets
+ * --force-local and C:/ paths; the bsdtar Windows ships takes native paths and
+ * rejects the flag. With no rule (an install root older than bin/tar-flags.mjs)
+ * the commands are the ones it always ran, as they are off Windows.
+ */
+export function selfExtractTarCommands(rule: TarRule | null, platform: string, versionText: string, archive: string, root: string): { extract: string; list: string } {
+  const flag = rule?.needsForceLocal(platform, versionText) ? '--force-local ' : '';
+  const p = (x: string) => (rule ? rule.tarPathFor(x, platform, versionText) : x);
+  return {
+    extract: `tar ${flag}-xzf "${p(archive)}" -C "${p(root)}"`,
+    list: `tar ${flag}-tzf "${p(archive)}"`,
+  };
+}
+
+/**
+ * The install root's bin/tar-flags.mjs, or null when it has none (or one
+ * without the functions used here). Exported so a spec pins that the real
+ * module loads: a wrong path or a renamed export would otherwise fall back to
+ * the old commands without a word.
+ */
+export async function loadTarRule(installRoot: string): Promise<TarRule | null> {
+  try {
+    const mod = await import(pathToFileURL(path.join(installRoot, 'bin', 'tar-flags.mjs')).href) as Partial<TarRule>;
+    const complete = typeof mod.needsForceLocal === 'function'
+      && typeof mod.tarPathFor === 'function'
+      && typeof mod.tarVersionText === 'function';
+    return complete ? mod as TarRule : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function defaultSelfExtract(input: { installRoot: string; targetVersion: string }): Promise<{ ok: true } | { ok: false; error: string }> {
   /*
    * Never over a development checkout (658ef023): the overlay would rewrite
@@ -106,7 +147,11 @@ export async function defaultSelfExtract(input: { installRoot: string; targetVer
   const tmpFile = path.join(os.tmpdir(), `agenfk-self-heal-${Date.now()}.tar.gz`);
   try {
     execSync(`curl -fsSL -o "${tmpFile}" "${url}"`, { stdio: 'pipe', windowsHide: true });
-    execSync(`tar -xzf "${tmpFile}" -C "${input.installRoot}"`, { stdio: 'pipe', windowsHide: true });
+    // The flags and paths follow the tar on PATH (GitHub #208), by the rule the
+    // install root ships in bin/tar-flags.mjs - loaded like sync-install-dir.mjs below.
+    const tarRule = await loadTarRule(input.installRoot);
+    const tar = selfExtractTarCommands(tarRule, process.platform, tarRule ? tarRule.tarVersionText() : '', tmpFile, input.installRoot);
+    execSync(tar.extract, { stdio: 'pipe', windowsHide: true });
     // `tar -xzf` is an overlay that deletes nothing, so files this version
     // dropped survive in the install root — and the next install.mjs run from
     // any route then treats them as shipped and re-installs them into every
@@ -121,7 +166,7 @@ export async function defaultSelfExtract(input: { installRoot: string; targetVer
           { removed: string[]; failed: { path: string; reason: string }[] };
       };
       // A development checkout never gets here (refused above), so the prune always runs.
-      const listing = execSync(`tar -tzf "${tmpFile}"`, { encoding: 'utf8', windowsHide: true })
+      const listing = execSync(tar.list, { encoding: 'utf8', windowsHide: true })
         .split('\n').map((l) => l.trim()).filter(Boolean);
       const { removed, failed } = pruneInstallDirAgainstManifest(input.installRoot, listing);
       for (const rel of removed) console.log(`[self-extract] pruned (no longer shipped): ${rel}`);

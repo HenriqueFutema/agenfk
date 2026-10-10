@@ -26,6 +26,7 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { app, initStorage, closeStorage, VERIFY_TOKEN, autoGitCommit, storage } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -350,7 +351,8 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
     const task = await newItem('TASK', 'caller behind a link');
     const wt = linkedWorktree('feat/behind-link');
     const link = path.join(repo, 'wt-link');
-    fs.symlinkSync(wt, link, 'dir');
+    // A junction on Windows, where a symlink needs admin: it resolves the same way.
+    linkDir(wt, link);
     await step(task.id);
 
     const res = await validate(task.id, { command: MARK, cwd: link });

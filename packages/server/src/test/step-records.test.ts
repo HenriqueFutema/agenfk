@@ -33,6 +33,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { posixShell } from './helpers/posixShell';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -351,7 +352,8 @@ describe('CGLAB-379: step records', () => {
       const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-outside-'));
       repos.push(outside);
       fs.writeFileSync(path.join(outside, 'report.json'), 'sentinel');
-      fs.symlinkSync(outside, path.join(dir, 'out'));
+      // A junction on Windows (a symlink needs admin there): lstat calls it a link all the same.
+      linkDir(outside, path.join(dir, 'out'));
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'true', reportPath: 'out/report.json' } });
       const res = await agent().post(`/items/${await card(p, 'IN_PROGRESS')}/step-records/capture`).set(internal());
       expect(res.body.available).toBe(false);

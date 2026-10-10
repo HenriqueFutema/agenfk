@@ -29,6 +29,7 @@ import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
 import { ensureLocalIgnored, stripLegacyProjectId, readLegacyProjectId, projectFileTracked, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
+import { upgradeExtractCommand, tarVersionText } from './tarFlags.js';
 
 /**
  * Consecutive delivery failures before the startup banner warns. A halted
@@ -883,8 +884,9 @@ program
         downloadReleaseAsset(REPO, resolvedTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
         // --exclude: published releases up to v1.1.16-beta.4 were ~half macOS
         // AppleDouble (`._*`) entries; never let them into the install dir
-        // (CGLAB-94 / issue #163).
-        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+        // (CGLAB-94 / issue #163). The flags and paths follow the tar on PATH
+        // (GitHub #208, see tarFlags.ts).
+        execSync(upgradeExtractCommand(process.platform, tarVersionText(), path.join(tempDir, 'agenfk-dist.tar.gz'), rootDir), { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         // `tar -xzf` deletes nothing, so the install dir keeps files this
         // version dropped — and its own commands/ cannot be asked what is
         // current, because it IS the stale thing. Hand install.mjs the archive

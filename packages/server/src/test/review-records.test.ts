@@ -36,6 +36,8 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { posixShell } from './helpers/posixShell';
+import { canSymlink, linkDir } from '../../../cli/src/test/helpers/links';
+import { transcriptRoot } from '../reviewRecords';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -142,7 +144,10 @@ describe('CGLAB-381: review records', () => {
     expect(res.body.error).toMatch(/session folder|not a transcript/i);
   });
 
-  it('refuses a symlink inside a session folder that points outside it', async () => {
+  // A FILE link: a junction cannot point at a file, and Windows lets only admin
+  // or Developer Mode make a symlink - so this runs wherever one can be made
+  // (Linux and macOS always) and is skipped only where it cannot be built.
+  it.skipIf(!canSymlink())('refuses a symlink inside a session folder that points outside it', async () => {
     const { dir, base, tip } = makeRepo();
     const id = await cardIn(dir);
     const target = path.join(dir, 'outside.jsonl');
@@ -150,7 +155,35 @@ describe('CGLAB-381: review records', () => {
     const link = path.join(home, '.claude', 'projects', '-repo', 'link.jsonl');
     fs.mkdirSync(path.dirname(link), { recursive: true });
     fs.symlinkSync(target, link);
-    expect((await record(id, { transcript: link, range: `${base}..${tip}`, findings: [] })).status).toBe(400);
+    // Guard: the folder itself is a session folder, so the refusal below is the link's.
+    const beside = path.join(path.dirname(link), 'beside.jsonl');
+    fs.writeFileSync(beside, line({ sessionId: 's', timestamp: FUTURE }));
+    expect(transcriptRoot(beside)).not.toBeNull();
+    const res = await record(id, { transcript: link, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${link} is not a transcript in a harness session folder`);
+  });
+
+  // The same escape through a DIRECTORY link, which every OS can make: a junction
+  // on Windows needs no privilege, so this one runs on a default Windows too.
+  it('refuses a transcript reached through a linked folder inside a session folder that points outside it', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const outside = path.join(dir, 'outside-sessions');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'sess-x.jsonl'), line({ sessionId: 'sess-x', timestamp: FUTURE }));
+    const project = path.join(home, '.claude', 'projects', '-repo');
+    fs.mkdirSync(project, { recursive: true });
+    // Guard: the folder itself is a session folder, so the refusal below is the link's.
+    const beside = path.join(project, 'beside.jsonl');
+    fs.writeFileSync(beside, line({ sessionId: 's', timestamp: FUTURE }));
+    expect(transcriptRoot(beside)).not.toBeNull();
+    const linked = path.join(project, 'linked');
+    linkDir(outside, linked);
+    const transcript = path.join(linked, 'sess-x.jsonl');
+    const res = await record(id, { transcript, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${transcript} is not a transcript in a harness session folder`);
   });
 
   it('refuses a Claude transcript whose session does not match the folder it sits in', async () => {

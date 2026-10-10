@@ -14,6 +14,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createWorktree, listWorktrees, removeWorktree, repoNameFor } from '../worktrees.js';
 import { buildWorktreePath } from '@agenfk/core';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let repo: string;
 let root: string;
@@ -349,7 +350,8 @@ describe('it refuses to build outside the worktree root', () => {
      */
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wt-elsewhere-'));
     fs.mkdirSync(root, { recursive: true });
-    fs.symlinkSync(elsewhere, path.join(root, repoNameFor(repo)), 'dir');
+    // A junction on Windows, where a symlink needs admin: it resolves out the same way.
+    linkDir(elsewhere, path.join(root, repoNameFor(repo)));
 
     try {
       expect(() => createWorktree({ repoRoot: repo, root, branchName: 'feat/linked-out' }))
@@ -408,7 +410,8 @@ describe('a symlink pointing out of the root', () => {
     // A link sitting where the repo segment would go, which is what an
     // install inside a worktree produces.
     fs.mkdirSync(root, { recursive: true });
-    fs.symlinkSync(outside, path.join(root, repoNameFor(repo)), 'dir');
+    // A junction on Windows, where a symlink needs admin (and what npm makes there).
+    linkDir(outside, path.join(root, repoNameFor(repo)));
 
     try {
       expect(() => createWorktree({ repoRoot: repo, root, branchName: 'feat/escapes' }))

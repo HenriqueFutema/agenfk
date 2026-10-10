@@ -7,6 +7,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { compareSemver, newestChannelTag } from './version-utils.mjs';
 import { pruneInstallDir, pruneInstallDirAgainstManifest } from './sync-install-dir.mjs';
+import { forceLocalFlag, tarPath } from './tar-flags.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -46,33 +47,22 @@ if (hasGit && !forceInstall) {
   process.exit(1);
 }
 
-// On MSYS2 / Git-for-Windows (MinGW), Node.js reports process.platform === 'win32' but
-// the bundled tar is an MSYS2 binary that understands POSIX paths (/c/Users/...).
-// Converting Win32 paths to POSIX form avoids the "C: treated as remote hostname" error
-// even when --force-local is not supported or not respected by the installed tar version.
-const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX ||
-  (process.platform === 'win32' && process.env.SHELL?.includes('bash')));
-
-// Convert a Win32 drive path to an MSYS2 POSIX path (/c/Users/...) so that
-// MSYS2 tar never sees a bare "C:" that it might interpret as a remote hostname.
-function toPosixPath(p) {
-  if (isMinGW && /^[a-zA-Z]:/.test(p)) {
-    return '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/');
-  }
-  return p;
-}
-
-// On Windows, BSD tar treats "C:" as a remote hostname; --force-local disables that.
-// On MinGW we also convert paths to POSIX form as a belt-and-suspenders measure.
+// On Windows, GNU tar (Git Bash's) treats "C:" as a remote hostname; --force-local
+// disables that. The bsdtar Windows ships needs no such flag and rejects it, so
+// it is passed only to GNU tar (GitHub #208, see tar-flags.mjs). Every path a tar
+// command gets goes through tarPath() for the same reason: GNU tar on Windows
+// unescapes backslashes, so it gets C:/... from any shell; bsdtar the native path.
 // Refuse macOS metadata on the way IN. This is the path that actually polluted
 // users: every published release up to v1.1.16-beta.4 was ~half AppleDouble
 // (`._*`) entries, and this extraction lands the tarball straight into the
 // install dir — after the filtered cpSync above, so that filter never sees it.
 // Excluding here makes the outcome independent of any later sweep.
 // (CGLAB-94 / issue #163)
-const tarExcludes = "--exclude='._*' --exclude='.DS_Store'";
+// Double quotes, not single: cmd.exe keeps single quotes as part of the word, so
+// on Windows the pattern was `'._*'` and excluded nothing. sh treats both alike.
+const tarExcludes = '--exclude="._*" --exclude=".DS_Store"';
 const tarFlags = process.platform === 'win32'
-  ? `--force-local ${tarExcludes} -xzf`
+  ? `${forceLocalFlag()}${tarExcludes} -xzf`
   : `${tarExcludes} -xzf`;
 
 // compareSemver gates the redownload-on-update downgrade guard. It is imported
@@ -278,7 +268,7 @@ if (isNpxCache) {
         const archive = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
         try {
         downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', archive);
-        execSync(`tar ${tarFlags} "${toPosixPath(archive)}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+        execSync(`tar ${tarFlags} "${tarPath(archive)}" -C "${tarPath(INSTALL_DIR)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         // Prune against the ARCHIVE, not against REPO_ROOT. REPO_ROOT is the
         // npx git ref (the default branch); the tarball is fetchLatestTag,
         // which is a DIFFERENT ref — betas are cut from release/vX.Y.Z-beta.N
@@ -287,8 +277,8 @@ if (isNpxCache) {
         // ships. The archive is the last writer here, so it is the authority.
         try {
           if (isUpdate) {
-            const listFlags = process.platform === 'win32' ? '--force-local -tzf' : '-tzf';
-            const listing = execSync(`tar ${listFlags} "${toPosixPath(archive)}"`, { encoding: 'utf8', windowsHide: true })
+            const listFlags = process.platform === 'win32' ? `${forceLocalFlag()}-tzf` : '-tzf';
+            const listing = execSync(`tar ${listFlags} "${tarPath(archive)}"`, { encoding: 'utf8', windowsHide: true })
               .split('\n').filter(Boolean);
             reportPrune(pruneInstallDirAgainstManifest(INSTALL_DIR, listing));
             prunedAgainstArchive = true;
@@ -351,7 +341,7 @@ if (isNpxCache) {
     try {
       const latestTag = fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
-      execSync(`tar ${tarFlags} "${toPosixPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(REPO_ROOT)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+      execSync(`tar ${tarFlags} "${tarPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${tarPath(REPO_ROOT)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
       fs.unlinkSync(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);

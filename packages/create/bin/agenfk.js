@@ -7,6 +7,42 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// The tar command for the tar this machine will run (GitHub #208) - the rule
+// of bin/tar-flags.mjs, copied, because this published package is a single
+// file. The bsdtar Windows ships (System32\tar.exe, what cmd and PowerShell
+// find) takes `C:\...` as it is and rejects --force-local. GNU tar (Git
+// Bash's) reads `C:` as a remote host, so it needs --force-local, and it
+// unescapes backslashes in -C (`...\Temp\tf-x` becomes a TAB), so it gets
+// forward slashes. Off Windows the command is what it always was.
+function isGnuTar(versionText) {
+  return /\bGNU tar\b/.test(String(versionText || ''));
+}
+function tarExtractCommand(platform, versionText, archive, dir) {
+  if (platform === 'win32' && isGnuTar(versionText)) {
+    const fwd = (p) => p.replace(/\\/g, '/');
+    return `tar --force-local -xzf "${fwd(archive)}" -C "${fwd(dir)}"`;
+  }
+  return `tar -xzf "${archive}" -C "${dir}"`;
+}
+let tarVersion;
+function tarVersionText() {
+  if (process.platform !== 'win32') return '';
+  if (tarVersion === undefined) {
+    try {
+      tarVersion = execSync('tar --version', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    } catch {
+      tarVersion = '';
+    }
+  }
+  return tarVersion;
+}
+
+// Required rather than executed (its spec reads the rule above): run nothing.
+if (require.main !== module) {
+  module.exports = { isGnuTar, tarExtractCommand };
+  return;
+}
+
 const REPO_URL = 'https://github.com/cglab-public/agenfk.git';
 const INSTALL_DIR = path.join(os.homedir(), '.agenfk-system');
 
@@ -142,7 +178,7 @@ if (fs.existsSync(INSTALL_DIR)) {
     try {
       const latestTag = fetchLatestTag(REPO_NAME);
       downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit', windowsHide: true });
+      execSync(tarExtractCommand(process.platform, tarVersionText(), path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'), INSTALL_DIR), { stdio: 'inherit', windowsHide: true });
       distTarball = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
     } catch (e) {
       console.error(`Failed to update pre-built binary: ${e.message}`);
@@ -160,7 +196,7 @@ if (fs.existsSync(INSTALL_DIR)) {
     try {
       const latestTag = fetchLatestTag(REPO_NAME);
       downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit', windowsHide: true });
+      execSync(tarExtractCommand(process.platform, tarVersionText(), path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'), INSTALL_DIR), { stdio: 'inherit', windowsHide: true });
       fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
     } catch (e) {
       try { fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')); } catch { /* not there */ }
