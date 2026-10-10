@@ -57,7 +57,7 @@ import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
-import { readPane } from './herdr.js';
+import { readPane, liveHerdrSessions } from './herdr.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -1171,7 +1171,7 @@ async function chosenBy(item: any, tree: string): Promise<boolean> {
   const seen = new Set<string>();
   let cur: any = item;
   for (let depth = 0; cur && depth < 32; depth++) {
-    if (cur.worktreeChoice) return cur.worktreeChoice === tree;
+    if (cur.worktreeChoice) return cur.worktreeChoice !== 'root' && path.resolve(cur.worktreeChoice) === path.resolve(tree);
     if (cur.worktreePath) return false;
     if (!cur.parentId || seen.has(cur.parentId) || !storage) return false;
     seen.add(cur.parentId);
@@ -1236,7 +1236,8 @@ async function resolveWorktreeChoice(raw: unknown, item: any): Promise<{ updates
   if (!match || !fs.existsSync(match)) {
     return { error: `${wanted} is not a checkout of this project's repository (git worktree list in ${candidates[0]} does not list it). Use \`agenfk worktree create\` or \`git worktree add\` first.` };
   }
-  return { updates: { worktreeChoice: match } };
+  // path.resolve: git lists `C:/x/y` on Windows, every path it is compared with is `C:\x\y` (#208). Identity on POSIX.
+  return { updates: { worktreeChoice: path.resolve(match) } };
 }
 
 /**
@@ -2437,9 +2438,22 @@ app.get("/herdr/sessions", limitExpensive, asyncHandler(async (_req: any, res: a
  * a different amount of data and a different decision. This is what "open one"
  * asks for.
  */
+/**
+ * #208 review: a pane route talks only to a socket discovery lists right now.
+ * The board sends one it was handed, but the value is the caller's - and on
+ * Windows a socket path names `\\.\pipe\<path>`, so any string reached a pipe.
+ */
+function liveHerdrSocket(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  const want = path.resolve(raw);
+  return liveHerdrSessions().some(s => path.resolve(s.socketPath) === want) ? want : null;
+}
+const NOT_LIVE = { error: 'socket is not a live herdr session (GET /herdr/sessions lists them)' };
+
 app.get("/herdr/panes/:paneId/content", limitExpensive, asyncHandler(async (req: any, res: any) => {
-  const socketPath = String(req.query.socket ?? '');
-  if (!socketPath) return res.status(400).json({ error: 'socket (query) required' });
+  if (!req.query.socket) return res.status(400).json({ error: 'socket (query) required' });
+  const socketPath = liveHerdrSocket(String(req.query.socket));
+  if (!socketPath) return res.status(400).json(NOT_LIVE);
   const r = await readPane(socketPath, {
     paneId: String(req.params.paneId),
     source: (req.query.source as any) ?? 'recent',
@@ -2463,8 +2477,10 @@ app.post("/herdr/panes/:paneId/text", limitExpensive, asyncHandler(async (req: a
   const { socket, text } = req.body ?? {};
   if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
   if (typeof text !== 'string') return res.status(400).json({ error: 'text (string) required' });
+  const live = liveHerdrSocket(socket);
+  if (!live) return res.status(400).json(NOT_LIVE);
   try {
-    const r = await sendPaneText(socket, String(req.params.paneId), text);
+    const r = await sendPaneText(live, String(req.params.paneId), text);
     return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
   } catch (e: any) {
     // A refusal from our own guards is the caller's mistake, not the server's.
@@ -2476,8 +2492,10 @@ app.post("/herdr/panes/:paneId/keys", limitExpensive, asyncHandler(async (req: a
   const { socket, keys } = req.body ?? {};
   if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
   if (!Array.isArray(keys)) return res.status(400).json({ error: 'keys (array) required' });
+  const live = liveHerdrSocket(socket);
+  if (!live) return res.status(400).json(NOT_LIVE);
   try {
-    const r = await sendPaneKeys(socket, String(req.params.paneId), keys.map(String));
+    const r = await sendPaneKeys(live, String(req.params.paneId), keys.map(String));
     return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
@@ -2783,7 +2801,9 @@ app.post("/decompositions/review", limitExpensive, asyncHandler(async (req: any,
 app.post("/herdr/panes/:paneId/focus", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const { socket } = req.body ?? {};
   if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
-  const r = await focusPane(socket, String(req.params.paneId));
+  const live = liveHerdrSocket(socket);
+  if (!live) return res.status(400).json(NOT_LIVE);
+  const r = await focusPane(live, String(req.params.paneId));
   return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
 }));
 

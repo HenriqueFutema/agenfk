@@ -20,6 +20,7 @@ import {
   deriveConfigRoot,
   discoverSessionSockets,
   herdrConfigRoot,
+  herdrEndpoint,
   encodeRequest,
   parseResponse,
   parseStreamLine,
@@ -42,42 +43,138 @@ describe('finding the config root', () => {
      * would make us scan the default location while running inside a session
      * that lives somewhere else entirely.
      */
-    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: '/run/h/herdr.sock' }, '/home/x'))
+    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: '/run/h/herdr.sock' }, '/home/x', 'linux'))
       .toBe('/run/h');
   });
 
   it('falls back to ~/.config/herdr when the variable is absent', () => {
-    expect(herdrConfigRoot({}, '/home/x')).toBe('/home/x/.config/herdr');
+    // The platform is passed, not inherited: these are POSIX literals, and on a
+    // Windows host the native `join` turns every one of them into backslashes.
+    expect(herdrConfigRoot({}, '/home/x', 'linux')).toBe('/home/x/.config/herdr');
   });
 
   it('treats an empty variable as absent rather than as the root "/"', () => {
     // `HERDR_SOCKET_PATH=` in a shell profile is set-but-empty, and dirname('')
     // is '.', which would make discovery scan the process's cwd.
-    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: '   ' }, '/home/x')).toBe('/home/x/.config/herdr');
+    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: '   ' }, '/home/x', 'linux')).toBe('/home/x/.config/herdr');
+  });
+
+  it('honours XDG_CONFIG_HOME, because herdr itself does', () => {
+    // herdr resolves `$XDG_CONFIG_HOME/herdr` before `~/.config/herdr`. Ignoring
+    // it would scan a directory the running herdr never wrote to.
+    expect(herdrConfigRoot({ XDG_CONFIG_HOME: '/xdg' }, '/home/x', 'linux')).toBe('/xdg/herdr');
+  });
+
+  it('ignores a RELATIVE XDG_CONFIG_HOME, which would point discovery at the cwd', () => {
+    // The XDG spec calls a relative value invalid, and the cwd of this server is
+    // the user's repository - the same trap the empty-HOME guard closes.
+    expect(herdrConfigRoot({ XDG_CONFIG_HOME: 'rel/cfg' }, '/home/x', 'linux')).toBe('/home/x/.config/herdr');
+  });
+
+  it('pays no attention to APPDATA off Windows', () => {
+    expect(herdrConfigRoot({ APPDATA: '/odd/appdata' }, '/home/x', 'linux')).toBe('/home/x/.config/herdr');
+  });
+
+  it('lets HERDR_SOCKET_PATH win over XDG_CONFIG_HOME', () => {
+    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: '/run/h/herdr.sock', XDG_CONFIG_HOME: '/xdg' }, '/home/x', 'linux'))
+      .toBe('/run/h');
+  });
+});
+
+describe('finding the config root on Windows', () => {
+  /*
+   * herdr on Windows does not live under ~/.config. Its config dir is
+   * `$XDG_CONFIG_HOME/herdr` if set, else `%APPDATA%\herdr`, else
+   * `%USERPROFILE%\AppData\Roaming\herdr`, else `$HOME/.config/herdr` - read
+   * from herdr's own source, not guessed. Scanning the POSIX default on Windows
+   * finds nothing and reports a running herdr as absent.
+   *
+   * Every case passes 'win32' explicitly so this runs, and means the same, on
+   * a Linux or macOS CI host.
+   */
+  const APPDATA = 'C:\\Users\\x\\AppData\\Roaming';
+
+  it('looks under %APPDATA%\\herdr', () => {
+    expect(herdrConfigRoot({ APPDATA }, 'C:\\Users\\x', 'win32')).toBe(`${APPDATA}\\herdr`);
+  });
+
+  it('falls back to %USERPROFILE%\\AppData\\Roaming\\herdr without APPDATA', () => {
+    expect(herdrConfigRoot({ USERPROFILE: 'C:\\Users\\x' }, 'C:\\Users\\x', 'win32'))
+      .toBe('C:\\Users\\x\\AppData\\Roaming\\herdr');
+  });
+
+  it('falls back to $HOME\\.config\\herdr with neither', () => {
+    expect(herdrConfigRoot({}, 'C:\\Users\\x', 'win32')).toBe('C:\\Users\\x\\.config\\herdr');
+  });
+
+  it('lets XDG_CONFIG_HOME win over APPDATA, as herdr does', () => {
+    expect(herdrConfigRoot({ XDG_CONFIG_HOME: 'D:\\xdg', APPDATA }, 'C:\\Users\\x', 'win32'))
+      .toBe('D:\\xdg\\herdr');
+  });
+
+  it('treats an empty XDG_CONFIG_HOME or APPDATA as absent', () => {
+    // Same reasoning as HERDR_SOCKET_PATH: set-but-empty is not a path, and
+    // `join('', 'herdr')` is the relative 'herdr' - the server's cwd.
+    expect(herdrConfigRoot({ XDG_CONFIG_HOME: ' ', APPDATA: '', USERPROFILE: 'C:\\Users\\x' }, '', 'win32'))
+      .toBe('C:\\Users\\x\\AppData\\Roaming\\herdr');
+  });
+
+  it('reads a named session in HERDR_SOCKET_PATH back to its root, with backslashes', () => {
+    // The named-session trap again, in Windows separators: the root is above
+    // `sessions\`, and a POSIX dirname of this string would answer '.'.
+    const sock = `${APPDATA}\\herdr\\sessions\\work\\herdr.sock`;
+    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: sock, XDG_CONFIG_HOME: 'D:\\xdg' }, 'C:\\Users\\x', 'win32'))
+      .toBe(`${APPDATA}\\herdr`);
+  });
+});
+
+describe('the endpoint a socket path names', () => {
+  /*
+   * herdr on Windows binds a NAMED PIPE, not a unix socket: the pipe is the
+   * socket path verbatim under `\\.\pipe\`, and herdr also writes a marker FILE
+   * at the socket path itself - so the file stays the liveness signal and only
+   * the connect target changes. `createConnection('C:\\...\\herdr.sock')` on
+   * Windows is a connect to nothing.
+   */
+  const sock = 'C:\\Users\\x\\AppData\\Roaming\\herdr\\herdr.sock';
+
+  it('is the pipe named after the path on Windows', () => {
+    expect(herdrEndpoint(sock, 'win32')).toBe(`\\\\.\\pipe\\${sock}`);
+  });
+
+  it('is the path itself everywhere else', () => {
+    expect(herdrEndpoint('/home/x/.config/herdr/herdr.sock', 'linux')).toBe('/home/x/.config/herdr/herdr.sock');
+    expect(herdrEndpoint('/Users/x/.config/herdr/herdr.sock', 'darwin')).toBe('/Users/x/.config/herdr/herdr.sock');
+  });
+
+  it('defaults to the platform it runs on', () => {
+    expect(herdrEndpoint(sock)).toBe(process.platform === 'win32' ? `\\\\.\\pipe\\${sock}` : sock);
   });
 });
 
 describe('deriving the config root from a socket path', () => {
   it('reads a named session back to the root that holds it', () => {
     // <root>/sessions/<name>/herdr.sock  ->  <root>
-    expect(deriveConfigRoot('/home/x/.config/herdr/sessions/work/herdr.sock'))
+    expect(deriveConfigRoot('/home/x/.config/herdr/sessions/work/herdr.sock', 'linux'))
       .toBe('/home/x/.config/herdr');
   });
 
   it('reads the default session as its own directory', () => {
-    expect(deriveConfigRoot('/home/x/.config/herdr/herdr.sock')).toBe('/home/x/.config/herdr');
+    expect(deriveConfigRoot('/home/x/.config/herdr/herdr.sock', 'linux')).toBe('/home/x/.config/herdr');
   });
 
   it('does not mistake a directory merely CALLED sessions further up', () => {
     // Only the segment directly above the session name counts. A path like
     // <root>/sessions/a/b/herdr.sock is not a session layout.
-    expect(deriveConfigRoot('/srv/sessions/a/b/herdr.sock')).toBe('/srv/sessions/a/b');
+    expect(deriveConfigRoot('/srv/sessions/a/b/herdr.sock', 'linux')).toBe('/srv/sessions/a/b');
   });
 });
 
 describe('discovering which sessions are live', () => {
-  const root = '/cfg/herdr';
-  const sock = (...p: string[]): string => [root, ...p].join('/');
+  // Discovery joins with the NATIVE separator, because the paths it builds are
+  // handed to the real filesystem; so the expectations are built the same way.
+  const root = join('/cfg', 'herdr');
+  const sock = (...p: string[]): string => join(root, ...p);
 
   it('finds the default session', () => {
     const found = discoverSessionSockets(root, () => [], p => p === sock(HERDR_SOCKET_FILE));
@@ -128,7 +225,7 @@ describe('discovering which sessions are live', () => {
      * this comment came to exist.
      */
     const found = discoverSessionSockets(root, () => ['../../../etc'], () => true);
-    for (const f of found) expect(f.socketPath.startsWith(`${root}/`), f.socketPath).toBe(true);
+    for (const f of found) expect(f.socketPath.startsWith(`${root}${sep}`), f.socketPath).toBe(true);
     // And specifically: the traversal produced no row at all.
     expect(found.map(f => f.name)).toEqual(['default']);
   });
@@ -426,21 +523,22 @@ describe('subscribing', () => {
   });
 });
 
-/* ── the real transports, against real unix sockets ────────────────────── */
+/* ── the real transports, against real sockets ─────────────────────────── */
 
 /*
  * THE THREE BLOCKERS OF THE FIRST REVIEW ALL LIVED HERE, and none of the tests
  * above could see them: every one injects a fake transport, so the two functions
  * that actually touch a socket had zero coverage. These use a real server on a
- * real unix socket, which is the only way to stage a chunk boundary, a mid-
- * stream death, or a server that refuses.
+ * real unix socket - a named pipe on Windows, as herdr itself binds there -
+ * which is the only way to stage a chunk boundary, a mid-stream death, or a
+ * server that refuses.
  */
 import { createServer, type Server } from 'net';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, sep, isAbsolute } from 'path';
 import { afterEach } from 'vitest';
-import { socketTransport, socketStreamTransport, MAX_RESPONSE_BYTES } from '../herdr';
+import { socketTransport, socketStreamTransport, liveHerdrSessions, MAX_RESPONSE_BYTES } from '../herdr';
 
 const openServers: Server[] = [];
 let sockDir: string | null = null;
@@ -453,12 +551,19 @@ afterEach(() => {
   if (sockDir) { rmSync(sockDir, { recursive: true, force: true }); sockDir = null; }
 });
 
-/** A unix socket server that runs `behave` on each connection. Cleaned up after. */
+/**
+ * A fake herdr that runs `behave` on each connection, and answers with its
+ * socket PATH - what discovery finds and what callers hold. Cleaned up after.
+ *
+ * It binds where real herdr binds: the path itself on unix, and on Windows the
+ * pipe named after the path plus a marker file AT the path, so a test that goes
+ * through discovery sees exactly what a live Windows herdr leaves on disk.
+ */
 const openSockets: import('net').Socket[] = [];
 
-async function serve(behave: (c: import('net').Socket) => void): Promise<string> {
+async function serve(behave: (c: import('net').Socket) => void, file?: string): Promise<string> {
   sockDir ??= mkdtempSync(join(tmpdir(), 'herdr-test-'));
-  const p = join(sockDir, `s${openServers.length}.sock`);
+  const p = join(sockDir, file ?? `s${openServers.length}.sock`);
   const server = createServer(c => {
     /*
      * WITHOUT THIS THE WHOLE SUITE EXITS 1 WHILE REPORTING 51 PASSED. When the
@@ -473,9 +578,30 @@ async function serve(behave: (c: import('net').Socket) => void): Promise<string>
     behave(c);
   });
   openServers.push(server);
-  await new Promise<void>(r => server.listen(p, r));
+  await new Promise<void>(r => server.listen(herdrEndpoint(p), r));
+  // On unix the listen itself created the file; writing one there first would
+  // make the listen fail with EADDRINUSE.
+  if (process.platform === 'win32') writeFileSync(p, '');
   return p;
 }
+
+describe('a real session, found and read end to end', () => {
+  it('is discovered by its file and answers on its endpoint', async () => {
+    /*
+     * The two halves the Windows port splits apart, tested together: discovery
+     * reads the FILE (the marker on Windows, the socket on unix) and the
+     * transport connects to the ENDPOINT. Either half taking the wrong one -
+     * listing pipes, or connecting to the marker - shows up here as an empty
+     * list or an unreachable session.
+     */
+    const SNAP = JSON.stringify({ id: 'x', result: { type: 'session_snapshot', snapshot: { panes: [{ id: 'w1:p1' }] } } });
+    const p = await serve(c => { c.on('data', () => c.end(`${SNAP}\n`)); }, 'herdr.sock');
+    const found = liveHerdrSessions({ HERDR_SOCKET_PATH: p }, '');
+    expect(found).toEqual([{ name: 'default', socketPath: p }]);
+    const r = await readSnapshot(found[0].socketPath, undefined, 5_000);
+    expect(r.ok && r.snapshot.panes.map(x => x.id)).toEqual(['w1:p1']);
+  });
+});
 
 describe('the real one-shot transport', () => {
   it('does NOT corrupt a character split across chunks', async () => {
@@ -684,9 +810,20 @@ describe('guards the first review proved were untested', () => {
 
   it('never derives a RELATIVE config root, whatever the environment lacks', () => {
     // A daemon started by launchd or systemd has no HOME.
+    // `isAbsolute`, not `startsWith('/')`: on Windows the fallback is a drive
+    // path, which is just as absolute and never starts with a slash.
     const root = herdrConfigRoot({}, '');
-    expect(root.startsWith('/')).toBe(true);
+    expect(isAbsolute(root), root).toBe(true);
     expect(root).not.toBe('.config/herdr');
+  });
+
+  it('never derives a RELATIVE config root from a relative socket path or HOME either', () => {
+    // `herdr.sock` alone would make discovery scan the server's cwd - and, on
+    // Windows, connect to the pipe that bare name gives.
+    for (const platform of ['linux', 'win32'] as const) {
+      expect(isAbsolute(herdrConfigRoot({ HERDR_SOCKET_PATH: 'herdr.sock' }, '', platform)), platform).toBe(true);
+      expect(isAbsolute(herdrConfigRoot({}, 'relative/home', platform)), platform).toBe(true);
+    }
   });
 
   it('knows all THREE pane-scoped types, not just the one collie uses', async () => {
@@ -714,20 +851,21 @@ describe('running INSIDE a named session', () => {
      * Every sibling vanishes and the survivor is mislabelled. `deriveConfigRoot`
      * knew this all along and was called by nobody.
      */
-    const root = herdrConfigRoot({ HERDR_SOCKET_PATH: '/cfg/herdr/sessions/work/herdr.sock' }, '/home/x');
+    const root = herdrConfigRoot({ HERDR_SOCKET_PATH: '/cfg/herdr/sessions/work/herdr.sock' }, '/home/x', 'linux');
     expect(root, 'the root is above sessions/, not inside it').toBe('/cfg/herdr');
 
+    // Discovery joins natively, so the live set is built the same way.
     const live = new Set([
-      '/cfg/herdr/herdr.sock',
-      '/cfg/herdr/sessions/work/herdr.sock',
-      '/cfg/herdr/sessions/review/herdr.sock',
+      join(root, 'herdr.sock'),
+      join(root, 'sessions', 'work', 'herdr.sock'),
+      join(root, 'sessions', 'review', 'herdr.sock'),
     ]);
     const found = discoverSessionSockets(root, () => ['work', 'review'], p => live.has(p));
     expect(found.map(f => f.name)).toEqual(['default', 'work', 'review']);
   });
 
   it('still reads the default session as its own directory', () => {
-    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: '/cfg/herdr/herdr.sock' }, '/home/x')).toBe('/cfg/herdr');
+    expect(herdrConfigRoot({ HERDR_SOCKET_PATH: '/cfg/herdr/herdr.sock' }, '/home/x', 'linux')).toBe('/cfg/herdr');
   });
 });
 
