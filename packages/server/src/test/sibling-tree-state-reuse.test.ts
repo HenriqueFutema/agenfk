@@ -35,6 +35,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -51,7 +52,7 @@ afterAll(() => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 const counter = (file: string) => () => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0);
 
 let seq = 0;
@@ -359,7 +360,7 @@ describe('3ffc9651 review: submodules are part of the state', () => {
   it('a submodule moved to another commit is another state: the next card runs its own', async () => {
     const t = await captureSetup();
     const lib = withSubmodule();
-    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${lib} sub && git commit -qm sub`);
+    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${shellQuote(lib)} sub && git commit -qm sub`);
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);
     git(path.join(t.repo, 'sub'), 'git checkout -q HEAD~1');
@@ -372,7 +373,7 @@ describe('3ffc9651 review: submodules are part of the state', () => {
   it('a submodule with uncommitted work is never shared: its content is not hashed', async () => {
     const t = await captureSetup();
     const lib = withSubmodule();
-    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${lib} sub && git commit -qm sub`);
+    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${shellQuote(lib)} sub && git commit -qm sub`);
     fs.writeFileSync(path.join(t.repo, 'sub', 'f'), 'edited inside\n');
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);

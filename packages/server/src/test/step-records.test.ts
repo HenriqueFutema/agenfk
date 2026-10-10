@@ -32,6 +32,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 // Import AFTER the env var so storage lands in the test DB.
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -52,11 +53,11 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(): { dir: string; sha: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-steprec-'));
   repos.push(dir);
-  execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return { dir, sha: execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim() };
 }
 
@@ -255,7 +256,7 @@ describe('CGLAB-379: step records', () => {
       const { dir } = makeRepo();
       fs.mkdirSync(path.join(dir, 'tests/helpers'));
       fs.writeFileSync(path.join(dir, 'tests/helpers/fixture.js'), 'f');
-      execSync('git add . && git commit -qm helpers', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add . && git commit -qm helpers', { cwd: dir, shell: posixShell() });
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: vitestReportCommand('passed'), reportPath: 'report.json', surface: ['tests/helpers'] } });
       const res = await agent().post(`/items/${await card(p, 'IN_PROGRESS')}/step-records/capture`).set(internal());
       expect(Object.keys(res.body.surface.files)).toContain('tests/helpers/fixture.js');
@@ -295,7 +296,7 @@ describe('CGLAB-379: step records', () => {
     it('still detects an edit during the run under a large uncommitted diff', async () => {
       const { dir } = makeRepo();
       fs.writeFileSync(path.join(dir, 'big.txt'), 'x');
-      execSync('git add big.txt && git commit -qm big', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add big.txt && git commit -qm big', { cwd: dir, shell: posixShell() });
       fs.writeFileSync(path.join(dir, 'big.txt'), 'y'.repeat(2 * 1024 * 1024));
       const cmd = `node -e "require('fs').writeFileSync('tests/a.test.js','weakened')" && ${vitestReportCommand('passed')}`;
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: cmd, reportPath: 'report.json' } });

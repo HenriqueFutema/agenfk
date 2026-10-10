@@ -38,6 +38,7 @@ process.env.AGENFK_PASSKEY_STORE = STORE;
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 import { SoftAuthenticator } from './softAuthenticator';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -73,7 +74,7 @@ async function card(status: string, signed = true) {
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pk-repo-'));
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `pk-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `pk-${++seq}`, projectId: p.body.id });

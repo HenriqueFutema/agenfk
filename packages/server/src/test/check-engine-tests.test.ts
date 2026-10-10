@@ -35,6 +35,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -101,7 +102,7 @@ fs.writeFileSync(process.argv[3]||'report.xml',xml+'</testsuite></testsuites>');
 function makeRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-tests-'));
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.mkdirSync(path.join(dir, 'src'));
   fs.writeFileSync(path.join(dir, 'runner.cjs'), RUNNER);
@@ -109,7 +110,7 @@ function makeRepo(): string {
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'T add_works add=ok\n');
   fs.writeFileSync(path.join(dir, 'src/impl.json'), JSON.stringify({ add: 'ok' }));
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 const write = (dir: string, f: string, text: string) => fs.writeFileSync(path.join(dir, f), text);
@@ -229,7 +230,7 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     const dir = makeRepo();
     fs.mkdirSync(path.join(dir, 'checks'));
     write(dir, 'checks/a.js', 'T add_works add=ok\n');
-    execSync('git rm -rq tests && git add . && git commit -qm checks', { cwd: dir, shell: '/bin/sh' });
+    execSync('git rm -rq tests && git add . && git commit -qm checks', { cwd: dir, shell: posixShell() });
     return dir;
   }
 
@@ -288,7 +289,7 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     const dir = offConvention();
     fs.mkdirSync(path.join(dir, 'more'));
     write(dir, 'more/b.js', 'T add_works add=ok\n');
-    execSync('git add . && git commit -qm more', { cwd: dir, shell: '/bin/sh' });
+    execSync('git add . && git commit -qm more', { cwd: dir, shell: posixShell() });
     const { id, pid } = await onWork(dir, 'node junit.cjs checks', { surface: ['checks'] });
     await storage.updateProject(pid, { testReport: report('node junit.cjs checks', 'report.xml', ['checks', 'more']) } as any);
     const r = await validate(id);
@@ -336,7 +337,7 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     const { dir, id, pid } = await frozenAtCode();
     fs.mkdirSync(path.join(dir, 'helpers'));
     write(dir, 'helpers/h.js', 'x');
-    execSync('git add . && git commit -qm helpers', { cwd: dir, shell: '/bin/sh' });
+    execSync('git add . && git commit -qm helpers', { cwd: dir, shell: posixShell() });
     await storage.updateProject(pid, { testReport: { ...REPORT, surface: ['helpers'] } } as any);
     await softly(id);
   });
@@ -642,7 +643,7 @@ describe('CGLAB-380: test checks', () => {
   describe('review findings (CGLAB-380 story review)', () => {
     const unignore = (dir: string) => {
       write(dir, '.gitignore', '');
-      execSync('git add .gitignore && git commit -qm unignore', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add .gitignore && git commit -qm unignore', { cwd: dir, shell: posixShell() });
     };
 
     it('the report the capture writes is not the card\'s change, even when it is not gitignored', async () => {
@@ -802,7 +803,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
 
     it('a small fix to a file the card already changed a lot counts small, once that work is committed', async () => {
       const { dir, id } = await atLook(40);
-      execSync('git add -A && git commit -qm "the card\'s work"', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add -A && git commit -qm "the card\'s work"', { cwd: dir, shell: posixShell() });
       const startedAt = await reviewerBegins();
       fs.appendFileSync(path.join(dir, 'src/feature.js'), 'const oneMore = 1;\n');
       await reviewed(id, dir, { startedAt });
@@ -814,7 +815,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
     it('counts a test file removed after the reviewer began', async () => {
       const { dir, id } = await atLook();
       write(dir, 'tests/extra.test.js', lines(30, 't'));
-      execSync('git add -A && git commit -qm "more tests"', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add -A && git commit -qm "more tests"', { cwd: dir, shell: posixShell() });
       const startedAt = await reviewerBegins();
       fs.rmSync(path.join(dir, 'tests/extra.test.js'));
       await reviewed(id, dir, { startedAt });
@@ -887,7 +888,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
       const startedAt = await reviewerBegins();
       execSync('git checkout -q -b upstream', { cwd: dir });
       write(dir, 'src/theirs.js', lines(50, 'theirs'));
-      execSync('git add src/theirs.js && git commit -qm "main moved on" && git update-ref refs/remotes/origin/main HEAD && git checkout -q main && git merge -q --no-edit upstream', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add src/theirs.js && git commit -qm "main moved on" && git update-ref refs/remotes/origin/main HEAD && git checkout -q main && git merge -q --no-edit upstream', { cwd: dir, shell: posixShell() });
       await reviewed(id, dir, { startedAt });
       expect((await leave(id)).outcome).toBe('pass');
     });
@@ -1047,7 +1048,7 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
       await walk(a, () => honestTests(dir), () => {
         impl(dir, { add: 'ok', mul: '12' });
         write(dir, 'tests/sneaky.test.js', 'T sneaky add=ok\n'); // added after a's tests were frozen
-        execSync(`git add -A && git commit -qm "close(task): a [${a}]"`, { cwd: dir, shell: '/bin/sh' });
+        execSync(`git add -A && git commit -qm "close(task): a [${a}]"`, { cwd: dir, shell: posixShell() });
       });
       const b = (await agent().post('/items').send({ type: 'TASK', title: 'b', projectId: pid, parentId: story })).body.id as string;
       await storage.updateItem(b, { status: 'START' } as any);

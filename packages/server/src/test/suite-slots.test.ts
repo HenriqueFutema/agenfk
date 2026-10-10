@@ -24,6 +24,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 // Loaded per test: the module is new, and a test file that fails to import has no tests to track.
 const slotsModule = () => import('../suiteSlots');
 
@@ -168,7 +169,7 @@ setTimeout(() => {
     const f = await agent().post('/flows').send({ name: `slots-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-slots-repo-')));
     dirs.push(repo);
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const p = await agent().post('/projects').send({ name: `slots-${++seq}` });
     await storage.updateProject(p.body.id, {
       flowId: f.body.id, projectRoot: repo,

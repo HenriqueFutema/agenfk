@@ -36,6 +36,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -51,7 +52,7 @@ afterAll(() => {
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh' });
+const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell() });
 
 function makeRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-closegreen-'));

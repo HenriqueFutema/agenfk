@@ -29,6 +29,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -45,7 +46,7 @@ afterAll(() => {
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (p: string) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), p)); dirs.push(d); return d; };
-const sh = (cwd: string, cmd: string) => execSync(cmd, { cwd, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const sh = (cwd: string, cmd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();
 const id = 'git config user.email t@t && git config user.name t';
 
 /** A bare origin, the card's clone of it, and a colleague's clone that can push ahead of it. */
@@ -53,9 +54,9 @@ function remoteSetup() {
   const origin = tmp('agenfk-sync-origin-');
   sh(origin, 'git init -q --bare -b main');
   const work = tmp('agenfk-sync-work-');
-  sh(work, `git clone -q ${origin} . && ${id} && echo a > a && git add . && git commit -qm one && git push -q -u origin main`);
+  sh(work, `git clone -q ${shellQuote(origin)} . && ${id} && echo a > a && git add . && git commit -qm one && git push -q -u origin main`);
   const other = tmp('agenfk-sync-other-');
-  sh(other, `git clone -q ${origin} . && ${id}`);
+  sh(other, `git clone -q ${shellQuote(origin)} . && ${id}`);
   const pushFromOther = (f: string) => sh(other, `git pull -q --ff-only && echo ${f} > ${f} && git add ${f} && git commit -qm ${f} && git push -q`);
   const commitHere = (f: string) => sh(work, `echo ${f} > ${f} && git add ${f} && git commit -qm ${f}`);
   return { origin, work, pushFromOther, commitHere };

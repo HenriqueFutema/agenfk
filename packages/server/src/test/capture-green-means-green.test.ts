@@ -28,6 +28,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 import { capturedGreen, describeCapture } from '../checkEngine';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -56,7 +57,7 @@ async function setup(opts: { commit?: boolean } = {}) {
   const f = await agent().post('/flows').send({ name: `cg-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const repo = tmp('agenfk-cg-repo-');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   if (!opts.commit) fs.writeFileSync(path.join(repo, 'notes.txt'), 'mid-edit\n');
   const outside = tmp('agenfk-cg-ctl-');
   const mode = path.join(outside, 'mode');

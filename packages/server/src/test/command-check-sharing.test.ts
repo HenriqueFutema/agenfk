@@ -32,6 +32,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -59,7 +60,7 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
  */
 async function setup({ exitCode = 0, sleepMs = 0, extra = {} as Record<string, string>, writeIntoTree = false } = {}) {
   const repo = tmp('agenfk-ccs-repo-');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const runs = path.join(tmp('agenfk-ccs-runs-'), 'runs');
   const code = `const fs=require('fs');fs.appendFileSync(${JSON.stringify(runs)},'run\\n');${writeIntoTree ? "fs.writeFileSync('a','changed by the run\\n');" : ''}setTimeout(()=>process.exit(${exitCode}),${sleepMs});`;
   const check = { id: 'command-check', params: { name: 'lint', argv: [process.execPath, '-e', code], ...extra } };

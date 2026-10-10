@@ -30,6 +30,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 import { TDD_FLOW_PRESET } from '@agenfk/core';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -50,7 +51,7 @@ const board = () => ({ 'x-agenfk-ui': '1' });
 function makeRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-human-gates-'));
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 

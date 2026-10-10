@@ -30,6 +30,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -59,12 +60,12 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(): { dir: string; base: string; tip: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-rcheck-repo-'));
   cleanup.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const base = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
-  execSync('git add . && git commit -qm two', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm two', { cwd: dir, shell: posixShell() });
   const tip = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   return { dir, base, tip };
 }
@@ -122,7 +123,7 @@ const validate = (id: string) => agent().post(`/items/${id}/validate`).set(inter
 const reviewCheck = (body: any) => (body.checks ?? []).find((c: any) => c.id === 'review-record');
 const commit = (dir: string, msg: string) => {
   fs.writeFileSync(path.join(dir, `f-${++seq}.txt`), msg);
-  execSync(`git add . && git commit -qm "${msg}"`, { cwd: dir, shell: '/bin/sh' });
+  execSync(`git add . && git commit -qm "${msg}"`, { cwd: dir, shell: posixShell() });
   return execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
 };
 

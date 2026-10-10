@@ -30,6 +30,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 import { suggestTestReport } from '../testReportHint';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -59,7 +60,7 @@ async function setup(verifyCommand: string, gitignore = '.agenfk/\n') {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-'));
   dirs.push(repo);
   fs.writeFileSync(path.join(repo, '.gitignore'), gitignore);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `ntr-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `ntr-${++seq}`, projectId: p.body.id });
@@ -123,7 +124,7 @@ describe('5a8d22e6 review: held where the fix still works', () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-in-'));
     dirs.push(repo);
     fs.writeFileSync(path.join(repo, '.gitignore'), 'report.xml\n');
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const p = await agent().post('/projects').send({ name: `ntr-in-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'echo vitest run' } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `ntr-in-${++seq}`, projectId: p.body.id });
@@ -169,7 +170,7 @@ describe('5a8d22e6 review: held where the fix still works', () => {
     ] });
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-own-'));
     dirs.push(repo);
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const runs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-runs-')), 'runs');
     dirs.push(path.dirname(runs));
     const p = await agent().post('/projects').send({ name: `ntr-own-${++seq}` });

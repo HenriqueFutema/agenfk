@@ -28,6 +28,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN, io } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -54,7 +55,7 @@ async function setup(ms = 1500) {
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ar-repo-'));
   dirs.push(repo);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `ar-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node -e "console.log('hello-from-the-run'); setTimeout(() => {}, ${ms})"` } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `ar-${++seq}`, projectId: p.body.id });
@@ -140,7 +141,7 @@ describe('9569b4d7: a running verify is visible to the board', () => {
     ] });
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ar-both-'));
     dirs.push(repo);
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const runner = path.join(repo, '..', `ar-runner-${seq}.js`);
     dirs.push(runner);
     fs.writeFileSync(runner, `console.log('from-the-capture'); require('fs').writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="ok" file="t.test.js"/></testsuite></testsuites>'); setTimeout(() => {}, 800);`);

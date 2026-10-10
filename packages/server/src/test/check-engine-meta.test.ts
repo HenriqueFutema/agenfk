@@ -36,6 +36,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -55,11 +56,11 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(branch = 'main'): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-meta-'));
   repos.push(dir);
-  execSync(`git init -q -b ${branch} && git config user.email t@t && git config user.name t`, { cwd: dir, shell: '/bin/sh' });
+  execSync(`git init -q -b ${branch} && git config user.email t@t && git config user.name t`, { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 
@@ -221,7 +222,7 @@ describe('CGLAB-380: git/meta checks', () => {
     it('sees committed changes too: the diff is from the step\'s entry commit', async () => {
       const { dir, id } = await entered();
       fs.writeFileSync(path.join(dir, 'impl.js'), 'code');
-      execSync('git add . && git commit -qm impl', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add . && git commit -qm impl', { cwd: dir, shell: posixShell() });
       const res = await validate(id);
       expect(res.status).toBe(422);
       expect(byId(res.body.checks, 'only-test-files-changed').detail).toMatch(/impl\.js/);

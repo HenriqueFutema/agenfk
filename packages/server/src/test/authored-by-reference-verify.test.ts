@@ -22,6 +22,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -66,7 +67,7 @@ async function cardOnWork() {
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const repo = tmp('agenfk-abr-repo-');
   fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass keeps working\npass old behaviour\n');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const runner = path.join(tmp('agenfk-abr-tools-'), 'runner.js');
   fs.writeFileSync(runner, RUNNER);
   const p = await agent().post('/projects').send({ name: `abr-${++seq}` });

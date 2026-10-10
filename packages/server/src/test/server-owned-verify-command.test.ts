@@ -45,6 +45,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 // Import AFTER the env var so storage lands in the test DB.
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -267,9 +268,9 @@ describe('CGLAB-378: the server owns the verify command on command-required step
     it('refuses a forged sibling green end to end: a red project command stays red', async () => {
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sovc-'));
       try {
-        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: '/bin/sh' });
+        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: posixShell() });
         fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
-        execSync('git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+        execSync('git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
         const sha = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf8' }).trim();
         const p = (await agent().post('/projects').send({ name: `sovc-forge-${++seq}` })).body.id;
         await storage.updateProject(p, { projectRoot: repo, verifyCommand: 'exit 1' } as never);
@@ -293,9 +294,9 @@ describe('CGLAB-378: the server owns the verify command on command-required step
     it('names the command in the propagation comment', async () => {
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sovc-'));
       try {
-        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: '/bin/sh' });
+        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: posixShell() });
         fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
-        execSync('git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+        execSync('git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
         const p = (await agent().post('/projects').send({ name: `sovc-prop-${++seq}` })).body.id;
         await storage.updateProject(p, { projectRoot: repo, verifyCommand: 'true' } as never);
         const parent = (await agent().post('/items').send({ type: 'STORY', title: 'p', projectId: p })).body.id;

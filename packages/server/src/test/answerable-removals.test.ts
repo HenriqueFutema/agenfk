@@ -27,6 +27,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -64,7 +65,7 @@ async function project(steps: any[], start: string) {
   const repo = tmp('agenfk-ar-repo-');
   fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass keeps working\npass old behaviour\n');
   fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const runner = path.join(tmp('agenfk-ar-tools-'), 'runner.js');
   fs.writeFileSync(runner, RUNNER);
   const p = await agent().post('/projects').send({ name: `ar-${++seq}` });

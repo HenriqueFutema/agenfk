@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -45,13 +46,13 @@ beforeEach(async () => {
   execSync('git config user.email t@t', { cwd: repo });
   execSync('git config user.name t', { cwd: repo });
   fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
-  execSync('git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
 });
 
 const sha = () => execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf8' }).trim();
 const advanceTheTree = () => {
   fs.writeFileSync(path.join(repo, 'a.txt'), `two-${Date.now()}`);
-  execSync('git add . && git commit -qm two', { cwd: repo, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm two', { cwd: repo, shell: posixShell() });
 };
 
 /** A project whose verify runs in `repo`, with a parent already made. */
@@ -308,11 +309,11 @@ describe('the sibling gate on a real tree', () => {
     execSync('git config user.email t@t', { cwd: other });
     execSync('git config user.name t', { cwd: other });
     fs.writeFileSync(path.join(other, 'b.txt'), 'x');
-    execSync('git add . && git commit -qm one', { cwd: other, shell: '/bin/sh' });
+    execSync('git add . && git commit -qm one', { cwd: other, shell: posixShell() });
     const otherSha = execSync('git rev-parse HEAD', { cwd: other, encoding: 'utf8' }).trim();
     const clone = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-clone-'));
     repos.push(clone);
-    execSync(`git clone -q "${other}" "${clone}"`, { shell: '/bin/sh' });
+    execSync(`git clone -q ${shellQuote(other)} ${shellQuote(clone)}`, { shell: posixShell() });
     expect(execSync('git rev-parse HEAD', { cwd: clone, encoding: 'utf8' }).trim()).toBe(otherSha);
 
     const c1 = await make('c1');
@@ -347,7 +348,7 @@ describe('the sibling gate on a real tree', () => {
     execSync('git config user.email t@t', { cwd: shared });
     execSync('git config user.name t', { cwd: shared });
     fs.writeFileSync(path.join(shared, 'b.txt'), 'x');
-    execSync('git add . && git commit -qm one', { cwd: shared, shell: '/bin/sh' });
+    execSync('git add . && git commit -qm one', { cwd: shared, shell: posixShell() });
     const sha = execSync('git rev-parse HEAD', { cwd: shared, encoding: 'utf8' }).trim();
 
     const c1 = await make('c1');

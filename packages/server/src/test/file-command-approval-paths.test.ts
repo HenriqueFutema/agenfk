@@ -33,6 +33,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN, unapprovedFileVerify } from '../server';
 import { commandFingerprint } from '@agenfk/core';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -54,13 +55,13 @@ const JUNIT = `printf '<testsuite><testcase file="tests/a.test.js" name="t0"/><t
 function repoDeclaring(verifyCommand: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-filecmd-'));
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
   fs.mkdirSync(path.join(dir, '.agenfk'));
   fs.writeFileSync(path.join(dir, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'x', verifyCommand }));
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\nFILE_RAN\nREPORT_RAN\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 

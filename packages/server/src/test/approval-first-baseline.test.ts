@@ -33,6 +33,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -50,7 +51,7 @@ afterAll(() => {
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const board = () => ({ 'x-agenfk-ui': '1' });
 const tmp = (prefix: string) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -200,7 +201,7 @@ describe('961f301d review: reuse stays in its own tree, and is judged per test w
     const t = await setup();
     const head = git(t.repo, 'git rev-parse HEAD');
     const other = tmp('agenfk-af-wt-');
-    git(other, `git clone -q ${t.repo} .`);
+    git(other, `git clone -q ${shellQuote(t.repo)} .`);
     await closedGreen(t.pid, t.verifyCommand, head, other);
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
@@ -315,7 +316,7 @@ describe('961f301d review 2: a green belongs to the tree it ran in', () => {
     const t = await setup();
     const head = git(t.repo, 'git rev-parse HEAD');
     const other = tmp('agenfk-af-wt2-');
-    git(other, `git clone -q ${t.repo} .`);
+    git(other, `git clone -q ${shellQuote(t.repo)} .`);
     // Recorded in `other`; the card itself now resolves to the project root (its worktree was removed).
     await closedGreen(t.pid, t.verifyCommand, head, other);
     expect((await approve(t.id)).status).toBe(201);

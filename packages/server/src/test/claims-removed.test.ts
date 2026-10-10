@@ -27,6 +27,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -37,7 +38,7 @@ afterAll(() => {
   for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 });
-const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();
 function repo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-claims-gone-'));
   dirs.push(dir);

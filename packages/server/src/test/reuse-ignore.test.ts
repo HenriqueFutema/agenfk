@@ -23,6 +23,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 // Loaded in a hook with the error swallowed: the module is new, and a failing hook would skip the tests.
 const ignoreModule = () => import('../reuseIgnore');
 
@@ -103,7 +104,7 @@ async function setup(reuseIgnore?: string[]) {
   fs.writeFileSync(path.join(repo, 'docs', 'guide.txt'), 'guide\n');
   fs.writeFileSync(path.join(repo, 'a.js'), 'module.exports = 1;\n');
   fs.writeFileSync(path.join(repo, 'release.test.js'), "test('changelog', () => require('fs').readFileSync('CHANGELOG.md'));\n");
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ri-ctl-')));
   dirs.push(outside);
   const runs = path.join(outside, 'runs');

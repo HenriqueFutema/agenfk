@@ -35,6 +35,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 import { app, initStorage, storage, VERIFY_TOKEN, reportOwned } from '../server';
 import { surfaceOf } from '../stepRecords';
 import { formatCheckResults, describeCapture, EVALUATORS } from '../checkEngine';
+import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -71,14 +72,14 @@ process.exit(testResults.some(t=>t.status==='failed')?1:0);
 function makeRepo(gitignore = 'report.*\n'): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-enh-'));
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.mkdirSync(path.join(dir, 'src'));
   fs.writeFileSync(path.join(dir, 'runner.cjs'), RUNNER);
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'T add_works add=ok\n');
   fs.writeFileSync(path.join(dir, 'src/impl.json'), JSON.stringify({ add: 'ok' }));
   fs.writeFileSync(path.join(dir, '.gitignore'), gitignore);
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 const write = (dir: string, f: string, text: string) => { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), text); };
@@ -238,7 +239,7 @@ describe('a rollback: greens kept for reuse, frozen tests not laundered', () => 
     const c = counted('node runner.cjs');
     const t = await setup({ format: 'vitest-json', command: c.command, reportPath: 'report.json' });
     write(t.dir, 'e2e/flow.test.js', 'never run by this suite\n');
-    execSync('git add e2e && git commit -qm e2e', { cwd: t.dir, shell: '/bin/sh' });
+    execSync('git add e2e && git commit -qm e2e', { cwd: t.dir, shell: posixShell() });
     await advanceTo(t.id, 'TIDY', HONEST(t.dir));
     const r = await agent().put(`/items/${t.id}`).send({ status: 'BUILD' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
@@ -321,8 +322,8 @@ describe('what verify says', () => {
 
 describe('tests-added-late: test files added after the tests were frozen, flagged without a run (d26832d6 #21)', () => {
   // Real git, not a fake: the paths git prints are the point.
-  const gitIn = (dir: string) => (args: string[]) => execSync(`git ${args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`, { cwd: dir, encoding: 'utf8', shell: '/bin/sh' });
-  const sh = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh', encoding: 'utf8' }).trim();
+  const gitIn = (dir: string) => (args: string[]) => execSync(`git ${args.map(shellQuote).join(' ')}`, { cwd: dir, encoding: 'utf8', shell: posixShell() });
+  const sh = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
   /** A repository whose tests were frozen at HEAD; `root` is the card's tree inside it. */
   function frozenRepo(sub = '') {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-'));
@@ -400,10 +401,10 @@ describe('tests-added-late: test files added after the tests were frozen, flagge
     const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-remote-'));
     dirs.push(remote);
     sh(remote, 'git init -q --bare -b main');
-    sh(repo, `git remote add origin ${remote} && git push -q origin main`);
+    sh(repo, `git remote add origin ${shellQuote(remote)} && git push -q origin main`);
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-other-'));
     dirs.push(other);
-    sh(other, `git clone -q ${remote} . && git config user.email o@o && git config user.name o`);
+    sh(other, `git clone -q ${shellQuote(remote)} . && git config user.email o@o && git config user.name o`);
     return { pushMainTest: (f: string) => { write(other, f, 'm'); sh(other, `git add -A && git commit -qm main-work && git push -q origin main`); sh(repo, 'git fetch -q origin'); } };
   }
 

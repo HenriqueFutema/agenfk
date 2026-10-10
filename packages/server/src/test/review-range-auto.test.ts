@@ -34,6 +34,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -62,12 +63,12 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(): { dir: string; base: string; tip: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-rauto-repo-'));
   cleanup.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const base = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
-  execSync('git add . && git commit -qm two', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm two', { cwd: dir, shell: posixShell() });
   const tip = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   return { dir, base, tip };
 }
@@ -172,7 +173,7 @@ describe("CGLAB-457 review: a parent's range covers its whole tree", () => {
   it("starts before a child's work committed ahead of the parent's own start", async () => {
     const { dir, base, pid } = await setup();
     fs.writeFileSync(path.join(dir, 'child.txt'), 'child work');
-    execSync('git add . && git commit -qm "close(task): child"', { cwd: dir, shell: '/bin/sh' });
+    execSync('git add . && git commit -qm "close(task): child"', { cwd: dir, shell: posixShell() });
     const later = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
     const parent = await cardAt(pid, later);
     await cardAt(pid, base, { parentId: parent, status: 'END' });
@@ -222,7 +223,7 @@ describe('CGLAB-457: a refused review says what to do next', () => {
     const id = await cardAt(pid, base);
     expect((await record(id, { transcript: claudeSubagentTranscript('author-sess', 'head1', FUTURE), findings: [] })).status).toBe(201);
     fs.writeFileSync(path.join(dir, 'c.txt'), 'c');
-    execSync('git add . && git commit -qm three', { cwd: dir, shell: '/bin/sh' });
+    execSync('git add . && git commit -qm three', { cwd: dir, shell: posixShell() });
     const moved = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
     const res = await validate(id);
     expect(res.status).toBe(422);
