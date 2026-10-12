@@ -468,6 +468,41 @@ describe('PG parity: queries + rollup', () => {
     expect(o.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T10:00', '2026-05-03T11:00', '2026-05-03T12:00']);
   });
 
+  it('GET /v1/adherence judges on PG — both branches, one verdict (CGLAB-614)', async () => {
+    // Two stamped transitions (one a rollback), one non-compliant move and one
+    // unstamped legacy event (a2 above) that must count on neither side.
+    const stamp = (eventId: string, at: string, payload: any, remoteUrl: string) =>
+      supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`)
+        .send({ events: [sample({ eventId, occurredAt: at, type: 'step.transitioned',
+          itemType: 'TASK', remoteUrl, itemTitle: 'Refactor', externalId: 'WEB-1', payload })] });
+    await stamp('s1', '2026-05-03T11:00:00Z', { fromStatus: 'PLAN', toStatus: 'WORK', flowId: 'f', flowRevision: 1, compliant: true }, 'git@x:web.git');
+    await stamp('s2', '2026-05-03T12:00:00Z', { fromStatus: 'WORK', toStatus: 'PLAN', flowId: 'f', flowRevision: 1, compliant: true }, 'git@x:web.git');
+    await stamp('s3', '2026-05-03T13:00:00Z', { fromStatus: 'WORK', toStatus: 'PAUSED', flowId: 'f', flowRevision: 1, compliant: false }, 'git@x:api.git');
+
+    // No narrowing filter: the rollups branch. Pin the day bucket — the
+    // rewritten date() must land the to_char key, not a Date object.
+    const rollups = await supertest(fx.app).get('/v1/adherence').set('Cookie', fx.cookie);
+    expect(rollups.status).toBe(200);
+    expect(rollups.body.judged).toBe(3);
+    expect(rollups.body.compliant).toBe(2);
+    expect(rollups.body.score).toBeCloseTo(2 / 3);
+    expect(rollups.body.series).toEqual([
+      { day: '2026-05-03', judged: 3, compliant: 2, score: 2 / 3 },
+      // A day with activity but nothing judged: 0/0, score null — not dropped.
+      { day: '2026-05-04', judged: 0, compliant: 0, score: null },
+    ]);
+
+    // A types filter: the events branch — same window, same answer, and the
+    // pg-mem SUM coming back as a native number must not change the shape.
+    const events = await supertest(fx.app)
+      .get('/v1/adherence?types=step.transitioned&from=2026-05-03&to=2026-05-03T23:59:59.999Z')
+      .set('Cookie', fx.cookie);
+    expect(events.body.judged).toBe(3);
+    expect(events.body.compliant).toBe(2);
+    expect(events.body.score).toBeCloseTo(2 / 3);
+    expect(events.body.series[0]).toMatchObject({ day: '2026-05-03', judged: 3, compliant: 2 });
+  });
+
   it('GET /v1/timeline pages by cursor with a total and PR links on PG', async () => {
     const all: string[] = [];
     let before: string | undefined;
