@@ -66,7 +66,7 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
   // of the statement on Postgres — which is how this same trap has bitten
   // before, and pg-mem is the only place it surfaces.
   const upsertSql = `
-    INSERT INTO rollups_daily (org_id, child_hub_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened)
+    INSERT INTO rollups_daily (org_id, child_hub_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened, transitions_judged, transitions_compliant)
     SELECT
       org_id,
       COALESCE(child_hub_id, '') AS child_hub_id,
@@ -82,7 +82,16 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
       0 AS tokens_out,
       SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
       SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
-      SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
+      SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened,
+      SUM(CASE
+        WHEN type = 'step.transitioned'
+             AND json_extract(payload, '$.payload.flowRevision') IS NOT NULL THEN 1 ELSE 0
+      END) AS transitions_judged,
+      SUM(CASE
+        WHEN type = 'step.transitioned'
+             AND json_extract(payload, '$.payload.flowRevision') IS NOT NULL
+             AND LOWER(json_extract(payload, '$.payload.compliant')) IN ('true', '1') THEN 1 ELSE 0
+      END) AS transitions_compliant
     FROM events
     WHERE date(occurred_at) = ?${orgFilter}
     GROUP BY org_id, COALESCE(child_hub_id, ''), user_key, date(occurred_at)
@@ -93,7 +102,9 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
       tokens_out = excluded.tokens_out,
       validate_passes = excluded.validate_passes,
       validate_fails = excluded.validate_fails,
-      prs_opened = excluded.prs_opened
+      prs_opened = excluded.prs_opened,
+      transitions_judged = excluded.transitions_judged,
+      transitions_compliant = excluded.transitions_compliant
   `;
 
   // One transaction PER DAY rather than one across the whole range. A

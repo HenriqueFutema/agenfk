@@ -77,6 +77,12 @@ const SCHEMA_SQLITE = `
     validate_passes INTEGER NOT NULL DEFAULT 0,
     validate_fails INTEGER NOT NULL DEFAULT 0,
     prs_opened INTEGER NOT NULL DEFAULT 0,
+    -- CGLAB-613: flow adherence rolled up from the stamped step.transitioned
+    -- payloads CGLAB-612 emits. judged = the event named a flowRevision;
+    -- compliant = both statuses were steps of that revision. Additive, 0 on
+    -- old rows, so a historical day stays out of both sides of the score.
+    transitions_judged INTEGER NOT NULL DEFAULT 0,
+    transitions_compliant INTEGER NOT NULL DEFAULT 0,
     -- '' means "this hub's own data". A child hub's id here keeps a group's
     -- series apart without a separate table or a WHERE clause on every
     -- existing query.
@@ -927,6 +933,10 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const rdCols = raw.prepare("PRAGMA table_info(rollups_daily)").all() as Array<{ name: string }>;
   const rdHave = new Set(rdCols.map(c => c.name));
   if (!rdHave.has('prs_opened')) raw.exec("ALTER TABLE rollups_daily ADD COLUMN prs_opened INTEGER NOT NULL DEFAULT 0");
+  // rollups_daily.transitions_judged / transitions_compliant — CGLAB-613 flow
+  // adherence. NOT NULL DEFAULT 0 so existing rows stay out of both sides.
+  if (!rdHave.has('transitions_judged')) raw.exec("ALTER TABLE rollups_daily ADD COLUMN transitions_judged INTEGER NOT NULL DEFAULT 0");
+  if (!rdHave.has('transitions_compliant')) raw.exec("ALTER TABLE rollups_daily ADD COLUMN transitions_compliant INTEGER NOT NULL DEFAULT 0");
 
   // flows.org_available — org-available flag.
   const flowCols = raw.prepare("PRAGMA table_info(flows)").all() as Array<{ name: string }>;
