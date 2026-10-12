@@ -2,6 +2,36 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.40] — 2026-10-12
+
+Pre-release, cut from the `beta` line (PRs #224–#228). Cumulative over `2.0.0-beta.39`.
+
+### Org-level flow adherence in the hub UI (CGLAB-611–615)
+
+- **The server judges every transition it can** (CGLAB-612): `step.transitioned` events now carry
+  `flowId`, `flowRevision` and a `compliant` verdict — from board drags, verify moves and the PUT
+  rollback path alike. A move between two steps of the SAME revision is compliant, rollbacks included:
+  there is no direction term, so honest rollbacks never drag the score down. Transitions without a
+  resolvable flow stay unstamped and count on neither side of any score.
+- **The hub rolls adherence up** (CGLAB-613): `rollups_daily` gains `transitions_judged` and
+  `transitions_compliant` (schema + idempotent `IF NOT EXISTS` migrations on SQLite and Postgres).
+  Historical days default to 0 so they stay out of both sides of the score.
+- **`GET /v1/adherence`** (CGLAB-614): the org's score under the SAME filter set as every other hub
+  view (users, types, projects, itemTypes, childHubId, from, to). It branches between the rollup
+  counters and raw events exactly as `/v1/metrics` documents, and both branches answer the same
+  window the same way — pinned on SQLite and the real Postgres adapter. `score` is `null`, not 0,
+  when nothing was judged.
+- **A Flow adherence view in the hub UI** (CGLAB-615): `/adherence` in the dashboard nav — score,
+  judged/compliant/off-flow tiles and a by-day table, with an explicit em dash (and sr-only text)
+  for a day that judged nothing and an explicit empty state for a window that judged nothing at all;
+  never a bare 0% for missing data. Filter parity is structural (the Org page's `useUrlFilters`/
+  `FilterAccordion`/facet machinery), the two scoring rules are stated in the page copy, and an
+  event-type selection that excludes Step changed names itself as the cause of an empty board.
+- **Org flow picker marks the active flow** (CGLAB-611): the picker compared the project's local
+  flow id against hub ids; it now prefers the hub id, so the installed flow shows as selected.
+- Also fixes a date bomb in a hub-ui test: the peopleNames heatmap test now pins its window instead
+  of silently depending on the wall clock.
+
 ## [2.0.0-beta.39] — 2026-10-10
 
 Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.37`.
