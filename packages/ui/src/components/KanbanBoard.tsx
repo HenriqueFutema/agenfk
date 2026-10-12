@@ -2531,7 +2531,13 @@ agenfk update-project <id> --setup-command "npm ci"`}
           open={isOrgFlowPickerOpen}
           onClose={() => setIsOrgFlowPickerOpen(false)}
           projectId={selectedProjectId}
-          activeFlowId={activeFlow?.id}
+          /*
+           * The org list is the hub's, so its ids are HUB ids. A hub-installed
+           * flow is stored locally under a different id with the hub's kept in
+           * `hubFlowId`, so compare that first (CGLAB-611) and fall back to the
+           * local id for a flow the hub never named.
+           */
+          activeFlowId={activeFlow?.hubFlowId ?? activeFlow?.id}
         />
       )}
 

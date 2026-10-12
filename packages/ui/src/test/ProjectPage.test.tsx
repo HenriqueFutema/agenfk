@@ -821,6 +821,56 @@ describe('the settings tab', () => {
     await waitFor(() => screen.getByTestId('org-flow-picker'));
   });
 
+  /*
+   * CGLAB-611: the picker marks the flow the PROJECT is on, not only the org
+   * default. The list is the HUB's, so its ids are hub ids, while a
+   * hub-installed flow is stored locally under a DIFFERENT id with the hub's
+   * kept in `hubFlowId` — so matching on the local id alone can never mark it.
+   * The two payloads here therefore carry different ids on purpose.
+   */
+  it("marks the project's own flow as selected, matching on the hub id", async () => {
+    const flows = [
+      { id: 'hub-default', name: 'Default Flow', steps: [] },
+      { id: 'hub-tdd', name: 'TDD Flow', steps: [] },
+    ];
+    (api as any).getOrgAvailableFlows = vi.fn(async () => ({
+      flows,
+      defaultFlowId: 'hub-default',
+      hubEnabled: true,
+    }));
+    (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: settings } as never);
+    open({ flow: { id: 'local-uuid', hubFlowId: 'hub-tdd', steps: [] } as never });
+    fireEvent.click(screen.getByTestId('project-tab-settings'));
+    await waitFor(() => screen.getByTestId('setting-flow'));
+    fireEvent.click(screen.getByTestId('setting-change-flow'));
+    await waitFor(() => screen.getByTestId('org-flow-picker'));
+
+    expect(await screen.findByTestId('org-flow-selected-hub-tdd')).toBeInTheDocument();
+    // The org default is a DIFFERENT flow: it must not read as the selected one.
+    expect(screen.queryByTestId('org-flow-selected-hub-default')).toBeNull();
+  });
+
+  /* The fallback: a flow the hub never named keeps its own local id. */
+  it('falls back to the local id for a flow the hub did not name', async () => {
+    const flows = [
+      { id: 'hub-default', name: 'Default Flow', steps: [] },
+      { id: 'local-tdd', name: 'TDD Flow', steps: [] },
+    ];
+    (api as any).getOrgAvailableFlows = vi.fn(async () => ({
+      flows,
+      defaultFlowId: 'hub-default',
+      hubEnabled: true,
+    }));
+    (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: settings } as never);
+    open({ flow: { id: 'local-tdd', steps: [] } as never });
+    fireEvent.click(screen.getByTestId('project-tab-settings'));
+    await waitFor(() => screen.getByTestId('setting-flow'));
+    fireEvent.click(screen.getByTestId('setting-change-flow'));
+    await waitFor(() => screen.getByTestId('org-flow-picker'));
+
+    expect(await screen.findByTestId('org-flow-selected-local-tdd')).toBeInTheDocument();
+  });
+
   it('turns a worktree per card on and off, and says so to the server', async () => {
     const updateProject = vi.fn(async () => ({}));
     (api as unknown as { updateProject: typeof updateProject }).updateProject = updateProject;

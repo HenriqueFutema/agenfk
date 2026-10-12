@@ -83,8 +83,16 @@ export interface ProjectPageProps {
    * and offering a hard-coded set would name states this project does not have
    * while hiding the ones it does. Absent means "only the types can filter",
    * which is honest rather than a guess.
+   *
+   * The `id` and `hubFlowId` are carried because the flow picker needs to
+   * know WHICH flow is active to mark it (CGLAB-611). The org-available list
+   * is the HUB's, so its entries carry HUB ids; a flow installed from the hub
+   * is stored locally under a different `id` with the hub's id kept in
+   * `hubFlowId` (see core's ProjectFileSettings: "the local `id` column does
+   * not [mean the same thing everywhere]"). Marking therefore compares the
+   * hub id first and falls back to the local id for flows the hub never named.
    */
-  readonly flow?: { steps: readonly { name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }[] } | null;
+  readonly flow?: { id?: string; hubFlowId?: string; steps: readonly { name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }[] } | null;
   readonly onOpenBoard?: (projectId: string) => void;
   readonly onOpenCard?: (item: AgEnFKItem) => void;
   readonly onAsk?: (projectId: string) => void;
@@ -934,6 +942,13 @@ export function ProjectPage({
         <OrgFlowPicker
           open
           projectId={project.id}
+          /*
+           * WHICH flow is active, so the picker can mark it. The list is the
+           * hub's, so its ids are HUB ids: compare `hubFlowId` first and fall
+           * back to the local `id` for a flow the hub never named (CGLAB-611).
+           * The board's copy had the same defect and is fixed alongside this.
+           */
+          activeFlowId={flow?.hubFlowId ?? flow?.id}
           onClose={() => { setChangingFlow(false); void refetchSettings(); }}
         />
       )}
