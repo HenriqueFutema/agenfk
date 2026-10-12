@@ -117,6 +117,34 @@ const CLOSED_ITEM = `CASE
                AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
         END`;
 
+/** A transition the server could judge: a step.transitioned whose payload
+ *  carries the flow revision stamped at move time. Unstamped/legacy events are
+ *  excluded from BOTH sides of the score, so they cannot drag adherence down. */
+const JUDGED_TRANSITION = `type = 'step.transitioned'
+               AND json_extract(payload, '$.payload.flowRevision') IS NOT NULL`;
+
+/** …and compliant: the payload's verdict is true. SQLite reads a JSON boolean
+ *  back as 1/0 while Postgres' jsonb_extract_path_text yields 'true'/'false',
+ *  so LOWER(...) IN ('true','1') is the one spelling both agree on. The
+ *  flowRevision guard is repeated so compliant can never exceed judged. */
+const COMPLIANT_TRANSITION = `${JUDGED_TRANSITION}
+               AND LOWER(json_extract(payload, '$.payload.compliant')) IN ('true','1')`;
+
+/** Shape a day-bucketed judged/compliant series into the response body. */
+function adherencePayload(rows: Record<string, unknown>[]) {
+  let judged = 0;
+  let compliant = 0;
+  const series = rows.map(r => {
+    // Postgres returns bigint SUM as a string; Number() bridges both backends.
+    const j = Number(r.judged ?? 0) || 0;
+    const c = Number(r.compliant ?? 0) || 0;
+    judged += j;
+    compliant += c;
+    return { day: String(r.day), judged: j, compliant: c, score: j ? c / j : null };
+  });
+  return { judged, compliant, score: judged ? compliant / judged : null, series };
+}
+
 export function queriesRouter(ctx: HubServerContext): Router {
   const router = Router();
 
@@ -417,6 +445,47 @@ export function queriesRouter(ctx: HubServerContext): Router {
       params,
     );
     res.json({ bucket: 'day', series: rows.map(coerceMetricsRow), totals });
+  }));
+
+  // Org-level flow adherence: of the transitions the server could judge against
+  // the flow revision in force, how many stayed within that revision. A rollback
+  // between two steps of the same revision is COMPLIANT — there is no direction
+  // term — so honest rollbacks are not penalised. Shares the filter set with
+  // every other view here, which is what makes the hub's filters uniform.
+  router.get('/adherence', guard, asyncRoute(async (req: Request, res: Response) => {
+    await recomputeRollups(ctx.db);
+    const f = readEventFilters(req);
+    const orgId = req.session!.orgId;
+
+    // rollups_daily has no type/remote_url/item_type column, so any filter on
+    // those has to be answered from the raw events — the same rule /v1/metrics
+    // documents (BUG 61bdbd45). Everything else reads the counters S2 added.
+    if (f.projects || f.itemTypes || f.types) {
+      const { where, params } = applyEventFilters(orgId, f);
+      const rows = await ctx.db.all<Record<string, unknown>>(
+        `SELECT date(occurred_at) AS day,
+                SUM(CASE WHEN ${JUDGED_TRANSITION} THEN 1 ELSE 0 END) AS judged,
+                SUM(CASE WHEN ${COMPLIANT_TRANSITION} THEN 1 ELSE 0 END) AS compliant
+         FROM events WHERE ${where.join(' AND ')}
+         GROUP BY day
+         ORDER BY day ASC`,
+        params,
+      );
+      res.json(adherencePayload(rows));
+      return;
+    }
+
+    const { where, params } = applyEventFilters(orgId, f, 'day');
+    const rows = await ctx.db.all<Record<string, unknown>>(
+      `SELECT day,
+              SUM(transitions_judged) AS judged,
+              SUM(transitions_compliant) AS compliant
+       FROM rollups_daily WHERE ${where.join(' AND ')}
+       GROUP BY day
+       ORDER BY day ASC`,
+      params,
+    );
+    res.json(adherencePayload(rows));
   }));
 
   router.get('/event-types', guard, asyncRoute(async (req: Request, res: Response) => {

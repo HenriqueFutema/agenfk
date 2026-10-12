@@ -726,6 +726,73 @@ describe('GET /v1/prs/overview', () => {
     expect(r.body.prs[0].prNumber).toBe(3);
     expect(r.body.prs[0].url).toBe('https://github.com/acme/api/pull/3');
   });
+
+  // ── CGLAB-614: GET /v1/adherence under the shared filter set ─────────────
+  //
+  // judged = a step.transitioned whose payload carries flowRevision;
+  // compliant = one whose payload.compliant is true. Unstamped transitions
+  // count in neither. The endpoint must honour the SAME filters as every other
+  // hub view, and its rollups branch and events branch must agree.
+  const seedTransition = (id: string, occurredAt: string, payload: any, opts: any = {}) =>
+    ctx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, payload)
+       VALUES (?, 'org', 'inst-1', ?, ?, ?, 'step.transitioned', ?, ?, ?, ?, ?)`,
+      [id, opts.user ?? 'alice@acme.com', occurredAt, occurredAt, opts.projectId ?? 'p1', opts.itemId ?? id,
+        opts.itemType ?? 'TASK', opts.remoteUrl ?? null, JSON.stringify({ type: 'step.transitioned', payload })],
+    );
+
+  it('counts judged/compliant under the shared filters, a rollback included', async () => {
+    await seedTransition('t1', '2026-06-01T09:00:00Z', { fromStatus: 'PLAN', toStatus: 'WORK', flowId: 'f1', flowRevision: 1, compliant: true }, { remoteUrl: 'git@github.com:acme/web.git' });
+    // A ROLLBACK between two steps of the same revision: judged AND compliant.
+    await seedTransition('t2', '2026-06-01T10:00:00Z', { fromStatus: 'WORK', toStatus: 'PLAN', flowId: 'f1', flowRevision: 1, compliant: true }, { remoteUrl: 'git@github.com:acme/web.git' });
+    await seedTransition('t3', '2026-06-01T11:00:00Z', { fromStatus: 'WORK', toStatus: 'PAUSED', flowId: 'f1', flowRevision: 1, compliant: false }, { remoteUrl: 'git@github.com:acme/web.git' });
+    await seedTransition('t4', '2026-06-02T09:00:00Z', { fromStatus: 'PLAN', toStatus: 'WORK', flowId: 'f1', flowRevision: 1, compliant: true }, { remoteUrl: 'git@github.com:acme/api.git', itemType: 'STORY' });
+    await seedTransition('t5', '2026-06-02T10:00:00Z', { fromStatus: 'TODO', toStatus: 'PLAN' }, { remoteUrl: 'git@github.com:acme/web.git' }); // unstamped
+    await recomputeRollups(ctx.db, { full: true });
+
+    const all = await supertest(__server).get('/v1/adherence').set('Cookie', cookie);
+    expect(all.status, JSON.stringify(all.body)).toBe(200);
+    expect(all.body.judged).toBe(4);
+    expect(all.body.compliant).toBe(3);
+    expect(all.body.score).toBeCloseTo(0.75);
+
+    const web = await supertest(__server).get('/v1/adherence?projects=git@github.com:acme/web.git').set('Cookie', cookie);
+    expect(web.body.judged).toBe(3);
+    expect(web.body.compliant).toBe(2);
+
+    const stories = await supertest(__server).get('/v1/adherence?itemTypes=STORY').set('Cookie', cookie);
+    expect(stories.body.judged).toBe(1);
+    expect(stories.body.compliant).toBe(1);
+    expect(stories.body.score).toBe(1);
+  });
+
+  it('scores null — not 0 — when the window has nothing judged', async () => {
+    await recomputeRollups(ctx.db, { full: true });
+    const r = await supertest(__server).get('/v1/adherence?from=2030-01-01&to=2030-12-31').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.judged).toBe(0);
+    expect(r.body.compliant).toBe(0);
+    expect(r.body.score).toBeNull();
+  });
+
+  it('agrees between its rollups branch and its events branch on the same window', async () => {
+    await seedTransition('t1', '2026-06-03T09:00:00Z', { fromStatus: 'PLAN', toStatus: 'WORK', flowId: 'f1', flowRevision: 1, compliant: true }, { remoteUrl: 'git@github.com:acme/web.git' });
+    await seedTransition('t2', '2026-06-03T10:00:00Z', { fromStatus: 'WORK', toStatus: 'PAUSED', flowId: 'f1', flowRevision: 1, compliant: false }, { remoteUrl: 'git@github.com:acme/web.git' });
+    await recomputeRollups(ctx.db, { full: true });
+
+    const win = 'from=2026-06-03&to=2026-06-03T23:59:59.999Z';
+    // No narrowing filter -> the rollups branch.
+    const viaRollups = await supertest(__server).get(`/v1/adherence?${win}`).set('Cookie', cookie);
+    // A type filter -> the events branch.
+    const viaEvents = await supertest(__server).get(`/v1/adherence?${win}&types=step.transitioned`).set('Cookie', cookie);
+
+    expect(viaRollups.body.judged).toBe(2);
+    expect(viaEvents.body.judged).toBe(2);
+    expect(viaEvents.body.compliant).toBe(viaRollups.body.compliant);
+    expect(viaEvents.body.score).toBe(viaRollups.body.score);
+    expect(viaRollups.body.series[0]).toMatchObject({ day: '2026-06-03', judged: 2, compliant: 1 });
+  });
+
   // The ?pr= PR-search suite lives in pr-overview-pr-search-route.test.ts, which
   // boots the app on an in-memory sqlite database. Same engine, same SQL — it
   // just does not share a DB file across worker threads, which is what lets it

@@ -129,7 +129,10 @@ describe('PR overview', () => {
   });
 
   it('names the person on the heatmap row and in its cells', async () => {
-    renderAt('/prs');
+    // Pin the window: `from` falls back to `new Date()` minus the preset range,
+    // so an unpinned render silently drops 2026-09-10 off the day axis once the
+    // wall clock moves ~30 days past it. A date bomb, not a product bug.
+    renderAt('/prs?from=2026-09-01&to=2026-09-30');
     const cell = await screen.findByRole('button', { name: /1 PR by Carol Diaz on 2026-09-10/ }, { timeout: 3000 });
     expect(cell).toBeInTheDocument();
     // The row label sits in the same grid as the cell.
