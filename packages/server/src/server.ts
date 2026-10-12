@@ -1780,7 +1780,16 @@ export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array
   return allowed;
 }
 
-type TransitionFlow = { steps: Array<{ name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }> };
+type TransitionFlow = {
+  /**
+   * CGLAB-612: the flow's own id and the revision in effect, when storage could
+   * resolve them. Optional because getActiveFlow falls back to DEFAULT_FLOW — a
+   * constant with no revision history — for a project with no flow assigned.
+   */
+  id?: string;
+  revision?: number;
+  steps: Array<{ name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }>;
+};
 
 /**
  * The flow's own steps in order, the way validate walks them: every step that
@@ -1854,6 +1863,33 @@ export function isCompletionStep(toStatus: string, flow: TransitionFlow): boolea
 }
 
 /**
+ * The flow-version stamp a `step.transitioned` event carries (CGLAB-612).
+ *
+ * The revision is the one IN EFFECT at the transition: the active flow object
+ * already carries its id and its newest revision number (storage stamps both —
+ * getFlow/listFlows, CGLAB-607), so no extra read is needed. `compliant` is true
+ * when BOTH statuses are steps of that revision. There is NO direction term: a
+ * rollback between two steps of the same revision is COMPLIANT, because
+ * adherence measures conformance to the flow, not forward motion. A move to or
+ * from something that is not a step (PAUSED, BLOCKED) is not compliant.
+ *
+ * An event whose flow+revision cannot be resolved carries NO verdict at all:
+ * the hub must not judge it. That keeps legacy events, projects with no flow,
+ * and flows with no revision history out of both sides of the score.
+ */
+function transitionStamp(
+  from: string,
+  to: string,
+  flow: TransitionFlow,
+): { flowId?: string; flowRevision?: number; compliant?: boolean } {
+  const flowId = (flow as { id?: unknown }).id;
+  const flowRevision = (flow as { revision?: unknown }).revision;
+  if (typeof flowId !== 'string' || typeof flowRevision !== 'number') return {};
+  const names = new Set(flow.steps.map(s => s.name));
+  return { flowId, flowRevision, compliant: names.has(from) && names.has(to) };
+}
+
+/**
  * A card moved: the hub sees the move and, when the move ends the flow, the
  * closure (BUG a829ab35). Every route that lands a card on its flow's end -
  * verify, sibling propagation, the parent roll-up - goes through this, and
@@ -1867,7 +1903,7 @@ function recordMoveEvents(item: { id: string; projectId: string; type: string },
     type: 'step.transitioned',
     projectId: item.projectId,
     itemId: item.id,
-    payload: { fromStatus: from, toStatus: to, itemType: item.type },
+    payload: { fromStatus: from, toStatus: to, itemType: item.type, ...transitionStamp(from, to, flow) },
   });
   if (isCompletionStep(to, flow) && !isCompletionStep(from, flow)) {
     recordHubEvent({
@@ -7522,10 +7558,15 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
   let statusChanged = false;
   let rolledBackRecords: any[] | undefined;
   let supersededRecords: any[] | undefined;
+  // CGLAB-612: resolved once for a real status change and reused by the event
+  // emitter far below, which sits in its own block and cannot see a const
+  // declared inside the validation block.
+  let activeFlowForEvents: TransitionFlow | undefined;
   if (status !== undefined && status !== currentItem.status) {
     const project = await storage.getProject(currentItem.projectId);
     const projectFlows = await storage.listFlows();
     const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
+    activeFlowForEvents = activeFlow;
     if (isCompletionStep(status, activeFlow)) {
       return res.status(403).json({ error: completionRefusal(status) });
     }
@@ -7718,7 +7759,14 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
         type: 'step.transitioned',
         projectId: updated.projectId,
         itemId: updated.id,
-        payload: { fromStatus: currentItem.status, toStatus: status, itemType: updated.type },
+        // CGLAB-612: the PUT path is the ROLLBACK path, so its event carries the
+        // same stamp — a rollback between two steps of the revision is compliant.
+        payload: {
+          fromStatus: currentItem.status,
+          toStatus: status,
+          itemType: updated.type,
+          ...(activeFlowForEvents ? transitionStamp(currentItem.status, status, activeFlowForEvents) : {}),
+        },
       });
     } else {
       recordHubEvent({

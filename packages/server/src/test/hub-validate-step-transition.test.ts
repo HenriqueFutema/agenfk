@@ -186,3 +186,75 @@ describe('every way a card reaches the end of its flow is a closure the hub sees
 
 });
 
+/**
+ * CGLAB-612 — every `step.transitioned` event carries the flow version it
+ * happened under, plus a compliance verdict the hub can roll up.
+ *
+ * Two emitters produce the event (recordMoveEvents, and the PUT route — which
+ * is the ROLLBACK path), so both are exercised here. `compliant` means BOTH
+ * statuses are steps of the revision named by the event: there is NO direction
+ * term, so a rollback between two steps of the same revision is compliant and
+ * must not be penalised. A move to or from something that is not a step
+ * (PAUSED, BLOCKED) is not compliant. A project on the shipped default flow
+ * has no revision, so its events are unstamped and must carry no verdict.
+ */
+describe('CGLAB-612: step.transitioned carries the flow version and a compliance verdict', () => {
+  const FLOW = () => [
+    st('TODO', 0, { isAnchor: true }), st('PLAN', 1), st('WORK', 2), st('DONE', 3, { isAnchor: true }),
+  ];
+  const moved = (events: any[], to: string) => events.find(e => e.type === 'step.transitioned' && e.payload?.toStatus === to);
+
+  it('stamps a forward move with the flow id, its revision, and compliant: true', async () => {
+    const { projectId } = await projectOn(FLOW());
+    const id = await make(projectId, 'TASK', 'PLAN');
+    expect((await verify(id)).status).toBe(200); // PLAN -> WORK
+
+    const ev = moved(await outboxFor(id, 500), 'WORK');
+    expect(ev, 'no step.transitioned for PLAN -> WORK').toBeDefined();
+    expect(ev.payload).toMatchObject({ fromStatus: 'PLAN', toStatus: 'WORK', itemType: 'TASK' });
+    expect(typeof ev.payload.flowId).toBe('string');
+    expect(ev.payload.flowRevision).toBe(1);
+    expect(ev.payload.compliant).toBe(true);
+  });
+
+  it('a rollback between two steps of the same revision is COMPLIANT, not penalised', async () => {
+    const { projectId } = await projectOn(FLOW());
+    const id = await make(projectId, 'TASK', 'PLAN');
+    expect((await verify(id)).status).toBe(200); // PLAN -> WORK
+
+    const back = await agent().put(`/items/${id}`).send({ status: 'PLAN' });
+    expect(back.status, JSON.stringify(back.body)).toBe(200);
+    expect((await agent().get(`/items/${id}`)).body.status).toBe('PLAN');
+
+    const ev = moved(await outboxFor(id, 500), 'PLAN');
+    expect(ev, 'no step.transitioned for the rollback WORK -> PLAN').toBeDefined();
+    expect(ev.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'PLAN' });
+    expect(ev.payload.flowRevision).toBe(1);
+    expect(ev.payload.compliant).toBe(true);
+  });
+
+  it('a move to a platform status that is not a step is NOT compliant', async () => {
+    const { projectId } = await projectOn(FLOW());
+    const id = await make(projectId, 'TASK', 'WORK');
+
+    const paused = await agent().put(`/items/${id}`).send({ status: 'PAUSED' });
+    expect(paused.status, JSON.stringify(paused.body)).toBe(200);
+
+    const ev = moved(await outboxFor(id, 500), 'PAUSED');
+    expect(ev, 'no step.transitioned for WORK -> PAUSED').toBeDefined();
+    expect(ev.payload.flowRevision).toBe(1);
+    expect(ev.payload.compliant).toBe(false);
+  });
+
+  it('a project on the shipped default flow has no revision, so the event is unstamped', async () => {
+    const id = await cardAt('TEST');
+    expect((await verify(id)).status).toBe(200); // TEST -> DONE
+
+    const ev = moved(await outboxFor(id), 'DONE');
+    expect(ev).toBeDefined();
+    expect(ev.payload.flowId).toBeUndefined();
+    expect(ev.payload.flowRevision).toBeUndefined();
+    expect(ev.payload.compliant).toBeUndefined();
+  });
+});
+
