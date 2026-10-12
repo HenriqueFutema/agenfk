@@ -1143,7 +1143,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [sessionRows, sessionsWithConversation],
   );
   const { data: pageFlow } = useQuery({
-    queryKey: ['project-flow', pageProjectId],
+    /*
+     * The BOARD's key, not a private one. The flow picker invalidates
+     * `['flow', projectId]` after a selection, and the board listens on the same
+     * key, so sharing it is what keeps this page's active flow — and therefore
+     * the "Selected" mark in the picker — from going stale (CGLAB-611).
+     */
+    queryKey: ['flow', pageProjectId],
     queryFn: () => api.getProjectFlow(pageProjectId as string),
     enabled: Boolean(pageProjectId),
     staleTime: 30_000,
