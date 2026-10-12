@@ -75,6 +75,8 @@ const SCHEMA_PG = `
     validate_passes INTEGER NOT NULL DEFAULT 0,
     validate_fails INTEGER NOT NULL DEFAULT 0,
     prs_opened INTEGER NOT NULL DEFAULT 0,
+    transitions_judged INTEGER NOT NULL DEFAULT 0,
+    transitions_compliant INTEGER NOT NULL DEFAULT 0,
     child_hub_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (org_id, child_hub_id, user_key, day)
   );
@@ -795,7 +797,16 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     `SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'`
   );
   const rdHave = new Set(rdCols.map(c => c.column_name));
-  if (!rdHave.has('prs_opened')) await adapter.exec("ALTER TABLE rollups_daily ADD COLUMN prs_opened INTEGER NOT NULL DEFAULT 0");
+  // IF NOT EXISTS on every one of these: probe-then-ALTER is not atomic and the
+  // hub runs more than one task, so on a rolling deploy both boot together and
+  // the loser's ALTER used to abort its startup with 'column already exists' —
+  // a crash-looping deploy on the very release that introduces a column. Same
+  // reason as the generic loop above (BUG f44b1128).
+  if (!rdHave.has('prs_opened')) await adapter.exec("ALTER TABLE rollups_daily ADD COLUMN IF NOT EXISTS prs_opened INTEGER NOT NULL DEFAULT 0");
+  // CGLAB-613: flow-adherence counters. NOT NULL DEFAULT 0 keeps existing rows
+  // out of both sides of the score.
+  if (!rdHave.has('transitions_judged')) await adapter.exec("ALTER TABLE rollups_daily ADD COLUMN IF NOT EXISTS transitions_judged INTEGER NOT NULL DEFAULT 0");
+  if (!rdHave.has('transitions_compliant')) await adapter.exec("ALTER TABLE rollups_daily ADD COLUMN IF NOT EXISTS transitions_compliant INTEGER NOT NULL DEFAULT 0");
 
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
