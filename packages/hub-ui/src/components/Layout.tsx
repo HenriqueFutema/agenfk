@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, GitPullRequest, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, GitPullRequest, Menu, X, Gauge } from 'lucide-react';
 import { Button, Callout, CopyButton } from './ui';
 import { Logo } from './Logo';
 import { ThemeToggle, sidebarButtonClass } from './ThemeToggle';
@@ -127,6 +127,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
         <NavItem to="/" icon={<LayoutDashboard className="w-4 h-4" />} label="Org rollup" onNavigate={followLink} />
         <NavItem to="/prs" icon={<GitPullRequest className="w-4 h-4" />} label="PR overview" onNavigate={followLink} />
+        <NavItem to="/adherence" icon={<Gauge className="w-4 h-4" />} label="Flow adherence" onNavigate={followLink} />
         {me.data?.role === 'admin' && (
           <NavItem to="/admin" icon={<Shield className="w-4 h-4" />} label="Admin" onNavigate={followLink} />
         )}
