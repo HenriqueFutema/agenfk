@@ -26,6 +26,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { posixShell } from './helpers/posixShell';
+import { removeTempDir } from './helpers/tempDir';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -43,7 +44,8 @@ afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); 
 afterAll(async () => {
   process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  // The repos' hub-event git lookups can outlive the routes that started them (#208).
+  for (const d of cleanup) removeTempDir(d);
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });

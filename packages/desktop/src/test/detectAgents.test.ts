@@ -144,14 +144,21 @@ describe('the Finder PATH problem', () => {
 });
 
 describe('how a binary is actually located', () => {
-  it('does not try to execFile a shell builtin', async () => {
+  // A REAL lookup (`which`/`where`), capped at 5 s like every probe. On a loaded Windows CI
+  // runner one `where` took 5.4 s and timed out (173 ms on the run before it, #208), so the
+  // spec retries; a lookup that really finds nothing still fails all three attempts.
+  it('does not try to execFile a shell builtin', { retry: 2 }, async () => {
     // `command -v` is the idiomatic POSIX probe — inside a shell. `command` is
     // a builtin, not a file, so execFile('command', …) fails with ENOENT every
     // single time. An earlier version tried it first and fell through to
     // `which`, paying a failed spawn per probe for an answer it never gave.
     const { whichOnPath } = await import('../main/detectAgents');
-    const found = await whichOnPath('sh');
-    expect(found, 'could not locate `sh`, which exists on every POSIX machine').toBeTruthy();
+    // `sh` is on every POSIX PATH, but not on Windows': Git for Windows puts only its cmd\
+    // (git.exe) there, not bin\ (sh.exe) - CI's image happened to add it (#208). cmd is
+    // in System32, on every Windows PATH.
+    const probe = process.platform === 'win32' ? 'cmd' : 'sh';
+    const found = await whichOnPath(probe);
+    expect(found, `could not locate \`${probe}\`, which is on every PATH of this OS`).toBeTruthy();
   });
 
   it('reports nothing for a binary that does not exist', async () => {
