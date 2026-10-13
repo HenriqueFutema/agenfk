@@ -2,6 +2,18 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.43] — 2026-10-13
+
+Pre-release, cut from the `beta` line (PR #231). Cumulative over `2.0.0-beta.42`.
+
+### Adherence copy states the rule, not the bookkeeping (CGLAB-619)
+
+- The Flow adherence page read "How often work moved **within the flow revision in force**",
+  which reads as if the score measured revision stability. It measures whether a move's start
+  and end are both steps of the flow. Copy-only: /adherence subtitle, rules line (now naming
+  what is NOT adherent — to or from PAUSED/BLOCKED/off-flow) and tile hints, plus the
+  PR-overview Adherence strings. No data, API or semantics change.
+
 ## [2.0.0-beta.42] — 2026-10-12
 
 Pre-release, cut from the `beta` line (PR #230). Cumulative over `2.0.0-beta.41`.
