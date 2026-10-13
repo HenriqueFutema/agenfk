@@ -14,7 +14,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { makeUnreadable } from './helpers/unreadableDir';
+import { canMakeUnreadable, makeUnreadable } from './helpers/unreadableDir';
 
 const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 
@@ -22,8 +22,9 @@ let work = '';
 afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); work = ''; });
 
 describe('makeUnreadable()', () => {
-  // root reads through chmod 000; the specs that use this skip as root too.
-  it.skipIf(isRoot)('makes listing the directory fail, and the returned restore undoes it', () => {
+  // root reads through chmod 000, and a Windows admin with the backup privilege
+  // (GitHub's runner) reads through the deny ACE; the specs that use this skip there too.
+  it.skipIf(!canMakeUnreadable())('makes listing the directory fail, and the returned restore undoes it', () => {
     work = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-unreadable-'));
     const dir = path.join(work, 'locked');
     fs.mkdirSync(dir);

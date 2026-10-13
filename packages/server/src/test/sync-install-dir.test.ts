@@ -3,7 +3,7 @@ import fs, { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'f
 import os from 'os';
 import path from 'path';
 import { linkDir } from '../../../cli/src/test/helpers/links';
-import { makeUnreadable } from './helpers/unreadableDir';
+import { canMakeUnreadable, makeUnreadable } from './helpers/unreadableDir';
 // The npx bootstrap (bin/agenfk.js) is dependency-light and cannot import
 // @agenfk/core at clone time, so the prune lives in its own .mjs sibling and is
 // exercised here directly — the same code the bootstrap runs.
@@ -397,9 +397,8 @@ describe('pruneInstallDir keeps directories the archive ships intentionally empt
 describe('pruneInstallDir fails closed on an unreadable source tree', () => {
   // Reading a PARTIAL listing as "not shipped" deletes live files. An unreadable
   // source subtree must skip the prune, not shrink the shipped set.
-  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-
-  it.skipIf(isRoot)('does not prune a dir whose source listing cannot be read', () => {
+  // Skipped where no directory can be made unreadable to this process (root; a Windows admin with the backup privilege).
+  it.skipIf(!canMakeUnreadable())('does not prune a dir whose source listing cannot be read', () => {
     seed(src, 'commands/agenfk.md');
     seed(src, 'commands/locked/hidden.md');
     seed(dst, 'commands/agenfk.md');
@@ -417,9 +416,8 @@ describe('pruneInstallDir fails closed on an unreadable source tree', () => {
 });
 
 describe('pruneInstallDir does not abort an upgrade over an unreadable install dir', () => {
-  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-
-  it.skipIf(isRoot)('still prunes what it can see when a destination subdir cannot be read', () => {
+  // Skipped where no directory can be made unreadable to this process (root; a Windows admin with the backup privilege).
+  it.skipIf(!canMakeUnreadable())('still prunes what it can see when a destination subdir cannot be read', () => {
     // The SOURCE listing must be strict (a partial one deletes live files), but
     // the DESTINATION walk must stay lenient: throwing there would abort the
     // user's upgrade over one unreadable subdirectory, and a partial walk only

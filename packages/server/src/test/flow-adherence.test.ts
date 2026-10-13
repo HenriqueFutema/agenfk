@@ -3,7 +3,7 @@
  * Route-level: a project with mixed stamped/unstamped history scores from the
  * stamped events alone, judged against the revisions they name.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -12,7 +12,7 @@ const TEST_DB = testDbPath('flow-adherence-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage } from '../server';
+import { app, initStorage, closeStorage, storage } from '../server';
 import type { Flow, HistoryRecord } from '@agenfk/core';
 
 let __server: import('http').Server;
@@ -84,10 +84,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((r) => __server.close(() => r()));
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 describe('flow adherence endpoints', () => {
