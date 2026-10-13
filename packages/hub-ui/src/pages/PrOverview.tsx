@@ -41,15 +41,16 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
 
 type SizeDist = Record<SizeKey, number>;
 
-/** Flow compliance for a window or a row: judged = stamped transitions;
+/** Flow adherence for a window or a row: judged = stamped transitions;
  *  score null (never 0) when nothing was judged. */
-interface Compliance { judged: number; compliant: number; score: number | null }
+interface Adherence { judged: number; compliant: number; score: number | null }
 
-const compliancePct = (c: Compliance) => Math.round((c.compliant / c.judged) * 100);
+const adherencePct = (a: Adherence) => Math.round((a.compliant / a.judged) * 100);
 
 /** The one rendering of a score, or of its absence. A null score is missing
  *  data, not a terrible score — an explicit dash with sr-only text, never 0%. */
-function ComplianceScore({ c }: { c: Compliance | undefined }) {
+function AdherenceScore({ a }: { a: Adherence | undefined }) {
+  const c = a;
   if (!c || !c.judged) {
     return (
       <span className="text-ink-tertiary">
@@ -58,7 +59,7 @@ function ComplianceScore({ c }: { c: Compliance | undefined }) {
       </span>
     );
   }
-  const pct = compliancePct(c);
+  const pct = adherencePct(c);
   return (
     <span className="font-mono tabular-nums text-ink">
       <span aria-hidden="true" title={`${c.compliant} of ${c.judged} transitions stayed within the flow revision in force`}>{pct}%</span>
@@ -69,7 +70,7 @@ function ComplianceScore({ c }: { c: Compliance | undefined }) {
 
 /** By model: transitions carry no model, so there is nothing to judge — said
  *  outright rather than approximated by the opener's model. */
-function ComplianceNotAttributable() {
+function AdherenceNotAttributable() {
   return (
     <span className="text-ink-tertiary">
       <span aria-hidden="true" title="transitions do not carry a model">—</span>
@@ -88,12 +89,12 @@ interface PrOverviewResponse {
     total: number;
     devBySize: Record<SizeKey, Array<{ user_key: string; count: number }>>;
   }>;
-  byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number>; compliance?: Compliance }>;
+  byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number>; adherence?: Adherence }>;
   byModel: Array<{ model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist }>;
-  // CGLAB-617: flow compliance over the same window/filters, from the stamped
-  // step.transitioned events. Absent on an older hub — the UI then shows nothing
-  // rather than a fabricated dash-with-no-reason.
-  compliance?: Compliance;
+  // CGLAB-617/618: flow adherence over the same window/filters, from the
+  // stamped step.transitioned events. Absent on an older hub — the UI then
+  // shows nothing rather than a fabricated dash-with-no-reason.
+  adherence?: Adherence;
   // CGLAB-131 drill-down: the resolved PR set behind the heatmap cells
   // (opener attribution, latest sizing — same aggregation pass as the totals).
   prs: Array<{
@@ -985,7 +986,7 @@ export function PrOverviewPage() {
       {d && d.totals.prs > 0 && (
         <>
           {/* KPIs */}
-          <div className={`grid grid-cols-2 gap-4 ${d.compliance ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+          <div className={`grid grid-cols-2 gap-4 ${d.adherence ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
             <StatTile
               label="Total PRs"
               value={d.totals.prs}
@@ -1004,11 +1005,11 @@ export function PrOverviewPage() {
               hint={`${(d.totals.prs / Math.max(1, d.totals.developers)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} PRs / dev`}
             />
             <StatTile label="Median size" value={(d.totals.medianBucket ?? '—').toUpperCase()} hint={`across ${d.totals.prs.toLocaleString()} PRs`} />
-            {d.compliance && (
+            {d.adherence && (
               <StatTile
-                label="Compliance"
-                value={d.compliance.judged ? `${compliancePct(d.compliance)}%` : '—'}
-                hint={`${d.compliance.compliant} of ${d.compliance.judged} transitions within the flow revision`}
+                label="Adherence"
+                value={d.adherence.judged ? `${adherencePct(d.adherence)}%` : '—'}
+                hint={`${d.adherence.compliant} of ${d.adherence.judged} transitions within the flow revision`}
               />
             )}
           </div>
@@ -1080,7 +1081,7 @@ export function PrOverviewPage() {
                 },
                 { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: dev => dev.prs, render: dev => <span className="font-mono tabular-nums text-title font-bold text-ink">{dev.prs}</span> },
                 { key: 'pts', header: 'Size points', align: 'right', firstDir: 'desc', sortValue: dev => dev.sizePoints, render: dev => <span className="font-mono tabular-nums text-ink-secondary">{dev.sizePoints.toLocaleString()}</span> },
-                { key: 'compliance', header: 'Compliance', align: 'right', firstDir: 'desc', sortValue: dev => dev.compliance?.score ?? -1, render: dev => <ComplianceScore c={dev.compliance} /> },
+                { key: 'adherence', header: 'Adherence', align: 'right', firstDir: 'desc', sortValue: dev => dev.adherence?.score ?? -1, render: dev => <AdherenceScore a={dev.adherence} /> },
                 { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: dev => <MixBar sizes={dev.sizes} total={dev.prs} /> },
                 { key: 'counts', header: 'XS · S · M · L · XL', render: dev => <SizeCounts sizes={dev.sizes} /> },
                 { key: 'trend', header: 'Trend', align: 'right', render: dev => <div className="inline-block"><Sparkline daily={dev.daily} axis={axis} max={trendPeak} /></div> },
@@ -1116,7 +1117,7 @@ export function PrOverviewPage() {
                 { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: m => <MixBar sizes={m.sizes} total={m.prs} /> },
                 { key: 'counts', header: 'XS · S · M · L · XL', render: m => <SizeCounts sizes={m.sizes} /> },
                 { key: 'share', header: 'Share', align: 'right', render: m => <span className="font-mono tabular-nums text-ink-secondary">{Math.round((m.prs / d.totals.prs) * 100)}%</span> },
-                { key: 'compliance', header: 'Compliance', align: 'right', render: () => <ComplianceNotAttributable /> },
+                { key: 'adherence', header: 'Adherence', align: 'right', render: () => <AdherenceNotAttributable /> },
               ]}
             />
           </section>
