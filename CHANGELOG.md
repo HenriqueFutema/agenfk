@@ -2,6 +2,18 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.42] — 2026-10-12
+
+Pre-release, cut from the `beta` line (PR #230). Cumulative over `2.0.0-beta.41`.
+
+### Naming: the PR-overview metric is flow adherence (CGLAB-618)
+
+- The PR overview's metric now says **adherence** like every other surface — the response field
+  (`compliance` → `adherence`, aggregate and per-developer) and all UI labels. The stored event
+  payload field `compliant` and the rollup column `transitions_compliant` are untouched: they name
+  the boolean in historical data, not the metric. Hub and UI ship in one image, so the rename rolls
+  atomically; after deploying, run the admin full rollup recompute once to backfill historical days.
+
 ## [2.0.0-beta.41] — 2026-10-12
 
 Pre-release, cut from the `beta` line (PR #229). Cumulative over `2.0.0-beta.40`.
