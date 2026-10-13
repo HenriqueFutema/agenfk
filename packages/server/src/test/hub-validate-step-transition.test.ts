@@ -95,7 +95,9 @@ describe('closing a card emits the hub closure events', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toMatch(/verify/);
     expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
-    expect((await outboxFor(id, 300)).some(e => e.type === 'item.closed')).toBe(false);
+    // Long enough to see a wrongly emitted event: this project's first event waits on its git
+    // remote lookup (up to 1.5 s) before it is recorded (#208 review).
+    expect((await outboxFor(id, 2500)).some(e => e.type === 'item.closed')).toBe(false);
   });
 
 });

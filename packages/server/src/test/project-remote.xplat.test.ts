@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { readRemoteUrl, remoteCacheLifetimeMs } from '../projectRemote';
+import { oneInFlight, readRemoteUrl, remoteCacheLifetimeMs } from '../projectRemote';
 import { removeTempDir } from './helpers/tempDir';
 
 describe('readRemoteUrl()', () => {
@@ -36,6 +36,29 @@ describe('readRemoteUrl()', () => {
     expect(remoteCacheLifetimeMs({ url: 'x', cacheable: true })).toBeUndefined();
     expect(remoteCacheLifetimeMs({ url: '', cacheable: true })).toBeUndefined();
     expect(remoteCacheLifetimeMs({ url: '', cacheable: false })).toBe(60_000);
+  });
+
+  // A verify that closes a card emits two events back to back: each started its own lookup,
+  // and a late timeout overwrote the good URL the other had just cached (review of f94e1694).
+  it('runs one lookup per project at a time: concurrent callers share it, and a later one starts afresh', async () => {
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const warm = oneInFlight(async (id: string) => { started.push(id); await gate; });
+    const a = warm('p1'); const b = warm('p1'); const c = warm('p2');
+    expect(started).toEqual(['p1', 'p2']);
+    release();
+    await Promise.all([a, b, c]);
+    await warm('p1');
+    expect(started).toEqual(['p1', 'p2', 'p1']);
+  });
+
+  it('a failed lookup does not stick: the next caller starts afresh', async () => {
+    let calls = 0;
+    const warm = oneInFlight(async () => { calls++; throw new Error('boom'); });
+    await expect(warm('p')).rejects.toThrow('boom');
+    await expect(warm('p')).rejects.toThrow('boom');
+    expect(calls).toBe(2);
   });
 
   it('reads a real repository with its own git', async () => {

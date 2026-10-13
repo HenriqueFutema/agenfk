@@ -33,6 +33,24 @@ const defaults: RemoteLookupDeps = {
 };
 
 /**
+ * One call per key at a time: callers that arrive while it runs share its
+ * promise, and the next caller after it settles (success or not) starts a new
+ * one. A verify that closes a card emits two hub events back to back; each
+ * started its own remote lookup, and a late timeout overwrote the URL the other
+ * had just cached (review of f94e1694).
+ */
+export function oneInFlight<K>(fn: (key: K) => Promise<void>): (key: K) => Promise<void> {
+  const running = new Map<K, Promise<void>>();
+  return (key) => {
+    const current = running.get(key);
+    if (current) return current;
+    const p = fn(key).finally(() => running.delete(key));
+    running.set(key, p);
+    return p;
+  };
+}
+
+/**
  * How long to remember an answer: a real one (a URL, or git saying there is
  * none) for good - undefined; a timed-out one for a minute. Forgotten at once,
  * every event of a slow project waited the full timeout again.

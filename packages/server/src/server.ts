@@ -60,7 +60,7 @@ import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
 import { killProcessTree } from './killTree.js';
-import { readRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
+import { oneInFlight, readRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -225,7 +225,9 @@ async function readItemMeta(itemId: string): Promise<{ title: string | null; ext
   }
 }
 
-async function warmProjectRemote(projectId: string): Promise<void> {
+// One lookup per project at a time (#208 review): concurrent events share it.
+const warmProjectRemote = oneInFlight(warmProjectRemoteOnce);
+async function warmProjectRemoteOnce(projectId: string): Promise<void> {
   try {
     const proj = await storage.getProject(projectId);
     const root = (proj as any)?.projectRoot;
