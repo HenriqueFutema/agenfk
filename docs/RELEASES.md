@@ -65,8 +65,20 @@ git commit -m "chore: bump version to 2.0.0-beta.<N+1>"
 - Package and verify the distributable: `node scripts/package-dist.mjs`, then check
   the tarball carries no macOS metadata (see `.claude/commands/agenfk-release-beta.md`
   for the check command — never trust `tar -tzf` on macOS).
-- Tag and push: `git tag v2.0.0-beta.<N+1> && git push origin HEAD --tags`.
+- Tag and push: `git tag v2.0.0-beta.<N+1> && git push origin HEAD v2.0.0-beta.<N+1>`.
+  Push the one tag, never `--tags`: a push of more than three tags starts no workflows.
 - Create the GitHub pre-release with the tarball attached.
+- The tag push also starts `desktop-release.yml`, which builds the desktop installers
+  (Windows, macOS, Linux) and attaches them to that same release a few minutes later.
+  No second tag is needed. It used to run only on a `desktop-v*` tag pushed by hand,
+  which the release commands never did; the habit lapsed after beta.36, and beta.37–43
+  shipped without installers (CGLAB-621).
+- To rebuild an existing release's installers, push `desktop-v<version>` on the
+  release's commit (`git tag desktop-v2.0.0-beta.<N> v2.0.0-beta.<N> && git push origin
+  desktop-v2.0.0-beta.<N>`). The manual run (`gh workflow run desktop-release.yml -f
+  tag=v2.0.0-beta.<N>`) is offered only once the workflow is on `main`.
+  Wait for the release tag's own run to finish first: the two tags run separately and
+  would upload the same files at the same time.
 
 ### 3. Deploying the hub
 
@@ -92,7 +104,8 @@ deploy repo above, pointed at the beta tag you just cut.
 When the cycle is done and CI is green:
 
 1. Open a **graduation PR: `base = main`, `head = beta`** (one PR per cycle).
-2. Merge it; tag stable from `main` (`/agenfk-release` flow: bump, tag, release).
+2. Merge it; tag stable from `main` (`/agenfk-release` flow: bump, tag, release). The
+   stable tag builds and attaches the desktop installers too.
 3. **Reset the line**: `beta` is fast-forwarded/reset to `main` and the next cycle
    begins. Feature branches still in flight rebase onto the new `beta`.
 

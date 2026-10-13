@@ -24,5 +24,5 @@ Run `git status` and `git branch --show-current`. Hub releases are cut from `mai
 - Run `git add packages/hub/package.json package-lock.json && git commit -m "chore(hub): bump hub version to <version>"` and show the output.
 
 **Step 4 — Tag, push, release**
-- Run `git tag hub-v<version>` on the bump commit, then `git push origin HEAD --tags`.
+- Run `git tag hub-v<version>` on the bump commit, then `git push origin HEAD hub-v<version>`. Push only that one tag, never `--tags`: GitHub starts no workflows for a push of more than three tags, and this tag is what starts `hub-image.yml`.
 - CI does the rest (image + GitHub Release + tarball). Report the tag and the expected release URL (`https://github.com/<owner>/<repo>/releases/tag/hub-v<version>`) to the user and stop — do not sit polling the workflow.

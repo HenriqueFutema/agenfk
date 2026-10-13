@@ -64,7 +64,7 @@ If YES:
   node -e "const{gunzipSync}=require('zlib'),{readFileSync}=require('fs');const b=gunzipSync(readFileSync('agenfk-dist.tar.gz'));let o=0,n=[];while(o+512<=b.length){const f=b.subarray(o,o+100),i=f.indexOf(0),m=f.subarray(0,i===-1?100:i).toString();if(!m){o+=512;continue}n.push(m);o+=512+Math.ceil((parseInt(b.subarray(o+124,o+136).toString('ascii').replace(/\0.*$/,'').trim(),8)||0)/512)*512}const bad=n.filter(x=>(x.replace(/\/$/,'').split('/').pop()||'').startsWith('._')||x.endsWith('.DS_Store'));console.log(bad.length?'DIRTY: '+bad.length+' macOS metadata entries':'CLEAN: '+n.length+' members');process.exit(bad.length?1:0)"
   ```
   Abort the release if it reports `DIRTY`.
-- **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin HEAD --tags` to push both the commit and the tag to the remote.
+- **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin HEAD <tag>` to push both the commit and the tag to the remote. Push only that one tag, never `--tags`: GitHub starts no workflows for a push of more than three tags, and this tag starts the desktop installer build (`desktop-release.yml`, CGLAB-621).
 - **Create Release**: Run `gh release create <tag> agenfk-dist.tar.gz --title "<title>" --notes "<notes">`.
 - Show the release URL returned by `gh`.
 
