@@ -102,7 +102,7 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 |------------------------|----------------------|
 | `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" [--item-id <id>] [--role <planning\|coding\|review\|testing\|closing>] [--session <harness-session-id>] [--json]` — keys the active-work note to the session so concurrent sessions cannot capture each other's runs (CGLAB-570). The session id is `--session`, else `AGENFK_SESSION_ID` (the harness-agnostic contract), else the harness own var when it exposes one (Claude Code: `CLAUDE_CODE_SESSION_ID`) — pass `--session` only when neither is set |
 | `list_projects()` | `agenfk list-projects --json` |
-| *(get current project id)* | `agenfk current-project [--json]` — prints the current project id resolved from the nearest `.agenfk/project.json` (walking up from the cwd); `--json` adds the project name/description from the server when reachable. No MCP equivalent — CLI only. |
+| *(get current project id)* | `agenfk current-project [--json]` — prints the current project id resolved from the nearest `.agenfk/local.json` (walking up from the cwd); `--json` adds the project name/description from the server when reachable. No MCP equivalent — CLI only. |
 | `create_project(name)` | `agenfk create-project "<name>" [-d/--description <desc>]` |
 | `update_project(id, {...})` | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` |
 | `list_items(projectId, ...)` | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--active] [--all] [--json]` (`--active` = only items in an active working step; flow-aware) |
@@ -148,12 +148,12 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
         2. Run `git branch --show-current` — if NOT on `main` (or `master`) and the current branch does not belong to an item you're about to resume, run `git checkout main` (or `master`).
         3. Run `git pull` to ensure you have the latest upstream changes - also when RESUMING an existing card, in the tree it works in (its worktree, else the project root). The `backlog` role's `tree-in-sync` check refuses a card leaving the backlog from a tree behind or diverged from its remote.
     *   **Action**:
-        1. Run `agenfk current-project` to resolve the current project id (it finds the nearest `.agenfk/project.json`, walking up from the cwd). If it prints an id, that is the active `projectId` — use it for every command that takes `--project <id>`.
+        1. Run `agenfk current-project` to resolve the current project id (it finds the nearest `.agenfk/local.json`, walking up from the cwd). If it prints an id, that is the active `projectId` — use it for every command that takes `--project <id>`.
         2. If missing, DO NOT assume an existing project should be reused based on name alone.
         3. Run `agenfk list-projects --json` to see existing projects.
         4. **MANDATORY**: Ask the user if they want to use an existing project (by name/ID) or create a new one (recommended).
         5. If creating a new one, use the current directory name as the default project name unless the user specifies otherwise (`agenfk create-project "<name>"`).
-        6. Create/link the project by creating `.agenfk/project.json` with the `{ "projectId": "..." }`.
+        6. Link the directory to the project with `agenfk init --project <projectId>` (or create one with `agenfk init <name>`). This writes the id to `.agenfk/local.json`, which is this machine's and git-ignored; `.agenfk/project.json` holds only the repository's shared settings and never the id.
         7. **Flow-Aware Status Check (MANDATORY)**: Immediately after identifying the project, run `agenfk flow show --project <projectId> --json` to discover the active workflow flow. The `agenfk gatekeeper` response tells you which step an item is currently on, but not the criteria — those come from `agenfk flow show`. **Use the flow's step `name` values as the valid statuses for this project** — do NOT assume the default TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline is active. The project may have a custom flow with different steps and ordering.
         8. Scan the codebase and generate `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` if they don't exist. BE THOROUGH AND COMPLETE. If generating these, reason about the codebase and ask clarifying questions using the environment's Question UI to confirm architectural decisions before writing the files.
         9. Fetch all items via `agenfk list --project <projectId> --json` and render the **Board Report** as described below.
@@ -183,7 +183,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
     *   **Hierarchy Rule — MANDATORY**: Before creating any new item, run `agenfk list --project <projectId> --json` and check if an existing EPIC or STORY already covers the work. If one exists, create your items **under it** using `parentId`. NEVER create orphan tasks when a parent hierarchy exists. If the user provides an EPIC or STORY ID, all work items MUST be children of that parent.
     *   **Transparency**: If you're opencode, display every CLI command and its output.
     *   **Conventional Commits**: Use standard prefixes for all commits: `fix:`, `feat:`, `chore:`, `docs:`, `style:`, `refactor:`, `perf:`, `test:`. NEVER use `close:`, `update:`, or other non-standard prefixes. Append the item ID in brackets if relevant, e.g., `fix: resolve crash [id]`.
-    *   **Cross-project commit guard (MANDATORY)**: Before appending a task ID to a commit message, verify that `agenfk get <id> --json` reports a `projectId` matching the `projectId` in `.agenfk/project.json` of the current working directory. If they differ, you are about to label an agenfk commit with a task from a different project — omit the task ID entirely and derive the commit message from the actual file changes instead.
+    *   **Cross-project commit guard (MANDATORY)**: Before appending a task ID to a commit message, verify that `agenfk get <id> --json` reports a `projectId` matching the id `agenfk current-project` prints for the current working directory. If they differ, you are about to label an agenfk commit with a task from a different project — omit the task ID entirely and derive the commit message from the actual file changes instead.
 
 3.  **Planning (Epics only)**
     *   **Action**: Require or generate a detailed Markdown **Implementation Plan**.
@@ -253,7 +253,7 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 
 ## Available Commands (`agenfk` CLI)
 
-*   `agenfk current-project [--json]`: Print the current project id (resolved from the nearest `.agenfk/project.json`). Use this whenever a command needs `--project <id>` or the "active projectId".
+*   `agenfk current-project [--json]`: Print the current project id (resolved from the nearest `.agenfk/local.json`). Use this whenever a command needs `--project <id>` or the "active projectId".
 *   `agenfk list-projects --json`: List all existing projects.
 *   `agenfk create-project "<name>"`: Create a new project.
 *   `agenfk create <TYPE> "<title>" --project <id>`: Create a new workflow item. Add `--jira-item <KEY>` to link it to a JIRA item as it is created. It prints the created card - its JSON follows the confirmation line (`--json` prints the JSON alone) - so there is no need to look it up again; a create that fails exits non-zero.

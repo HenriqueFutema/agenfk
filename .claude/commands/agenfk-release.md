@@ -57,7 +57,7 @@ If YES:
 - Ask for a release title (default: same as tag).
 - Offer to auto-generate release notes from git log: run `git log $(git describe --tags --abbrev=0)..HEAD --oneline` and summarise the commits as bullet points.
   - **STRICT SCOPE**: Only include changes that appear in the `git log` output above. Do NOT carry forward items from previous release notes, from other projects, or from your conversation context. Each release note must map 1-to-1 to a commit in the log range.
-  - **Cross-project guard**: If a commit message contains a task ID in brackets (e.g. `[1a18154d-...]`), verify it belongs to the current project by checking `.agenfk/project.json`. If the project ID does not match, omit the task reference from the release note and note it as a possible mislabelled commit.
+  - **Cross-project guard**: If a commit message contains a task ID in brackets (e.g. `[1a18154d-...]`), verify it belongs to the current project by checking the id `agenfk current-project` prints. If the project ID does not match, omit the task reference from the release note and note it as a possible mislabelled commit.
 - Confirm the notes with the user, allow edits.
 - **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists. Then verify it carries no macOS metadata — **do not use `tar -tzf`**, which on macOS silently merges AppleDouble entries into their parent and reports a clean archive (this is how CGLAB-94 shipped in every release from v1.1.13 to v1.1.16-beta.4):
   ```bash

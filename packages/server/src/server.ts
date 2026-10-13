@@ -1058,7 +1058,8 @@ export const findProjectRoot = (startDir: string): string | null => {
    * Returning `path.resolve(startDir)` made a FAILURE indistinguishable from
    * an answer: a caller could not tell "this is the project root" from "the
    * walk reached the filesystem root and gave up". A worktree has no
-   * `.agenfk` (it is gitignored, so it does not travel into one), so a verify
+   * `.agenfk` when the repository does not commit project.json (local.json
+   * never travels: it is git-ignored, CGLAB-625), so a verify
    * run from one recorded that worktree as the project's own root - and
    * everything resolving through projectRoot, autoGitCommit above all, then
    * aimed at one card's directory, permanently, with no message.
@@ -10503,8 +10504,8 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
        * when the walk finds no `.agenfk` ancestor - which is a FAILURE, not an
        * answer, and the two are indistinguishable by looking at the string.
        *
-       * It is not hypothetical: `.agenfk/` is gitignored, so a worktree has
-       * none, and a verify run from one used to record that worktree as the
+       * It is not hypothetical: a worktree has no `.agenfk` unless the
+       * repository commits project.json (local.json is git-ignored), and a verify run from one used to record that worktree as the
        * project's own root. Every later operation that resolves through
        * projectRoot - autoGitCommit above all - then aimed at a directory
        * belonging to ONE card, permanently, with no message. Checking for the
@@ -10518,7 +10519,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
       /*
        * A LINKED WORKTREE IS NEVER THE PROJECT'S ROOT (CGLAB-366). "A worktree
        * has no .agenfk" was the only thing keeping one out, and it is a
-       * convention rather than a check: `.agenfk/` is gitignored, and one
+       * convention rather than a check: project.json may be committed, and one
        * hand-made marker inside a worktree recorded that card's tree as the
        * root of the whole project - every other card's verify and close then
        * aimed at it. Ask git, which knows.
