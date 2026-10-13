@@ -115,6 +115,16 @@ describe('GET /projects/:id/settings with a project file', () => {
     expect(verify.from).toContain('.agenfk/project.json');
   });
 
+  it('tells the settings screen that a projectId belongs in local.json (CGLAB-625)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
+    write(root, { projectId: 'x', verifyCommand: 'npm test' });
+    const id = await projectRootedAt(root, 'declared-legacy');
+    const res = await request(server).get(`/projects/${id}/settings`);
+    expect(res.body.fileProblems.join(' ')).toMatch(/local\.json/);
+    // The settings still apply: a legacy file is read, not rejected.
+    expect(res.body.rows.find((r: { key: string }) => r.key === 'verifyCommand').value).toBe('npm test');
+  });
+
   it('reports what it ignored instead of swallowing it', async () => {
     // The file is hand-edited; a key that does nothing has to say so, or
     // somebody spends an afternoon on it.

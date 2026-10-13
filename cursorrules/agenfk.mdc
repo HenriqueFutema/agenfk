@@ -163,7 +163,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 |-----------|-------------|----------|
 | Authorize a pre-edit | `agenfk gatekeeper --intent "<intent>" [--item-id <id>] [--role <planning\|coding\|review\|testing\|closing>] [--session <harness-session-id>] [--json]` — keys the active-work note to the session so concurrent sessions cannot capture each other's runs (CGLAB-570). The session id is `--session`, else `AGENFK_SESSION_ID` (the harness-agnostic contract), else the harness own var when it exposes one (Claude Code: `CLAUDE_CODE_SESSION_ID`) — pass `--session` only when neither is set | `workflow_gatekeeper` |
 | List projects | `agenfk list-projects --json` | `list_projects` |
-| Get the current project id | `agenfk current-project [--json]` (resolves the nearest `.agenfk/project.json`; `--json` adds the project name/description from the server when reachable) | — |
+| Get the current project id | `agenfk current-project [--json]` (resolves the nearest `.agenfk/local.json`, else a legacy id in `.agenfk/project.json`; `--json` adds the project name/description from the server when reachable) | — |
 | Create a project | `agenfk create-project "<name>" [-d/--description <desc>]` | `create_project` |
 | Update a project | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` | `update_project` |
 | List items | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--active] [--all] [--json]` | `list_items` |

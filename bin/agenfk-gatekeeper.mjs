@@ -72,14 +72,20 @@ function normalizePath(p) {
     return p;
 }
 
-// Walk up from filePath looking for .agenfk/project.json
+// A project's .agenfk holds project.json (shared settings) or local.json (this
+// machine's id, CGLAB-625) - either marks it, since project.json is optional.
+function marksProject(dir) {
+    return fs.existsSync(path.join(dir, '.agenfk', 'project.json')) || fs.existsSync(path.join(dir, '.agenfk', 'local.json'));
+}
+
+// Walk up from filePath looking for a project marker
 function isInsideAgenFKProject(filePath) {
     if (!filePath) return false;
     const normalized = normalizePath(filePath);
     let dir = path.isAbsolute(normalized) ? path.dirname(normalized) : path.dirname(path.resolve(normalized));
     const root = path.parse(dir).root;
     while (dir !== root) {
-        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json'))) return true;
+        if (marksProject(dir)) return true;
         dir = path.dirname(dir);
     }
     return false;

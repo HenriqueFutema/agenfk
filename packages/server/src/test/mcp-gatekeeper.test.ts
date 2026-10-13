@@ -179,4 +179,33 @@ describe('workflow_gatekeeper MCP handler: a STORY is directly actionable (CGLAB
       if (savedRoot !== undefined) process.env.AGENFK_PROJECT_ROOT = savedRoot;
     }
   });
+
+  it('finds the project from the git-ignored local.json when project.json carries no id (CGLAB-625)', async () => {
+    // project.json is the repository's shared settings; the id is this
+    // machine's and lives in local.json.
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gatekeeper-local-'));
+    fs.mkdirSync(path.join(cwd, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: 'npm test' }));
+    fs.writeFileSync(path.join(cwd, '.agenfk', 'local.json'), JSON.stringify({ projectId }));
+    const savedDbPath = process.env.AGENFK_DB_PATH;
+    const savedRoot = process.env.AGENFK_PROJECT_ROOT;
+    delete process.env.AGENFK_DB_PATH;
+    delete process.env.AGENFK_PROJECT_ROOT;
+    process.chdir(cwd);
+    try {
+      const result = await mcp.client.callTool({
+        name: 'workflow_gatekeeper',
+        arguments: { intent: 'local.json parity check' },
+      } as any);
+      const text = toolText(result);
+      expect(result.isError).not.toBe(true);
+      expect(text).toContain('AUTHORIZED');
+      expect(text).toContain('mirror story');
+    } finally {
+      process.chdir(ORIGINAL_CWD);
+      if (savedDbPath !== undefined) process.env.AGENFK_DB_PATH = savedDbPath;
+      if (savedRoot !== undefined) process.env.AGENFK_PROJECT_ROOT = savedRoot;
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

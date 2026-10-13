@@ -263,7 +263,13 @@ agenfk skills uninstall --project  # remove project-scoped rules & skills
 
 AgEnFK supports managing multiple distinct projects from a single unified backend.
 
-*   **Local Linking**: Each local repository is linked to a database project via a `.agenfk/project.json` file.
+*   **Local Linking**: Each local repository is linked to a database project by `agenfk init`, which writes the project id to `.agenfk/local.json`. That id is a row in *this machine's* database, so the file is git-ignored (`agenfk init` adds the rule). A fresh clone links with `agenfk init --project <id>`.
+*   **Shared settings**: `.agenfk/project.json` carries what the repository declares for everyone (`verifyCommand`, `flow`, `setupCommand`, ...) and is committed. It never holds the project id; re-running `agenfk init` in a repository whose `project.json` still does moves it into `local.json` (when this machine's server has that project). A git worktree has no `local.json` of its own and uses its main checkout's.
+    To commit `project.json` while keeping the rest of `.agenfk/` (the database, test reports, `local.json`) out of git, ignore the directory's contents rather than the directory, since a `!` rule cannot re-include a file under an ignored directory:
+    ```
+    .agenfk/*
+    !.agenfk/project.json
+    ```
 *   **Automatic Context Switching**: When an AI Agent or a developer (via the `agenfk` CLI, or MCP when enabled) starts working on a task, the API server automatically detects the project context and broadcasts an event via WebSockets.
 *   **Reactive Dashboard**: The Web UI instantly and automatically switches its Kanban view to the active project being worked on, keeping the developer perfectly in sync with the agent's actions.
 *   **Cross-Browser Drag & Drop**: Easily reorganize priorities with robust drag-and-drop card reordering that syncs instantly via WebSockets and optimistic UI updates.
@@ -519,7 +525,7 @@ The `agenfk` CLI commands (and the optional MCP tools) all talk to the API serve
 
 ### Can I use AgEnFK across multiple projects?
 
-Yes. Projects are independent records in the database. You can switch between them freely — the Kanban board shows all projects, and the CLI and MCP tools all accept a `--project` flag or read from a local `.agenfk/project.json` file.
+Yes. Projects are independent records in the database. You can switch between them freely — the Kanban board shows all projects, and the CLI and MCP tools all accept a `--project` flag or read the id from the git-ignored `.agenfk/local.json`.
 
 ---
 

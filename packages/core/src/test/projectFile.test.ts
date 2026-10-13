@@ -16,14 +16,25 @@ import { readProjectFile, mergeProjectSettings, flowReference } from '../project
 const file = (o: unknown): string => JSON.stringify(o);
 
 describe('what the file may declare', () => {
-  it('keeps the id it always carried', () => {
-    const { value } = readProjectFile(file({ projectId: 'p1' }));
+  it('still reads a legacy id, and says it belongs in local.json (CGLAB-625)', () => {
+    // A repository from before the split keeps working; the problem is the
+    // nudge to move the id out of the committed file.
+    const { value, problems } = readProjectFile(file({ projectId: 'p1' }));
     expect(value.projectId).toBe('p1');
+    expect(problems.join(' ')).toMatch(/projectId.*one machine/i);
+    expect(problems.join(' ')).toMatch(/\.agenfk\/local\.json/);
+    expect(problems.join(' ')).toMatch(/agenfk init/);
+  });
+
+  it('finds no problem in a file that declares settings and no id (CGLAB-625)', () => {
+    // The id lives in the git-ignored local.json now: its absence here is normal.
+    const { value, problems } = readProjectFile(file({ verifyCommand: 'npm test' }));
+    expect(problems).toEqual([]);
+    expect(value.projectId).toBeNull();
   });
 
   it('carries the settings that describe the project', () => {
     const { value, problems } = readProjectFile(file({
-      projectId: 'p1',
       name: 'horizon-lab',
       flow: 'TDD Flow',
       autoWorktree: true,
@@ -60,7 +71,7 @@ describe('what the file may declare', () => {
     // A flow installed from the hub carries `source: 'hub'` and a `hubFlowId`,
     // and THAT id means the same thing on every machine.
     const { value, problems } = readProjectFile(file({
-      projectId: 'p1', flow: 'hub:47719f30-62d2-4048-a227-23e125774e3c',
+      flow: 'hub:47719f30-62d2-4048-a227-23e125774e3c',
     }));
     expect(problems).toEqual([]);
     expect(flowReference(value.settings.flow)).toEqual({

@@ -1,12 +1,17 @@
 /**
  * What a repository declares about its own project.
  *
- * `.agenfk/project.json` has always carried one thing — the project id — which
+ * `.agenfk/project.json` used to carry one thing — the project id — which
  * answers "which project is this folder". Everything else a project is
- * configured with lived in the database, so it never travelled: clone the
- * repo and you got the link to the project and none of its settings, and two
- * people on the same repository could be running different flows without
- * either of them noticing.
+ * configured with lived in the database, so it never travelled: two people on
+ * the same repository could be running different flows without either of them
+ * noticing.
+ *
+ * The id has since moved OUT (CGLAB-625): it is a row in one machine's
+ * database, so it lives in the git-ignored `.agenfk/local.json` (see
+ * projectIdentity.ts). This file is now the repository's shared settings, and
+ * a projectId still in it is read for old repositories and reported as a
+ * problem, with the way to move it.
  *
  * THE FILE IS CHECKED IN, which is the point and also the whole risk. Three
  * refusals below came from reading the real database rather than from theory,
@@ -159,7 +164,14 @@ export function readProjectFile(raw: string): ProjectFileRead {
   const projectId = typeof input.projectId === 'string' && input.projectId.trim()
     ? input.projectId.trim()
     : null;
-  if (!projectId) problems.push('The project file has no projectId, so it names no project.');
+  // CGLAB-625: the id is this machine's and lives in the git-ignored local.json.
+  // Still read here, so a repository from before the split keeps working.
+  if (projectId) {
+    problems.push(
+      'projectId names a row in one machine\'s database, so it belongs in the git-ignored .agenfk/local.json, not in this shared file. '
+      + 'Run agenfk init here to move it.',
+    );
+  }
 
   return { value: { projectId, settings }, problems };
 }

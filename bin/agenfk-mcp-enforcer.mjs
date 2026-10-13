@@ -37,12 +37,13 @@ async function getToolIntent() {
     });
 }
 
+// project.json (shared settings) or local.json (this machine's id, CGLAB-625) marks a project.
 function isInsideAgenFKProjectDir(dirPath) {
     if (!dirPath) return false;
     let dir = dirPath;
     const root = path.parse(dir).root;
     while (dir !== root) {
-        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json'))) return true;
+        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json')) || fs.existsSync(path.join(dir, '.agenfk', 'local.json'))) return true;
         dir = path.dirname(dir);
     }
     return false;

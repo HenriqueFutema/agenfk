@@ -85,7 +85,7 @@ describe('agenfk init on a machine without Claude Code (BUG 5cc7de1e)', () => {
   it('initializes the project and prints no error', async () => {
     withMcpInstall();
     await program.parseAsync(['node', 'agenfk', 'init', 'demo']);
-    expect(JSON.parse(fs.readFileSync(path.join(dir, '.agenfk', 'project.json'), 'utf8'))).toEqual({ projectId: 'p-123' });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, '.agenfk', 'local.json'), 'utf8'))).toEqual({ projectId: 'p-123' }); // CGLAB-625: the id is this machine's
     expect(err, err.join('\n')).toEqual([]);
     expect(out.join('\n')).not.toMatch(/Error/);
   });
@@ -105,7 +105,7 @@ describe('agenfk init on a machine without Claude Code (BUG 5cc7de1e)', () => {
 describe('agenfk init on a CLI-only install without Claude Code', () => {
   it('initializes the project, prints no error, and never looks for claude', async () => {
     await program.parseAsync(['node', 'agenfk', 'init', 'demo']);
-    expect(fs.existsSync(path.join(dir, '.agenfk', 'project.json'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, '.agenfk', 'local.json'))).toBe(true); // CGLAB-625
     expect(err, err.join('\n')).toEqual([]);
     const claudeLaunches = [...execSync.mock.calls, ...spawnSync.mock.calls].map(c => String(c[0])).filter(c => /(^|[\\/"])claude(\.(exe|cmd|bat))?\b/.test(c));
     expect(claudeLaunches).toEqual([]);

@@ -19,12 +19,13 @@ const INSTEAD =
     '\nRead and change state through the agenfk CLI instead: agenfk list --project <id> --json • agenfk get <id> --json • ' +
     'agenfk create ... • agenfk update <id> ... • agenfk verify <id> ... (or the equivalent agenfk MCP tools, when installed with --with-mcp).';
 
+// project.json (shared settings) or local.json (this machine's id, CGLAB-625) marks a project.
 function isInsideAgenFKProjectDir(dirPath) {
     if (!dirPath) return false;
     let dir = dirPath;
     const root = path.parse(dir).root;
     while (dir !== root) {
-        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json'))) return true;
+        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json')) || fs.existsSync(path.join(dir, '.agenfk', 'local.json'))) return true;
         dir = path.dirname(dir);
     }
     return false;

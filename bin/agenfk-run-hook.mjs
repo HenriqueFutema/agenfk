@@ -21,9 +21,9 @@
  *
  * Usage in client config: `agenfk-run-hook --client claude-code`
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSync, lstatSync } from 'fs';
 import { homedir } from 'os';
-import { join, dirname, resolve, isAbsolute, parse } from 'path';
+import { join, dirname, resolve, isAbsolute, relative, basename, sep } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -124,25 +124,80 @@ function rememberRun(sessionId, runId) {
 }
 
 /**
- * The project that owns a cwd, from the nearest `.agenfk/project.json`.
+ * The project that owns a cwd: the nearest `.agenfk` holding local.json or
+ * project.json. The id comes from local.json (this machine's, git-ignored -
+ * CGLAB-625), else a legacy projectId still in project.json: the resolution
+ * core's resolveProjectIdentity makes, mirrored because a hook is a
+ * standalone script.
  *
- * The same file the MCP gatekeeper reads. Null when no project owns the
- * directory — a bare worktree, a temp dir — which is NOT the same as "a
- * different project" and must not be treated as one.
+ * Null when no project owns the directory - a bare worktree, a temp dir -
+ * which is NOT the same as "a different project" and must not be treated as
+ * one. A project not linked on this machine is null too, and stops the walk:
+ * an outer project's id is not this one's.
  */
 export function projectIdFromCwd(cwd) {
-  let dir = cwd && isAbsolute(cwd) ? cwd : resolve(cwd || '.');
-  const root = parse(dir).root;
-  for (;;) {
-    try {
-      const parsed = JSON.parse(readFileSync(join(dir, '.agenfk', 'project.json'), 'utf8'));
-      return parsed && typeof parsed.projectId === 'string' && parsed.projectId ? parsed.projectId : null;
-    } catch { /* no project file here — walk up */ }
-    // A malformed file is caught by the same try as an absent one; both mean
-    // "this directory does not name a project", and neither should block the
-    // walk. The root ends it.
-    if (dir === root) return null;
-    dir = dirname(dir);
+  const start = cwd && isAbsolute(cwd) ? cwd : resolve(cwd || '.');
+  const found = nearestProject(start);
+  const wt = linkedWorktreeOf(start);
+  // A marker inside the worktree that names an id settles it; one above the
+  // worktree belongs to an enclosing directory, not to this checkout.
+  const ownMarker = !!found && !!wt && within(found.root, wt.top);
+  if (!wt || (ownMarker && found.projectId)) return found ? found.projectId : null;
+  // local.json is git-ignored, so a worktree has none: the main checkout's answers.
+  const there = nearestProject(join(wt.main, relative(wt.top, ownMarker ? found.root : start)));
+  if (there && there.projectId && within(there.root, wt.main)) return there.projectId;
+  return found ? found.projectId : null;
+}
+
+/** A small regular file's text, or null: a FIFO would block a sync read for ever. */
+function readSmall(file) {
+  try {
+    const st = statSync(file);
+    if (!st.isFile() || st.size > 64 * 1024) return null;
+    return readFileSync(file, 'utf8');
+  } catch { return null; }
+}
+
+function idIn(text) {
+  if (text === null) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed.projectId === 'string' && parsed.projectId.trim()
+      ? parsed.projectId.trim() : null;
+  } catch { return null; }
+}
+
+function nearestProject(startDir) {
+  for (let dir = resolve(startDir); ; dir = dirname(dir)) {
+    const local = readSmall(join(dir, '.agenfk', 'local.json'));
+    const shared = readSmall(join(dir, '.agenfk', 'project.json'));
+    if (local !== null || shared !== null) return { root: dir, projectId: idIn(local) ?? idIn(shared) };
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+function within(p, dir) {
+  return p === dir || p.startsWith(dir + sep);
+}
+
+function linkedWorktreeOf(dir) {
+  for (let cur = resolve(dir); ; cur = dirname(cur)) {
+    const dotGit = join(cur, '.git');
+    let st = null;
+    try { st = lstatSync(dotGit); } catch { /* none here */ }
+    if (st && !st.isFile()) return null;
+    if (st && st.isFile()) {
+      const text = st.size <= 4096 ? readSmall(dotGit) : null;
+      const m = text ? /^gitdir:\s*(.+?)\s*$/m.exec(text) : null;
+      if (!m) return null;
+      const gitDir = resolve(cur, m[1]);
+      const common = dirname(dirname(gitDir));
+      if (basename(dirname(gitDir)) !== 'worktrees' || basename(common) !== '.git') return null;
+      const config = readSmall(join(common, 'config'));
+      if (config && /^\s*bare\s*=\s*true\s*$/mi.test(config)) return null;
+      return { top: cur, main: dirname(common) };
+    }
+    if (dirname(cur) === cur) return null;
   }
 }
 

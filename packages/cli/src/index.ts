@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -28,6 +28,7 @@ import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
+import { ensureLocalIgnored, stripLegacyProjectId, readLegacyProjectId, projectFileTracked, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
 
 /**
  * Consecutive delivery failures before the startup banner warns. A halted
@@ -1211,24 +1212,12 @@ program
 
 program
   .command('current-project')
-  .description('Print the current project id (resolved from the nearest .agenfk/project.json)')
+  .description('Print the current project id (resolved from the nearest .agenfk/local.json, else a legacy projectId in .agenfk/project.json)')
   .option('--json', 'Output as JSON (includes server-side project details when reachable)')
   .action(async (options) => {
-    const projFile = findProjectJsonPath(process.cwd());
-    if (!projFile) {
-      console.error(chalk.red('Error: No AgEnFK project found. No .agenfk/project.json exists in this directory or any parent — run agenfk init to initialize one, or cd into an initialized project.'));
-      process.exit(1);
-      return;
-    }
-    let projectId: string | null = null;
-    try {
-      projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null;
-    } catch {}
-    if (!projectId) {
-      console.error(chalk.red(`Error: ${projFile} exists but is malformed or missing a "projectId" key — fix the file (do NOT run agenfk init on an already-initialized project).`));
-      process.exit(1);
-      return;
-    }
+    const here = requireCwdProject();
+    if (!here) return;
+    const { projectId, root } = here;
     if (program.opts().toon || options.json) {
       let details: any = { projectId };
       try {
@@ -1236,7 +1225,7 @@ program
         details = { projectId, name: data.name, description: data.description };
       } catch (error: any) {
         if (error.response?.status === 404) {
-          console.error(chalk.yellow(`Warning: project ${projectId} is not known to the server — ${projFile} may point at a deleted project.`));
+          console.error(chalk.yellow(`Warning: project ${projectId} is not known to the server — ${path.join(root, '.agenfk')} may point at a deleted project.`));
         }
         // Otherwise the server is unreachable — the id alone is still useful offline.
       }
@@ -1437,57 +1426,152 @@ function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'):
 
 program
   .command('init [name]')
-  .description('Initialize a new AgEnFK project (Note: Ensure API server is running)')
+  .description('Link this directory to an AgEnFK project: create one (<name>) or link an existing one (--project <id>). Note: Ensure API server is running')
   .option('-d, --description <desc>', 'Project description', '')
+  .option('--project <id>', 'Link this directory (a fresh clone, say) to an existing project instead of creating one')
+  .addHelpText('after', `
+Project files (CGLAB-625):
+  .agenfk/project.json  the repository's shared settings (verifyCommand, flow, ...): committed
+  .agenfk/local.json    this machine's projectId: git-ignored (init adds .agenfk/local.json to .gitignore if git does not ignore it already)
+
+projectId is a row id in this machine's database, so it never goes in project.json.
+Re-running init in a repository whose project.json still carries a projectId moves it into local.json,
+if this machine's server has that project; --project <id> links to the project you name instead.`)
   .action(async (name, options) => {
     try {
         const { data: serverInfo } = await axios.get(`${API_URL}/`);
         console.log(chalk.green('Connected to AgEnFK API Server.'));
 
         const rootDir = process.cwd();
-        const agenfkDir = path.join(rootDir, '.agenfk');
-        const projFile = path.join(agenfkDir, 'project.json');
+        const localFile = path.join(rootDir, '.agenfk', 'local.json');
 
-        if (fs.existsSync(projFile)) {
-            const currentProj = JSON.parse(fs.readFileSync(projFile, 'utf8'));
-            console.log(chalk.yellow(`Current directory is already initialized with Project ID: ${currentProj.projectId}`));
+        // A worktree is one card's tree and takes its project from the main checkout:
+        // local.json, a stripped project.json or a .gitignore line written here would land in the card.
+        const worktree = linkedWorktreeOf(rootDir);
+        if (worktree) {
+            console.error(chalk.red(`Refusing to run agenfk init in a git worktree: ${rootDir} is a worktree of ${worktree.main}, and takes its project from there. Run it in the main checkout: cd ${inMainCheckout(worktree, rootDir)} && agenfk init${options.project ? ` --project ${options.project}` : name ? ` ${name}` : ''}`));
+            process.exit(1);
             return;
+        }
+
+        /** The ignore rule, said out loud when init had to add it. */
+        const ignoreLocal = () => {
+            if (ensureLocalIgnored(rootDir) === 'added') {
+                console.log(chalk.green(`Added ${LOCAL_FILE_REL} to .gitignore: the project id is this machine's. Commit .gitignore.`));
+            }
+        };
+        /** Says what became of an id the shared file carried, and what - if anything - there is to commit. */
+        const reportStripped = (id: string | null) => {
+            if (!id) return;
+            console.log(chalk.green(`Removed projectId ${id} from .agenfk/project.json: the id is this machine's and lives in ${LOCAL_FILE_REL}.`));
+            if (projectFileTracked(rootDir)) {
+                console.log(chalk.gray('Commit .agenfk/project.json so the id leaves version control. Other machines link with agenfk init <name>, or agenfk init --project <id> with an id from their own server.'));
+            }
+        };
+        /** Link this directory: local.json FIRST, so a failed write never loses the id; then out of the shared file. */
+        const link = (projectId: string): string => {
+            const written = writeLocalProjectId(rootDir, projectId);
+            reportStripped(stripLegacyProjectId(rootDir));
+            ignoreLocal();
+            return written;
+        };
+
+        // A project inside a project is legal (a monorepo's subproject) and easy to make by accident.
+        const enclosing = resolveProjectIdentity(rootDir);
+        if ((name || options.project) && enclosing && enclosing.root !== path.resolve(rootDir)) {
+            console.log(chalk.yellow(`Note: this directory is inside ${enclosing.root}, which is already an AgEnFK project. This makes a separate project nested inside it.`));
         }
 
         let projectId: string;
         let projectName: string;
 
-        if (name) {
-            console.log(chalk.blue(`Creating new project: ${name}...`));
-            const { data: newProj } = await axios.post(`${API_URL}/projects`, {
-                name,
-                description: options.description
-            });
-            projectId = newProj.id;
-            projectName = newProj.name;
-            console.log(chalk.green(`Created project: ${projectName} (ID: ${projectId})`));
+        if (options.project) {
+            // Named explicitly, it wins over whatever local.json or a legacy project.json says.
+            let existing: any;
+            try {
+                ({ data: existing } = await axios.get(`${API_URL}/projects/${encodeURIComponent(options.project)}`));
+            } catch (e: any) {
+                const why = e?.response?.status === 404 ? 'the server has no such project' : (e?.response?.data?.error || e?.message);
+                console.error(chalk.red(`Cannot link to project ${options.project}: ${why}. agenfk list-projects lists the projects this server has.`));
+                process.exit(1);
+                return;
+            }
+            projectId = existing.id;
+            projectName = existing.name;
+            // Two copies of one repository as one project share one root: each verify moves it.
+            const other = typeof existing.projectRoot === 'string' ? existing.projectRoot : '';
+            if (other && fs.existsSync(other) && realDirOf(other) !== realDirOf(rootDir)) {
+                console.log(chalk.yellow(`Warning: project ${projectName} already lives in ${other} on this machine. Linking this copy too makes both one project with one root, and a verify from either moves it. To work on it in parallel, use a git worktree (agenfk worktree create <itemId>) instead of a second copy.`));
+            }
+            console.log(chalk.green(`Linked to project: ${projectName} (ID: ${projectId})`));
         } else {
-            console.log(chalk.blue('\nListing existing projects:'));
-            const { data: projects } = await axios.get(`${API_URL}/projects`);
-            console.table(projects.map((p: any) => ({
-              ID: p.id.substring(0, 8),
-              Name: p.name,
-              Created: new Date(p.createdAt).toLocaleDateString()
-            })));
+            // Already linked here: say so, and drop any stale id the shared file still carries.
+            const linked = existsLocalId(localFile);
+            if (linked) {
+                reportStripped(stripLegacyProjectId(rootDir));
+                ignoreLocal();
+                console.log(chalk.yellow(`Current directory is already initialized with Project ID: ${linked}`));
+                return;
+            }
 
-            console.log(chalk.yellow('\nTo initialize this directory, use:'));
-            console.log(chalk.white('  agenfk init <project-name>'));
-            console.log(chalk.white('\nOr to link to an existing project, create .agenfk/project.json manually:'));
-            console.log(chalk.white('  { "projectId": "EXISTING_ID" }'));
-            return;
+            // From before the split: the shared file names an id. Move it - if it is this server's.
+            const legacy = readLegacyProjectId(rootDir);
+            if (legacy) {
+                let status: 'known' | 'foreign' | 'error' = 'known';
+                let why = '';
+                try { await axios.get(`${API_URL}/projects/${encodeURIComponent(legacy)}`); }
+                catch (e: any) {
+                    status = e?.response?.status === 404 ? 'foreign' : 'error';
+                    why = e?.response?.data?.error || e?.message || String(e);
+                }
+                if (status === 'error') {
+                    console.error(chalk.red(`Could not check project ${legacy}, which .agenfk/project.json names: ${why}. Nothing was changed.`));
+                    process.exit(1);
+                    return;
+                }
+                if (status === 'known') {
+                    // This directory IS that project: a name must not make a second, empty one.
+                    link(legacy);
+                    console.log(chalk.green(`Moved projectId ${legacy} into ${LOCAL_FILE_REL}.`));
+                    if (name) console.log(chalk.yellow(`"${name}" was not created: this directory is already project ${legacy}.`));
+                    return;
+                }
+                if (!name) {
+                    console.log(chalk.yellow(`.agenfk/project.json names project ${legacy}, which this server does not have: it is another machine's id, committed. Nothing was changed.`));
+                    console.log(chalk.white('  agenfk init --project <id>       link this directory to one of your projects (agenfk list-projects lists them)'));
+                    console.log(chalk.white('  agenfk init <project-name>       create a new project'));
+                    return;
+                }
+                // A foreign id and a name: create below; link() drops the foreign id.
+            }
+
+            if (name) {
+                console.log(chalk.blue(`Creating new project: ${name}...`));
+                const { data: newProj } = await axios.post(`${API_URL}/projects`, {
+                    name,
+                    description: options.description
+                });
+                projectId = newProj.id;
+                projectName = newProj.name;
+                console.log(chalk.green(`Created project: ${projectName} (ID: ${projectId})`));
+            } else {
+                console.log(chalk.blue('\nListing existing projects:'));
+                const { data: projects } = await axios.get(`${API_URL}/projects`);
+                console.table(projects.map((p: any) => ({
+                  ID: p.id.substring(0, 8),
+                  Name: p.name,
+                  Created: new Date(p.createdAt).toLocaleDateString()
+                })));
+
+                console.log(chalk.yellow('\nTo initialize this directory, use:'));
+                console.log(chalk.white('  agenfk init <project-name>       create a new project'));
+                console.log(chalk.white('  agenfk init --project <id>       link an existing one (a fresh clone, say)'));
+                return;
+            }
         }
 
-        if (!fs.existsSync(agenfkDir)) {
-            fs.mkdirSync(agenfkDir, { recursive: true });
-        }
-
-        fs.writeFileSync(projFile, JSON.stringify({ projectId }, null, 2), 'utf8');
-        console.log(chalk.green(`\n✨ Initialized project in ${projFile}`));
+        const written = link(projectId);
+        console.log(chalk.green(`\n✨ Initialized project in ${written}`));
         console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
 
         /*
@@ -1516,14 +1600,37 @@ program
     }
   });
 
+/** Where `dir` (inside worktree `wt`) sits in the main checkout - a monorepo subproject keeps its subpath. `dir` itself outside a worktree. */
+function inMainCheckout(wt: { top: string; main: string } | null, dir: string): string {
+  return wt ? path.join(wt.main, path.relative(wt.top, path.resolve(dir))) : dir;
+}
+
+/** realpath, or the path itself when it cannot be resolved. */
+function realDirOf(p: string): string {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+
+/** The id `<file>` (a local.json) names, or null. */
+function existsLocalId(file: string): string | null {
+  try { return readLocalProjectFile(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
 program
   .command('configure-ide')
   .description('Set up the Claude Code MCP integration for an already-initialized project: registers the agenfk MCP server with `claude mcp add` and its permissions in .claude/settings.local.json. Safe to re-run.')
   .action(() => {
     const rootDir = process.cwd();
-    const projFile = path.join(rootDir, '.agenfk', 'project.json');
+    // A card's worktree is not where the IDE integration belongs: it would write into the card's tree.
+    const worktree = linkedWorktreeOf(rootDir);
+    if (worktree) {
+        console.error(chalk.red(`Error: ${rootDir} is a git worktree of ${worktree.main}. Run agenfk configure-ide in the main checkout.`));
+        process.exit(1);
+        return;
+    }
+    // Initialized HERE: this directory's own .agenfk names a project (CGLAB-625: local.json, or a legacy id).
+    const here = resolveProjectIdentity(rootDir);
 
-    if (!fs.existsSync(projFile)) {
+    if (!here?.projectId || here.root !== path.resolve(rootDir)) {
         console.error(chalk.red('Error: No AgEnFK project found in the current directory.'));
         console.error(chalk.gray('Run "agenfk init" first to initialize a project here.'));
         process.exit(1);
@@ -1722,30 +1829,51 @@ program
   });
 
 /**
- * Find the nearest .agenfk/project.json by searching upwards from startDir.
+ * The project this directory belongs to (CGLAB-625): the id from the
+ * git-ignored .agenfk/local.json, else a legacy projectId still in the shared
+ * .agenfk/project.json - which keeps working, with a warning on stderr (stdout
+ * stays clean for scripts) saying how to move it.
  */
-function findProjectJsonPath(startDir: string): string | null {
-  let currentDir = startDir;
-  while (currentDir !== path.parse(currentDir).root) {
-    const projFile = path.join(currentDir, '.agenfk', 'project.json');
-    if (fs.existsSync(projFile)) return projFile;
-    currentDir = path.dirname(currentDir);
+let legacyWarned = false;
+function cwdProject(startDir: string) {
+  const found = resolveProjectIdentity(startDir);
+  // Once per process: a command resolving the project twice need not say it twice.
+  if (found?.source === 'legacy' && !legacyWarned) {
+    legacyWarned = true;
+    console.error(chalk.yellow(`Warning: ${path.join(found.root, '.agenfk', 'project.json')} carries projectId, which is this machine's and belongs in the git-ignored .agenfk/local.json. Run agenfk init in ${inMainCheckout(linkedWorktreeOf(found.root), found.root)} to move it.`));
   }
-  return null;
+  return found;
+}
+
+/** The current project's id, or null. */
+function findProjectId(startDir: string): string | null {
+  return cwdProject(startDir)?.projectId ?? null;
 }
 
 /**
- * Find project ID by searching upwards for .agenfk/project.json
+ * The current project, or null after saying why on stderr and exiting 1: for
+ * commands that cannot run without one.
  */
-function findProjectId(startDir: string): string | null {
-  const projFile = findProjectJsonPath(startDir);
-  if (!projFile) return null;
-  try {
-    const config = JSON.parse(fs.readFileSync(projFile, 'utf8'));
-    return config.projectId || null;
-  } catch {
+function requireCwdProject(): { projectId: string; root: string } | null {
+  const found = cwdProject(process.cwd());
+  const worktree = !found?.projectId ? linkedWorktreeOf(process.cwd()) : null;
+  if (worktree) {
+    // Never `init` here: it would write local.json (and maybe .gitignore) into a card's tree.
+    console.error(chalk.red(`Error: this is a git worktree of ${worktree.main}, which is not linked to an AgEnFK project on this machine. Link the main checkout (cd ${inMainCheckout(worktree, process.cwd())} && agenfk init --project <id>), or pass --project <id> where the command takes one.`));
+    process.exit(1);
     return null;
   }
+  if (!found) {
+    console.error(chalk.red('Error: No AgEnFK project found. No .agenfk/local.json or .agenfk/project.json exists in this directory or any parent — run agenfk init to initialize one, or cd into an initialized project.'));
+    process.exit(1);
+    return null;
+  }
+  if (!found.projectId) {
+    console.error(chalk.red(`Error: ${found.root} is an AgEnFK project not linked on this machine: its .agenfk/local.json is missing or names no projectId. Link it with agenfk init --project <id> (agenfk list-projects lists them), or create a project with agenfk init <name>.`));
+    process.exit(1);
+    return null;
+  }
+  return { projectId: found.projectId, root: found.root };
 }
 
 /**
@@ -4574,20 +4702,10 @@ worktreeCmd
      * confirms — which still answers the real complaint, because what has
      * already accumulated can finally be cleared.
      */
-    // The same resolution `current-project` uses: the nearest .agenfk/project.json.
-    const projFile = findProjectJsonPath(process.cwd());
-    if (!projFile) {
-      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
-      process.exit(1);
-      return;
-    }
-    let projectId: string | null = null;
-    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
-    if (!projectId) {
-      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
-      process.exit(1);
-      return;
-    }
+    // The same resolution `current-project` uses (CGLAB-625: local.json first).
+    const here = requireCwdProject();
+    if (!here) return;
+    const { projectId } = here;
     const { data: items } = await axios.get(`${API_URL}/items`, {
       params: projectId ? { projectId } : undefined,
     });
@@ -4825,19 +4943,9 @@ prCmd
      * cannot be reached by anyone. A second unreachable endpoint would have
      * been the same mistake twice.
      */
-    const projFile = findProjectJsonPath(process.cwd());
-    if (!projFile) {
-      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
-      process.exit(1);
-      return;
-    }
-    let projectId: string | null = null;
-    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
-    if (!projectId) {
-      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
-      process.exit(1);
-      return;
-    }
+    const here = requireCwdProject();
+    if (!here) return;
+    const { projectId } = here;
     try {
       const { data } = await axios.post(`${API_URL}/projects/${projectId}/tasks-from-pr`, { prNumber });
       if (data.reused) {
