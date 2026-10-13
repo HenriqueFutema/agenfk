@@ -219,3 +219,74 @@ describe('size mix without hover (story f17f36a5)', () => {
     expect(screen.getAllByRole('columnheader', { name: 'XS · S · M · L · XL' })).toHaveLength(2);
   });
 });
+
+describe('PrOverviewPage flow compliance (CGLAB-617)', () => {
+  const renderWithData = (data: any) => {
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/api'] } };
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
+      return { data };
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs')]}>
+          <PrOverviewPage />
+          <UrlProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  };
+
+  const withCompliance = () => {
+    const o = makeOverview(['claude-opus-4-8']);
+    o.compliance = { judged: 4, compliant: 3, score: 0.75 };
+    o.byDeveloper[0].compliance = { judged: 3, compliant: 2, score: 2 / 3 };
+    return o;
+  };
+
+  it('renders the aggregate compliance tile', async () => {
+    renderWithData(withCompliance());
+    expect(await screen.findByText('75%')).toBeInTheDocument();
+    // The 75% lives on a StatTile — the aggregate tile, not a table cell.
+    expect(screen.getByText('75%').closest('[data-stat-tile]')).not.toBeNull();
+  });
+
+  it('gives each developer their own score, distinct from the aggregate', async () => {
+    renderWithData(withCompliance());
+    await screen.findByText('75%');
+    // alice: 2 of 3 — not the aggregate's 75%.
+    expect(screen.getByText('67%')).toBeInTheDocument();
+  });
+
+  it('says so when nothing was judged, and never renders 0%', async () => {
+    const o = makeOverview(['claude-opus-4-8']);
+    o.compliance = { judged: 0, compliant: 0, score: null };
+    renderWithData(o);
+    await screen.findAllByRole('img', { name: /^Size mix: / });
+    expect(screen.getAllByTitle('nothing judged').length).toBeGreaterThan(0);
+    expect(screen.queryByText('0%')).not.toBeInTheDocument();
+  });
+
+  it('shows the honest placeholder in By model — transitions carry no model', async () => {
+    renderWithData(withCompliance());
+    await screen.findByText('75%');
+    // Two compliance columns: one per table.
+    expect(screen.getAllByRole('columnheader', { name: 'Compliance' })).toHaveLength(2);
+    // Every By model cell says why it is a dash, and never shows a score.
+    const dashes = screen.getAllByTitle('transitions do not carry a model');
+    expect(dashes.length).toBe(makeOverview(['x']).byModel.length);
+    for (const dash of dashes) expect(dash.textContent).not.toMatch(/%$/);
+  });
+
+  it('an old hub without compliance fields renders the old four-tile grid', async () => {
+    renderWithData(makeOverview(['claude-opus-4-8'])); // no compliance anywhere
+    await screen.findAllByRole('img', { name: /^Size mix: / });
+    // No StatTile carries the label — the column headers do, but they sit
+    // outside the KPI grid.
+    expect(screen.getAllByText('Compliance').every(el => el.closest('[data-stat-tile]') === null)).toBe(true);
+    // The per-developer column still renders, as an explicit dash — the row's
+    // verdict is simply unknown, never invented.
+    expect(screen.getAllByTitle('nothing judged').length).toBeGreaterThan(0);
+  });
+});
