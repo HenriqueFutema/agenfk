@@ -12,7 +12,7 @@
  * (cb4ef070).
  */
 import { removeTestDb, testDbPath } from './helpers/testDb';
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -73,8 +73,14 @@ function heldScript(lines: string[] = ['running']) {
   fs.writeFileSync(script, `for (const l of ${JSON.stringify(lines)}) console.log(l);\n`
     + `const fs = require('fs'); const end = Date.now() + 30000;\n`
     + `const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(gate)}) || Date.now() > end) clearInterval(t); }, 50);\n`);
-  return { script, release: () => fs.writeFileSync(gate, '') };
+  const release = () => fs.writeFileSync(gate, '');
+  held.push(release);
+  return { script, release };
 }
+// A spec that fails before releasing its runs must not leave them holding the
+// suite slot for 30s: the next spec would time out on them instead of its own cause.
+const held: Array<() => void> = [];
+afterEach(() => { for (const release of held.splice(0)) release(); });
 
 /** A card on WORK whose leaving runs its suite (suite-green): a command that prints `lines`, then takes `ms`, or runs until `release()` when `held`. */
 async function card(opts: { ms?: number; lines?: string[]; name?: string; held?: boolean } = {}) {

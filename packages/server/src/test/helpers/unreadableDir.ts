@@ -4,6 +4,27 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 
 let probed: boolean | undefined;
+let privileged: boolean | undefined;
+
+/**
+ * Whether this process reads through a denial BY ITS ENVIRONMENT: root on
+ * POSIX, or on Windows a token holding SeBackupPrivilege (an administrator,
+ * as on GitHub's runner). Decided without calling makeUnreadable(), so the
+ * spec that checks makeUnreadable() can skip on it and still catch a
+ * regression in it. When whoami cannot answer, it says yes (skip, not a red
+ * run that is the environment's fault).
+ */
+export function readsThroughDenials(): boolean {
+  if (process.platform !== 'win32') return typeof process.getuid === 'function' && process.getuid() === 0;
+  if (privileged !== undefined) return privileged;
+  try {
+    const whoami = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'whoami.exe');
+    privileged = /\bSeBackupPrivilege\b/.test(execFileSync(whoami, ['/priv'], { encoding: 'utf8', stdio: 'pipe', windowsHide: true }));
+  } catch {
+    privileged = true;
+  }
+  return privileged;
+}
 
 /**
  * Whether makeUnreadable() actually stops THIS process listing a directory.

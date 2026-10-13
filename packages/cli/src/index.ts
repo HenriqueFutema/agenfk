@@ -3579,6 +3579,21 @@ function removeAgenfkTomlFromDir(dir: string): void {
   }
 }
 
+/**
+ * Add `name: <skillName>` to a command's frontmatter when it has none, in the
+ * file's own line ending: a Windows checkout (core.autocrlf) opens with
+ * `---\r\n`, and matching only `---\n` skipped the injection there (#208).
+ * Mirrored from scripts/install-helpers.mjs `withSkillName` (this package's
+ * build cannot import from scripts/); skill-name-frontmatter.test.ts holds the
+ * two copies to the same answers.
+ */
+export function withSkillName(content: string, skillName: string): string {
+  const open = /^---(\r?\n)/.exec(content);
+  if (!open || /^name:\s/m.test(content)) return content;
+  const eol = open[1];
+  return `---${eol}name: ${skillName}${eol}${content.slice(open[0].length)}`;
+}
+
 /** Install commands from system commands dir to a platform's destination */
 function syncCommandsToDir(
   srcDir: string,
@@ -3600,15 +3615,8 @@ function syncCommandsToDir(
     const relDest = transform ? transform(file) : file;
     const dest = path.join(destDir, relDest);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    // Read content and inject 'name' frontmatter field if missing (required by OpenCode, Codex, Cursor, Gemini)
-    let content = fs.readFileSync(src, 'utf8');
-    // In the file's own line ending: a Windows checkout (core.autocrlf) opens
-    // with `---\r\n`, and matching only `---\n` skipped the injection there.
-    const open = /^---(\r?\n)/.exec(content);
-    if (open && !content.match(/^name:\s/m)) {
-      const skillName = file.replace(/\.md$/, '');
-      content = `---${open[1]}name: ${skillName}${open[1]}${content.slice(open[0].length)}`;
-    }
+    // Inject the 'name' frontmatter field if missing (required by OpenCode, Codex, Cursor, Gemini)
+    const content = withSkillName(fs.readFileSync(src, 'utf8'), file.replace(/\.md$/, ''));
     fs.writeFileSync(dest, content);
     installed.push(dest);
   }

@@ -14,7 +14,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { canMakeUnreadable, makeUnreadable } from './helpers/unreadableDir';
+import { canMakeUnreadable, makeUnreadable, readsThroughDenials } from './helpers/unreadableDir';
 
 const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 
@@ -23,8 +23,10 @@ afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true, maxR
 
 describe('makeUnreadable()', () => {
   // root reads through chmod 000, and a Windows admin with the backup privilege
-  // (GitHub's runner) reads through the deny ACE; the specs that use this skip there too.
-  it.skipIf(!canMakeUnreadable())('makes listing the directory fail, and the returned restore undoes it', () => {
+  // (GitHub's runner) reads through the deny ACE. Skipped on THAT - the
+  // environment - never on canMakeUnreadable(), which calls the function under
+  // test: a broken makeUnreadable() would then skip the spec that catches it.
+  it.skipIf(readsThroughDenials())('makes listing the directory fail, and the returned restore undoes it', () => {
     work = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-unreadable-'));
     const dir = path.join(work, 'locked');
     fs.mkdirSync(dir);
@@ -55,5 +57,14 @@ describe('makeUnreadable()', () => {
 
     expect(fs.existsSync(work)).toBe(false);
     work = '';
+  });
+});
+
+describe('canMakeUnreadable()', () => {
+  // The specs that need an unreadable directory skip on this probe. Wherever
+  // the environment does not read through a denial it must say yes, or those
+  // specs would turn into skips without anything going red.
+  it.skipIf(readsThroughDenials())('says yes wherever the environment does not read through a denial', () => {
+    expect(canMakeUnreadable()).toBe(true);
   });
 });

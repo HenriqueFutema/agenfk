@@ -58,7 +58,7 @@ import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
-import { missingCommandOnWindows } from './commandNotFound.js';
+import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -560,7 +560,7 @@ const notFoundNote = (code: number | null, command: string, cwd: string | undefi
     pathExt: process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD',
     // No root: the command ran where the server runs.
     cwd: cwd || process.cwd(),
-    exists: (p) => fs.existsSync(p),
+    exists: commandEntryExists,
   });
   return missing ? ` - \`${missing}\` was not found (not a cmd.exe command, a file, or on PATH): the command could not be run` : '';
 };
