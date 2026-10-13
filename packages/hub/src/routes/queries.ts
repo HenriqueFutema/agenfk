@@ -130,8 +130,8 @@ const JUDGED_TRANSITION = `type = 'step.transitioned'
 const COMPLIANT_TRANSITION = `${JUDGED_TRANSITION}
                AND LOWER(json_extract(payload, '$.payload.compliant')) IN ('true','1')`;
 
-/** A window's score, or null when nothing was judged — never 0 for missing data. */
-function complianceOf(row: Record<string, unknown> | undefined) {
+/** A window's adherence score, or null when nothing was judged — never 0 for missing data. */
+function adherenceOf(row: Record<string, unknown> | undefined) {
   const judged = Number(row?.judged ?? 0) || 0;
   const compliant = Number(row?.compliant ?? 0) || 0;
   return { judged, compliant, score: judged ? compliant / judged : null };
@@ -818,7 +818,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       }
     }
 
-    // Flow compliance over the same window/filters (CGLAB-617): judged/compliant
+    // Flow adherence over the same window/filters (CGLAB-617, CGLAB-618): judged/compliant
     // on the stamped step.transitioned events, aggregate + per developer.
     // Transitions are actor-attributed, so unlike the PR rows above — which
     // need the opener logic that keeps from/users out of SQL — every filter
@@ -828,35 +828,35 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // so this surface and /v1/adherence agree on what counts. `model` is not
     // pushed because transitions carry no model — a By-model split here would
     // be fabrication, and the UI says so instead. Under a PR search the whole
-    // block is skipped: a compliance number scoped to nothing (the search
+    // block is skipped: an adherence number scoped to nothing (the search
     // supersedes the window) would be silently mislabelled next to one PR.
-    let compliance: ReturnType<typeof complianceOf> | undefined;
-    let complianceByDev: Map<string, ReturnType<typeof complianceOf>> | undefined;
+    let adherence: ReturnType<typeof adherenceOf> | undefined;
+    let adherenceByDev: Map<string, ReturnType<typeof adherenceOf>> | undefined;
     if (prNumber == null) {
       const cf = applyEventFilters(orgId, { ...f, types: null, itemTypes: null });
       const cfWhere = `${cf.where.join(' AND ')} AND type = 'step.transitioned'`;
       const cfCase = `SUM(CASE WHEN ${JUDGED_TRANSITION} THEN 1 ELSE 0 END) AS judged,
             SUM(CASE WHEN ${COMPLIANT_TRANSITION} THEN 1 ELSE 0 END) AS compliant`;
-      compliance = complianceOf(await ctx.db.get<Record<string, unknown>>(
+      adherence = adherenceOf(await ctx.db.get<Record<string, unknown>>(
         `SELECT ${cfCase} FROM events WHERE ${cfWhere}`,
         cf.params,
       ));
-      complianceByDev = new Map(
+      adherenceByDev = new Map(
         (await ctx.db.all<Record<string, unknown>>(
           `SELECT user_key, ${cfCase} FROM events WHERE ${cfWhere} GROUP BY user_key`,
           cf.params,
-        )).map(r => [String(r.user_key), complianceOf(r)]),
+        )).map(r => [String(r.user_key), adherenceOf(r)]),
       );
     }
 
     res.json({
       period,
       ...result,
-      ...(compliance ? {
-        compliance,
+      ...(adherence ? {
+        adherence,
         byDeveloper: result.byDeveloper.map(d => ({
           ...d,
-          compliance: complianceByDev!.get(d.user_key) ?? { judged: 0, compliant: 0, score: null },
+          adherence: adherenceByDev!.get(d.user_key) ?? { judged: 0, compliant: 0, score: null },
         })),
       } : {}),
       previous,

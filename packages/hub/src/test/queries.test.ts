@@ -793,13 +793,13 @@ describe('GET /v1/prs/overview', () => {
     expect(viaRollups.body.series[0]).toMatchObject({ day: '2026-06-03', judged: 2, compliant: 1 });
   });
 
-  // ── CGLAB-617: /v1/prs/overview carries flow compliance ───────────────
+  // ── CGLAB-617: /v1/prs/overview carries flow adherence ───────────────
   //
   // Aggregate + per-developer, judged off the same stamped step.transitioned
-  // events as /v1/adherence. By Model rows carry NO compliance: transitions
+  // events as /v1/adherence. By Model rows carry NO adherence: transitions
   // have no model to judge (the user chose the honest placeholder).
-  it('prs/overview carries flow compliance — aggregate and per developer', async () => {
-    // A PR for alice, so she has a byDeveloper row to attach compliance to.
+  it('prs/overview carries flow adherence — aggregate and per developer', async () => {
+    // A PR for alice, so she has a byDeveloper row to attach adherence to.
     await ctx.db.run(
       `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, payload)
        VALUES ('pr-alice', 'org', 'inst-1', 'alice@acme.com', '2026-07-01T08:00:00Z', '2026-07-01T08:00:00Z', 'pr.opened', 'p1', 'i1', 'TASK', 'git@x:web.git', ?)`,
@@ -814,27 +814,27 @@ describe('GET /v1/prs/overview', () => {
 
     const r = await supertest(__server).get('/v1/prs/overview').set('Cookie', cookie);
     expect(r.status, JSON.stringify(r.body)).toBe(200);
-    expect(r.body.compliance).toMatchObject({ judged: 4, compliant: 3 });
-    expect(r.body.compliance.score).toBeCloseTo(0.75);
+    expect(r.body.adherence).toMatchObject({ judged: 4, compliant: 3 });
+    expect(r.body.adherence.score).toBeCloseTo(0.75);
     const dev = Object.fromEntries((r.body.byDeveloper as any[]).map((x: any) => [x.user_key, x]));
-    expect(dev['alice@acme.com'].compliance).toMatchObject({ judged: 3, compliant: 2 });
-    expect(dev['alice@acme.com'].compliance.score).toBeCloseTo(2 / 3);
-    expect(dev['bob@acme.com'].compliance).toMatchObject({ judged: 1, compliant: 1 });
+    expect(dev['alice@acme.com'].adherence).toMatchObject({ judged: 3, compliant: 2 });
+    expect(dev['alice@acme.com'].adherence.score).toBeCloseTo(2 / 3);
+    expect(dev['bob@acme.com'].adherence).toMatchObject({ judged: 1, compliant: 1 });
     // No fabricated attribution: a model row never carries a verdict.
-    expect(r.body.byModel.every((m: any) => !('compliance' in m))).toBe(true);
+    expect(r.body.byModel.every((m: any) => !('adherence' in m))).toBe(true);
   });
 
-  it('prs/overview scores compliance null when the window judged nothing', async () => {
+  it('prs/overview scores adherence null when the window judged nothing', async () => {
     const r = await supertest(__server).get('/v1/prs/overview?from=2030-01-01&to=2030-12-31').set('Cookie', cookie);
     expect(r.status).toBe(200);
-    expect(r.body.compliance).toMatchObject({ judged: 0, compliant: 0, score: null });
+    expect(r.body.adherence).toMatchObject({ judged: 0, compliant: 0, score: null });
   });
 
-  it('prs/overview omits compliance under a PR search — a number scoped to nothing', async () => {
+  it('prs/overview omits adherence under a PR search — a number scoped to nothing', async () => {
     const r = await supertest(__server).get('/v1/prs/overview?pr=7').set('Cookie', cookie);
     expect(r.status).toBe(200);
-    expect('compliance' in r.body).toBe(false);
-    expect(r.body.byDeveloper.every((d: any) => !('compliance' in d))).toBe(true);
+    expect('adherence' in r.body).toBe(false);
+    expect(r.body.byDeveloper.every((d: any) => !('adherence' in d))).toBe(true);
   });
 
   // The ?pr= PR-search suite lives in pr-overview-pr-search-route.test.ts, which
