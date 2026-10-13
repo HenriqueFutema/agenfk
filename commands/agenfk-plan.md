@@ -8,7 +8,7 @@ You are executing the `/agenfk-plan <id>` command as a **Planning Agent**. Follo
 
 **Step 1 — Understand Context**
 - Read the item details using `agenfk get <id> --json`.
-- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. Compare it against `agenfk current-project`; if that errors (this directory is not linked on this machine), link it with `agenfk init --project <projectId>`: it writes the id to the git-ignored `.agenfk/local.json`. Never write the id into the shared `.agenfk/project.json`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. Compare it against `agenfk current-project`; if that errors (this directory is not linked on this machine), link it with `agenfk init --project <projectId>`: it writes the id to the git-ignored `.agenfk/local.json`. In a git worktree, link the main checkout instead (the error names it); never run `agenfk init` inside a card's worktree. Never write the id into the shared `.agenfk/project.json`.
 - If it's an EPIC or STORY, read the `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` to understand the system boundaries.
 - Scan the relevant parts of the codebase using `glob` and `grep` to identify technical touchpoints.
 

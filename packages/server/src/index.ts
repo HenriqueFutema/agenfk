@@ -113,7 +113,13 @@ const findProjectRoot = (startDir: string): string => {
 
 // CGLAB-625: local.json first, else a legacy id in project.json.
 const findProjectId = (startDir: string): string | null => {
-  return resolveProjectIdentity(findProjectRoot(startDir))?.projectId ?? null;
+  // A root the environment names is the project's: never borrow an id from above it.
+  if (process.env.AGENFK_PROJECT_ROOT || process.env.AGENFK_DB_PATH) {
+    const root = findProjectRoot(startDir);
+    const found = resolveProjectIdentity(root);
+    return found && path.resolve(found.root) === path.resolve(root) ? found.projectId : null;
+  }
+  return resolveProjectIdentity(startDir)?.projectId ?? null;
 };
 
 export const server = new Server(

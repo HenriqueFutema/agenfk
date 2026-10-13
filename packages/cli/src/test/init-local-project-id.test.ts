@@ -179,27 +179,107 @@ describe('agenfk init on a fresh clone', () => {
 describe('agenfk init on a repository from before the split', () => {
   it('moves the id into local.json and keeps the shared settings in project.json', async () => {
     gitRepo();
-    declare({ projectId: 'p-old', verifyCommand: 'npm test' });
+    declare({ projectId: 'p-known', verifyCommand: 'npm test' });
     await run('init');
-    expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-old' });
+    expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-known' });
     expect(readJson(agenfkFile('project.json'))).toEqual({ verifyCommand: 'npm test' });
     expect(isIgnored('.agenfk/local.json')).toBe(true);
     expect(out.join('\n')).toMatch(/moved/i);
-    expect(out.join('\n')).toMatch(/commit/i);
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 
-  it('removes a project.json that carried nothing but the id', async () => {
+  it('keeps an emptied project.json, so every other clone keeps its project marker (review #4)', async () => {
     gitRepo();
-    declare({ projectId: 'p-old' });
+    declare({ projectId: 'p-known' });
     await run('init');
-    expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-old' });
-    expect(fs.existsSync(agenfkFile('project.json'))).toBe(false);
+    expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-known' });
+    expect(readJson(agenfkFile('project.json'))).toEqual({});
+  });
+
+  it('asks for a commit only when project.json is tracked (review #8)', async () => {
+    gitRepo();
+    declare({ projectId: 'p-known', flow: 'TDD Flow' });
+    git(dir, 'add', '.agenfk/project.json');
+    git(dir, 'commit', '-qm', 'tracked');
+    await run('init');
+    expect(out.join('\n')).toMatch(/commit .agenfk\/project\.json/i);
+  });
+
+  it('asks for no commit when project.json is not tracked', async () => {
+    gitRepo();
+    declare({ projectId: 'p-known', flow: 'TDD Flow' });
+    await run('init');
+    expect(out.join('\n')).not.toMatch(/commit .agenfk\/project\.json/i);
+  });
+
+  it('does not move an id this server does not have - another machine\'s - and says how to link (review #1)', async () => {
+    gitRepo();
+    declare({ projectId: 'p-elsewhere', flow: 'TDD Flow' });
+    const before = fs.readFileSync(agenfkFile('project.json'), 'utf8');
+    await run('init');
+    expect(fs.existsSync(agenfkFile('local.json'))).toBe(false);
+    expect(fs.readFileSync(agenfkFile('project.json'), 'utf8')).toBe(before);
+    expect(out.join('\n') + err.join('\n')).toMatch(/p-elsewhere/);
+    expect(out.join('\n') + err.join('\n')).toMatch(/agenfk init --project <id>/);
+  });
+
+  it('links --project on a repository whose project.json carries someone else\'s id (review #1)', async () => {
+    gitRepo();
+    declare({ projectId: 'p-elsewhere', flow: 'TDD Flow' });
+    await run('init', '--project', 'p-known');
+    expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-known' });
+    expect(readJson(agenfkFile('project.json'))).toEqual({ flow: 'TDD Flow' });
+  });
+
+  it('migrates instead of creating when init <name> meets a legacy id this server has (re-review A)', async () => {
+    gitRepo();
+    declare({ projectId: 'p-known', flow: 'TDD Flow' });
+    await run('init', 'demo');
+    expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-known' });
+    expect(readJson(agenfkFile('project.json'))).toEqual({ flow: 'TDD Flow' });
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    expect(out.join('\n')).toMatch(/demo.*not created|already/i);
+  });
+
+  it('reports a server error as one, not as a foreign id (re-review C)', async () => {
+    gitRepo();
+    declare({ projectId: 'p-known', flow: 'TDD Flow' });
+    mockedAxios.get.mockImplementation(async (url: string) => {
+      if (url.endsWith('/projects/p-known')) throw Object.assign(new Error('boom'), { response: { status: 500, data: { error: 'database is locked' } } });
+      return { data: { message: 'AgEnFK Framework API is running' } } as any;
+    });
+    await run('init').catch(() => {});
+    expect(process.exit).toHaveBeenCalledWith(1);
+    const said = out.join('\n') + err.join('\n');
+    expect(said).toMatch(/database is locked/);
+    expect(said).not.toMatch(/another machine/);
+    expect(fs.existsSync(agenfkFile('local.json'))).toBe(false);
+  });
+
+  it('creates a project for init <name> on such a repository, dropping the foreign id', async () => {
+    gitRepo();
+    declare({ projectId: 'p-elsewhere', flow: 'TDD Flow' });
+    await run('init', 'demo');
+    expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-new' });
+    expect(readJson(agenfkFile('project.json'))).toEqual({ flow: 'TDD Flow' });
+  });
+
+  it('leaves a project.json with a non-string projectId untouched (review #7)', async () => {
+    gitRepo();
+    declare({ projectId: 7, flow: 'TDD Flow' });
+    const before = fs.readFileSync(agenfkFile('project.json'), 'utf8');
+    mockedAxios.get.mockImplementation(async (url: string) => {
+      if (url.endsWith('/projects')) return { data: [] } as any;
+      return { data: { message: 'AgEnFK Framework API is running' } } as any;
+    });
+    await run('init');
+    expect(fs.readFileSync(agenfkFile('project.json'), 'utf8')).toBe(before);
+    expect(fs.existsSync(agenfkFile('local.json'))).toBe(false);
   });
 
   it('drops a stale id from project.json when local.json already names the project', async () => {
     gitRepo();
-    declare({ projectId: 'p-old', flow: 'TDD Flow' });
+    declare({ projectId: 'p-elsewhere', flow: 'TDD Flow' });
     fs.writeFileSync(agenfkFile('local.json'), JSON.stringify({ projectId: 'p-here' }));
     await run('init');
     expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-here' });
@@ -217,6 +297,93 @@ describe('agenfk init on an initialized project', () => {
     expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-here' });
     expect(isIgnored('.agenfk/local.json')).toBe(true);
     expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+});
+
+describe('agenfk init --project on a linked directory', () => {
+  it('relinks it to the project given (review #1)', async () => {
+    gitRepo();
+    fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+    fs.writeFileSync(agenfkFile('local.json'), JSON.stringify({ projectId: 'p-here' }));
+    await run('init', '--project', 'p-known');
+    expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-known' });
+  });
+
+  it('warns when the project already lives in another directory on this machine (review #3)', async () => {
+    gitRepo();
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-local-id-other-')));
+    try {
+      mockedAxios.get.mockImplementation(async (url: string) => {
+        if (url.endsWith('/projects/p-known')) return { data: { id: 'p-known', name: 'known', projectRoot: other } } as any;
+        return { data: { message: 'AgEnFK Framework API is running' } } as any;
+      });
+      await run('init', '--project', 'p-known');
+      const said = out.join('\n') + err.join('\n');
+      expect(said).toContain(other);
+      expect(said).toMatch(/worktree/i);
+      expect(readJson(agenfkFile('local.json'))).toEqual({ projectId: 'p-known' });
+    } finally { fs.rmSync(other, { recursive: true, force: true }); }
+  });
+});
+
+describe('agenfk init in odd places', () => {
+  const worktreeOfLinked = () => {
+    gitRepo();
+    fs.writeFileSync(path.join(dir, 'f'), 'x');
+    git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'one');
+    fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+    fs.writeFileSync(agenfkFile('local.json'), JSON.stringify({ projectId: 'p-known' }));
+    const wt = path.join(fs.realpathSync(home.dir), 'wt');
+    git(dir, 'worktree', 'add', '-q', '-b', 'card', wt);
+    vi.mocked(process.cwd).mockReturnValue(wt);
+    return wt;
+  };
+
+  it.each([[[]], [['demo']], [['--project', 'p-known']]])('refuses to run in a linked worktree, naming the main checkout (re-review B): init %j', async (args) => {
+    const wt = worktreeOfLinked();
+    await run('init', ...(args as string[])).catch(() => {});
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(err.join('\n')).toContain(dir);
+    expect(err.join('\n')).toMatch(/worktree/);
+    expect(fs.existsSync(path.join(wt, '.agenfk'))).toBe(false);
+    expect(fs.existsSync(path.join(wt, '.gitignore'))).toBe(false);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('names the matching subproject in the main checkout, not just its top (third pass)', async () => {
+    const wt = worktreeOfLinked();
+    const sub = path.join(wt, 'packages', 'foo');
+    fs.mkdirSync(sub, { recursive: true });
+    vi.mocked(process.cwd).mockReturnValue(sub);
+    await run('init', 'demo').catch(() => {});
+    expect(err.join('\n')).toContain(`cd ${path.join(dir, 'packages', 'foo')} && agenfk init demo`);
+  });
+
+  it('configure-ide refuses a linked worktree too (re-review D)', async () => {
+    const wt = worktreeOfLinked();
+    await run('configure-ide').catch(() => {});
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(err.join('\n')).toMatch(/worktree/);
+    expect(fs.existsSync(path.join(wt, '.claude'))).toBe(false);
+  });
+
+  it('warns that it is creating a project nested inside another (review #9)', async () => {
+    gitRepo();
+    fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+    fs.writeFileSync(agenfkFile('local.json'), JSON.stringify({ projectId: 'p-outer' }));
+    const sub = path.join(dir, 'services', 'api');
+    fs.mkdirSync(sub, { recursive: true });
+    vi.mocked(process.cwd).mockReturnValue(sub);
+    await run('init', 'demo');
+    expect(out.join('\n') + err.join('\n')).toMatch(new RegExp(`inside.*${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    expect(readJson(path.join(sub, '.agenfk', 'local.json'))).toEqual({ projectId: 'p-new' });
+  });
+
+  it('keeps a CRLF .gitignore CRLF (review #12)', async () => {
+    gitRepo();
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules\r\n');
+    await run('init', 'demo');
+    expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe('node_modules\r\n.agenfk/local.json\r\n');
   });
 });
 
@@ -258,6 +425,31 @@ describe('commands that resolve the current project', () => {
     declare({ verifyCommand: 'npm test' });
     await expect(run('current-project')).rejects.toThrow(/exit 1/);
     expect(err.join('\n')).toMatch(/agenfk init --project <id>/);
+  });
+
+  it('current-project in a worktree answers with the main checkout\'s id (review #2)', async () => {
+    gitRepo();
+    fs.writeFileSync(path.join(dir, 'f'), 'x');
+    git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'one');
+    fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+    fs.writeFileSync(agenfkFile('local.json'), JSON.stringify({ projectId: 'p-main' }));
+    const wt = path.join(fs.realpathSync(home.dir), 'wt');
+    git(dir, 'worktree', 'add', '-q', '-b', 'card', wt);
+    vi.mocked(process.cwd).mockReturnValue(wt);
+    await run('current-project');
+    expect(out).toEqual(['p-main']);
+  });
+
+  it('current-project in a worktree of an unlinked checkout points at the main checkout, never init here', async () => {
+    gitRepo();
+    fs.writeFileSync(path.join(dir, 'f'), 'x');
+    git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'one');
+    const wt = path.join(fs.realpathSync(home.dir), 'wt');
+    git(dir, 'worktree', 'add', '-q', '-b', 'card', wt);
+    vi.mocked(process.cwd).mockReturnValue(wt);
+    await expect(run('current-project')).rejects.toThrow(/exit 1/);
+    expect(err.join('\n')).toMatch(/git worktree of/);
+    expect(err.join('\n')).toContain(`cd ${dir} && agenfk init --project <id>`);
   });
 
   it('list scopes to the project local.json names', async () => {

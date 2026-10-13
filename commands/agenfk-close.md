@@ -10,7 +10,7 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 - Read the item details using `agenfk get <id> --json`.
 - **Cross-project guard**: Run `agenfk current-project` to get the working directory's project id (it resolves the nearest `.agenfk/local.json`). If it prints an id that does NOT match `item.projectId`, **STOP immediately** — do not commit, do not proceed. Warn the user:
   > "⚠️ Item [`<id>`] belongs to project `<item.projectId>`, but the current directory is linked to project `<local.projectId>`. Running `/agenfk-close` here would pollute this repo's git history with a foreign task. Please `cd` to the correct project directory and re-run."
-- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `agenfk current-project` errors (this directory is not linked on this machine), link it with `agenfk init --project <projectId>`: it writes the id to the git-ignored `.agenfk/local.json`. Never write the id into the shared `.agenfk/project.json`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `agenfk current-project` errors (this directory is not linked on this machine), link it with `agenfk init --project <projectId>`: it writes the id to the git-ignored `.agenfk/local.json`. In a git worktree, link the main checkout instead (the error names it); never run `agenfk init` inside a card's worktree. Never write the id into the shared `.agenfk/project.json`.
 - Extract all progress comments from `item.comments`.
 - Extract the final test coverage metrics from the `item.reviews`.
 

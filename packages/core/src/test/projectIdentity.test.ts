@@ -10,6 +10,7 @@
  * so callers can say how to move it.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -87,6 +88,56 @@ describe('resolveProjectIdentity', () => {
     mark(base, { project: { projectId: 'legacy-id' } });
     fs.mkdirSync(path.join(base, '.agenfk', 'local.json'));
     expect(resolveProjectIdentity(base)).toEqual({ root: base, projectId: 'legacy-id', source: 'legacy' });
+  });
+});
+
+describe('resolveProjectIdentity in a linked worktree (CGLAB-625 review)', () => {
+  // local.json is git-ignored, so a worktree never has one: the id is the
+  // main checkout's, which is the same project on the same machine.
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+  const repoWithWorktree = (commitSettings: boolean) => {
+    const main = path.join(base, 'main');
+    fs.mkdirSync(main, { recursive: true });
+    git(main, 'init', '-q', '-b', 'main');
+    git(main, 'config', 'user.email', 't@t');
+    git(main, 'config', 'user.name', 'T');
+    fs.writeFileSync(path.join(main, '.gitignore'), '.agenfk/local.json\n');
+    if (commitSettings) mark(main, { project: { verifyCommand: 'npm test' } });
+    git(main, 'add', '-A');
+    git(main, 'commit', '-qm', 'one');
+    mark(main, { local: { projectId: 'p-main' } });
+    const wt = path.join(base, 'wt');
+    git(main, 'worktree', 'add', '-q', '-b', 'card', wt);
+    return { main, wt };
+  };
+
+  it('takes the main checkout\'s id when the worktree carries the committed settings only', () => {
+    const { wt } = repoWithWorktree(true);
+    expect(fs.existsSync(path.join(wt, '.agenfk', 'local.json'))).toBe(false);
+    expect(resolveProjectIdentity(wt)).toEqual({ root: wt, projectId: 'p-main', source: 'local' });
+  });
+
+  it('takes the main checkout\'s id when the worktree has no .agenfk at all', () => {
+    const { wt } = repoWithWorktree(false);
+    const deep = path.join(wt, 'src');
+    fs.mkdirSync(deep, { recursive: true });
+    expect(resolveProjectIdentity(deep)).toEqual({ root: wt, projectId: 'p-main', source: 'local' });
+  });
+
+  it('prefers the main checkout over a project ENCLOSING the worktree', () => {
+    // A worktree cut inside another project's folder: that folder's id is not this checkout's.
+    const { main } = repoWithWorktree(false);
+    const holder = path.join(base, 'holder');
+    mark(holder, { local: { projectId: 'p-enclosing' } });
+    const wt = path.join(holder, 'wt2');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'card2', wt], { cwd: main, stdio: 'pipe' });
+    expect(resolveProjectIdentity(wt)).toEqual({ root: wt, projectId: 'p-main', source: 'local' });
+  });
+
+  it('keeps a worktree\'s own local.json when it has one', () => {
+    const { wt } = repoWithWorktree(true);
+    mark(wt, { local: { projectId: 'p-wt' } });
+    expect(resolveProjectIdentity(wt)?.projectId).toBe('p-wt');
   });
 });
 

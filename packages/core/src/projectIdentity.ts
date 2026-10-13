@@ -43,12 +43,8 @@ function readSmallFile(file: string): string | null {
   } catch { return null; }
 }
 
-/**
- * The nearest project at or above `startDir`: the first `.agenfk/` holding
- * local.json or project.json. Its id comes from local.json first, else from a
- * legacy projectId in project.json. Null outside any project.
- */
-export function resolveProjectIdentity(startDir: string): ProjectIdentity | null {
+/** The nearest `.agenfk` at or above `startDir` holding either file, and what it says. */
+function nearest(startDir: string): ProjectIdentity | null {
   for (let dir = path.resolve(startDir); ; dir = path.dirname(dir)) {
     const marker = path.join(dir, '.agenfk');
     const local = readSmallFile(path.join(marker, LOCAL_PROJECT_FILE));
@@ -63,4 +59,61 @@ export function resolveProjectIdentity(startDir: string): ProjectIdentity | null
     }
     if (path.dirname(dir) === dir) return null;
   }
+}
+
+/**
+ * When `dir` is inside a linked worktree of a non-bare repository: the
+ * worktree's top and the main checkout. Read from the worktree's `.git` FILE
+ * (`gitdir: <main>/.git/worktrees/<name>`), never by running git.
+ */
+export function linkedWorktreeOf(dir: string): { top: string; main: string } | null {
+  for (let cur = path.resolve(dir); ; cur = path.dirname(cur)) {
+    const dotGit = path.join(cur, '.git');
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(dotGit); } catch { /* none here */ }
+    if (st && !st.isFile()) return null; // a main checkout's .git directory (or a link): not a worktree
+    if (st?.isFile()) {
+      const text = st.size <= 4096 ? readSmallFile(dotGit) : null;
+      const m = text ? /^gitdir:\s*(.+?)\s*$/m.exec(text) : null;
+      if (!m) return null;
+      const gitDir = path.resolve(cur, m[1]);
+      const common = path.dirname(path.dirname(gitDir));
+      // A submodule's .git points into modules/; a bare repository named .git has no checkout.
+      if (path.basename(path.dirname(gitDir)) !== 'worktrees' || path.basename(common) !== '.git') return null;
+      const config = readSmallFile(path.join(common, 'config'));
+      if (config && /^\s*bare\s*=\s*true\s*$/mi.test(config)) return null;
+      return { top: cur, main: path.dirname(common) };
+    }
+    if (path.dirname(cur) === cur) return null;
+  }
+}
+
+/**
+ * The nearest project at or above `startDir`: the first `.agenfk/` holding
+ * local.json or project.json. Its id comes from local.json first, else from a
+ * legacy projectId in project.json. Null outside any project.
+ *
+ * IN A LINKED WORKTREE, local.json is never there - it is git-ignored, so it
+ * does not travel into one - but the worktree is the same project on the same
+ * machine. When the worktree names no id of its own, the main checkout's
+ * matching directory answers, and `root` stays the worktree's.
+ */
+export function resolveProjectIdentity(startDir: string): ProjectIdentity | null {
+  const found = nearest(startDir);
+  const wt = linkedWorktreeOf(startDir);
+  // A marker inside the worktree that names an id settles it; one found ABOVE
+  // the worktree belongs to some enclosing directory, not to this checkout.
+  const ownMarker = !!found && !!wt && within(found.root, wt.top);
+  if (!wt || (ownMarker && found!.projectId)) return found;
+  const from = path.join(wt.main, path.relative(wt.top, ownMarker ? found!.root : path.resolve(startDir)));
+  const there = nearest(from);
+  if (there?.projectId && within(there.root, wt.main)) {
+    return { root: path.join(wt.top, path.relative(wt.main, there.root)), projectId: there.projectId, source: there.source };
+  }
+  return found;
+}
+
+/** `p` is `dir` or lies under it, by whole path segments. */
+function within(p: string, dir: string): boolean {
+  return p === dir || p.startsWith(dir + path.sep);
 }
