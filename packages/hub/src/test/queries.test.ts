@@ -793,6 +793,50 @@ describe('GET /v1/prs/overview', () => {
     expect(viaRollups.body.series[0]).toMatchObject({ day: '2026-06-03', judged: 2, compliant: 1 });
   });
 
+  // ── CGLAB-617: /v1/prs/overview carries flow compliance ───────────────
+  //
+  // Aggregate + per-developer, judged off the same stamped step.transitioned
+  // events as /v1/adherence. By Model rows carry NO compliance: transitions
+  // have no model to judge (the user chose the honest placeholder).
+  it('prs/overview carries flow compliance — aggregate and per developer', async () => {
+    // A PR for alice, so she has a byDeveloper row to attach compliance to.
+    await ctx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, payload)
+       VALUES ('pr-alice', 'org', 'inst-1', 'alice@acme.com', '2026-07-01T08:00:00Z', '2026-07-01T08:00:00Z', 'pr.opened', 'p1', 'i1', 'TASK', 'git@x:web.git', ?)`,
+      [JSON.stringify({ payload: { repo: 'acme/web', prNumber: 9, leafStory: 2, task: 0, bug: 0, model: 'glm-5.2', harness: 'pi' } })],
+    );
+    await seedTransition('c1', '2026-07-01T09:00:00Z', { fromStatus: 'PLAN', toStatus: 'WORK', flowId: 'f', flowRevision: 1, compliant: true });
+    // A ROLLBACK within the revision: judged AND compliant.
+    await seedTransition('c2', '2026-07-01T10:00:00Z', { fromStatus: 'WORK', toStatus: 'PLAN', flowId: 'f', flowRevision: 1, compliant: true });
+    await seedTransition('c3', '2026-07-01T11:00:00Z', { fromStatus: 'WORK', toStatus: 'PAUSED', flowId: 'f', flowRevision: 1, compliant: false });
+    await seedTransition('c4', '2026-07-02T09:00:00Z', { fromStatus: 'PLAN', toStatus: 'WORK', flowId: 'f', flowRevision: 1, compliant: true }, { user: 'bob@acme.com' });
+    await seedTransition('c5', '2026-07-02T10:00:00Z', { fromStatus: 'TODO', toStatus: 'PLAN' }); // unstamped
+
+    const r = await supertest(__server).get('/v1/prs/overview').set('Cookie', cookie);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.compliance).toMatchObject({ judged: 4, compliant: 3 });
+    expect(r.body.compliance.score).toBeCloseTo(0.75);
+    const dev = Object.fromEntries((r.body.byDeveloper as any[]).map((x: any) => [x.user_key, x]));
+    expect(dev['alice@acme.com'].compliance).toMatchObject({ judged: 3, compliant: 2 });
+    expect(dev['alice@acme.com'].compliance.score).toBeCloseTo(2 / 3);
+    expect(dev['bob@acme.com'].compliance).toMatchObject({ judged: 1, compliant: 1 });
+    // No fabricated attribution: a model row never carries a verdict.
+    expect(r.body.byModel.every((m: any) => !('compliance' in m))).toBe(true);
+  });
+
+  it('prs/overview scores compliance null when the window judged nothing', async () => {
+    const r = await supertest(__server).get('/v1/prs/overview?from=2030-01-01&to=2030-12-31').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.compliance).toMatchObject({ judged: 0, compliant: 0, score: null });
+  });
+
+  it('prs/overview omits compliance under a PR search — a number scoped to nothing', async () => {
+    const r = await supertest(__server).get('/v1/prs/overview?pr=7').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect('compliance' in r.body).toBe(false);
+    expect(r.body.byDeveloper.every((d: any) => !('compliance' in d))).toBe(true);
+  });
+
   // The ?pr= PR-search suite lives in pr-overview-pr-search-route.test.ts, which
   // boots the app on an in-memory sqlite database. Same engine, same SQL — it
   // just does not share a DB file across worker threads, which is what lets it
