@@ -124,7 +124,7 @@ describe('createHubApp', () => {
       defaultOrgId: 'org',
     });
     lastApp = app;
-    teardown = async () => { try { await ctx.db.close(); } catch { /* */ } delete process.env.AGENFK_HUB_UI_DIR; fs.rmSync(tmp, { recursive: true, force: true }); };
+    teardown = async () => { try { await ctx.db.close(); } catch { /* */ } delete process.env.AGENFK_HUB_UI_DIR; fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); };
 
     const supertest = (await import('supertest')).default;
     for (const route of ['/users/alice%40acme.com', '/admin/keys', '/connect', '/anything/deep/here']) {

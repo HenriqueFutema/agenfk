@@ -37,7 +37,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -69,7 +69,7 @@ fs.appendFileSync(${JSON.stringify(runs)}, 'run\\n');
 fs.writeFileSync('report.xml', fs.readFileSync(${JSON.stringify(mode)}, 'utf8').trim() === 'pass' ? ${JSON.stringify(PASS)} : ${JSON.stringify(FAIL)});
 process.exit(0);`);
   const p = await agent().post('/projects').send({ name: `cg-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
   const card = async () => {
     const c = await agent().post('/items').send({ type: 'TASK', title: `cg-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'WORK' } as any);

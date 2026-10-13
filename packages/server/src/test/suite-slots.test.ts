@@ -38,7 +38,7 @@ afterAll(async () => {
 });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('suiteRunLimit', () => {
@@ -150,6 +150,9 @@ describe('the setting', () => {
   });
 });
 
+// Long enough for two runs to overlap when they may: on Windows the git work before
+// each run starts takes longer than the 400ms POSIX needs (#208).
+const RUN_MS = process.platform === 'win32' ? 3000 : 400;
 /** Two projects whose suite command logs its start and end (ms) to one file outside both trees. */
 let seq = 0;
 async function twoProjects(kind: 'capture' | 'final') {
@@ -162,7 +165,7 @@ setTimeout(() => {
   fs.writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="ok" file="t.test.js"/></testsuite></testsuites>');
   fs.appendFileSync(${JSON.stringify(log)}, 'end ' + Date.now() + '\\n');
   process.exit(0);
-}, 400);`);
+}, ${RUN_MS});`);
   const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...extra });
   const cards: string[] = [];
   for (let i = 0; i < 2; i++) {
@@ -173,7 +176,7 @@ setTimeout(() => {
     const p = await agent().post('/projects').send({ name: `slots-${++seq}` });
     await storage.updateProject(p.body.id, {
       flowId: f.body.id, projectRoot: repo,
-      verifyCommand: kind === 'final' ? `node ${runner}` : 'true',
+      verifyCommand: kind === 'final' ? `node ${runner}` : 'exit 0',
       ...(kind === 'capture' ? { testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } : {}),
     } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `slots-${++seq}`, projectId: p.body.id });

@@ -34,7 +34,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('reuseIgnoreMatcher', () => {
@@ -112,7 +112,7 @@ async function setup(reuseIgnore?: string[]) {
   fs.writeFileSync(runner, `require('fs').appendFileSync(${JSON.stringify(runs)}, 'run\\n');
 require('fs').writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="changelog" file="release.test.js"/></testsuite></testsuites>');`);
   const p = await agent().post('/projects').send({ name: `ri-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml', ...(reuseIgnore ? { reuseIgnore } : {}) } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml', ...(reuseIgnore ? { reuseIgnore } : {}) } } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `ri-${++seq}`, projectId: p.body.id });
   await storage.updateItem(c.body.id, { status: 'WORK' } as any);
   const count = () => fs.readFileSync(runs, 'utf8').split('\n').filter(Boolean).length;

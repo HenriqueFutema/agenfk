@@ -102,7 +102,7 @@ describe('workflow_gatekeeper MCP handler: a STORY is directly actionable (CGLAB
     await mcp.close();
     process.chdir(ORIGINAL_CWD);
     await removeTestDb(TEST_DB, closeStorage);
-    fs.rmSync(SCRATCH_CWD, { recursive: true, force: true });
+    fs.rmSync(SCRATCH_CWD, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('authorizes a STORY in an active step when targeted by id', async () => {

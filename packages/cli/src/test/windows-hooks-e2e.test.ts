@@ -67,7 +67,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (api) await new Promise<void>(r => api.close(() => r()));
   if (home) cleanupHome(home);
-  if (project) fs.rmSync(project, { recursive: true, force: true });
+  if (project) fs.rmSync(project, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 /**

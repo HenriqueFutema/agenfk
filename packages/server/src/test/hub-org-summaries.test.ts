@@ -51,7 +51,7 @@ describe('hub outbox org summaries', () => {
   afterAll(async () => {
     await removeTestDb(TEST_DB, mod.closeStorage);
     vi.mocked(os.homedir).mockRestore();
-    try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
   });
   beforeEach(async () => {
     (mod.storage as any).database.prepare('DELETE FROM hub_outbox').run();

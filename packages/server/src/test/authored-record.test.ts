@@ -79,7 +79,7 @@ describe('on real storage', () => {
   });
   afterEach(async () => {
     await storage?.shutdown();
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const blobCount = () => {
     const db = new DatabaseSync(dbPath(), { readOnly: true });

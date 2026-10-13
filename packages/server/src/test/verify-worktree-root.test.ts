@@ -147,7 +147,7 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
     expect(await projectRoot()).toBe(repo);
   });
   afterEach(() => {
-    for (const d of scratch.reverse()) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of scratch.reverse()) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('runs the verify command in the card\'s worktree, not in projectRoot', async () => {
@@ -297,7 +297,7 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
   it('says the worktree is gone instead of failing to spawn a shell (S4)', async () => {
     const task = await newItem('TASK', 'worktree deleted by hand');
     const wt = await cardWorktree(task.id);
-    fs.rmSync(wt, { recursive: true, force: true });
+    fs.rmSync(wt, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     await step(task.id);
     const before = (await agent().get(`/items/${task.id}`)).body.status;
 

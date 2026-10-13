@@ -112,7 +112,7 @@ describe('GET /projects/:id/settings with a project file', () => {
     const verify = res.body.rows.find((r: { key: string }) => r.key === 'verifyCommand');
     expect(verify.value).toBe('npm test');
     expect(verify.origin).toBe('from-file');
-    expect(verify.from).toContain('.agenfk/project.json');
+    expect(verify.from).toContain(path.join('.agenfk', 'project.json')); // the file's own path, native (#208)
   });
 
   it('tells the settings screen that a projectId belongs in local.json (CGLAB-625)', async () => {
@@ -139,7 +139,8 @@ describe('GET /projects/:id/settings with a project file', () => {
     expect(rootRow.value).toBe(root);
   });
 
-  it('will not hang on a project file that never ends or never opens: a regular file only', async () => {
+  // /dev/zero and mkfifo are POSIX's; Windows has neither to stage (#208).
+  it.skipIf(process.platform === 'win32')('will not hang on a project file that never ends or never opens: a regular file only', async () => {
     // The file arrives with a clone, and settings and every verify read it on the request path.
     const zero = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
     fs.mkdirSync(path.join(zero, '.agenfk'));

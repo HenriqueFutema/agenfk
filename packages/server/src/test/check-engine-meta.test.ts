@@ -45,7 +45,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -233,7 +233,7 @@ describe('CGLAB-380: git/meta checks', () => {
     });
 
     it('counts files under the test report surface as test files (fixtures, helpers)', async () => {
-      const { dir, id } = await entered({ testReport: { format: 'junit-xml', command: 'true', reportPath: 'report.xml', surface: ['fixtures'] } });
+      const { dir, id } = await entered({ testReport: { format: 'junit-xml', command: 'exit 0', reportPath: 'report.xml', surface: ['fixtures'] } });
       fs.mkdirSync(path.join(dir, 'fixtures'));
       fs.writeFileSync(path.join(dir, 'fixtures/data.json'), '{}');
       const res = await validate(id);

@@ -548,7 +548,7 @@ afterEach(() => {
   // socket directory was being removed out from under them.
   for (const c of openSockets.splice(0)) c.destroy();
   for (const s of openServers.splice(0)) s.close();
-  if (sockDir) { rmSync(sockDir, { recursive: true, force: true }); sockDir = null; }
+  if (sockDir) { rmSync(sockDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); sockDir = null; }
 });
 
 /**

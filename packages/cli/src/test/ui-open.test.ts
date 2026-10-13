@@ -53,7 +53,7 @@ describe('resolveDashboardUrl', () => {
       fs.writeFileSync(path.join(dir, '.agenfk', 'ui.log'), '  ➜  Local:   http://localhost:5174/\n');
       expect(resolveDashboardUrl(dir)).toBe('http://localhost:3000');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -62,7 +62,7 @@ describe('resolveDashboardUrl', () => {
     try {
       expect(resolveDashboardUrl(dir)).toBe('http://localhost:3000');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -147,7 +147,7 @@ describe('agenfk ui --open browser launch', () => {
   afterEach(() => {
     if (realCwd) process.chdir(realCwd);
     realCwd = '';
-    if (tmpCwd) fs.rmSync(tmpCwd, { recursive: true, force: true });
+    if (tmpCwd) fs.rmSync(tmpCwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     tmpCwd = '';
     vi.mocked(execSync).mockClear();
   });

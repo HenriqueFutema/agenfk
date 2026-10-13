@@ -38,7 +38,7 @@ describe('loadTarRule', () => {
     try {
       expect(await loadTarRule(root)).toBeNull();
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

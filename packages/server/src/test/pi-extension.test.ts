@@ -262,7 +262,7 @@ describe('readPiSessionModel (the transcript records the model that answered)', 
     } finally {
       if (saved === undefined) delete process.env.PI_SESSION_FILE;
       else process.env.PI_SESSION_FILE = saved;
-      fsp.rmSync(dir, { recursive: true, force: true });
+      fsp.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -608,7 +608,7 @@ describe('activate(): model detection uses env + transcript, not settings.json a
     } finally {
       if (saved === undefined) delete process.env.PI_SESSION_FILE;
       else process.env.PI_SESSION_FILE = saved;
-      fsp.rmSync(dir, { recursive: true, force: true });
+      fsp.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 

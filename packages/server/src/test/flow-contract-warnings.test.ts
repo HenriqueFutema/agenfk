@@ -31,18 +31,19 @@ let __server: import('http').Server;
 const agent = () => request(__server);
 const cleanup: string[] = [];
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 beforeAll(async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fcw-home-'));
   cleanup.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
-  process.env.HOME = savedHome;
+  process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });

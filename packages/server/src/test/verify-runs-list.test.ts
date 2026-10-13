@@ -38,7 +38,7 @@ afterAll(async () => {
 });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -147,7 +147,7 @@ describe('affected-only runs say what they run', () => {
 fs.writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="adds" file="a.test.js"/></testsuite></testsuites>');
 setTimeout(() => {}, process.argv[2] === 'related' ? 1500 : 0);`);
     const p = await agent().post('/projects').send({ name: `vr-aff-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true',
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0',
       testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml', relatedCommand: `node ${runner} related {files}` } } as never);
     const c = (await agent().post('/items').send({ type: 'TASK', title: `aff-${++seq}`, projectId: p.body.id })).body;
     await storage.updateItem(c.id, { status: 'PLAN' } as any);
@@ -168,7 +168,7 @@ describe('a verify held only by a person', () => {
     const repo = tmp('agenfk-vr-person-');
     git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
     const p = await agent().post('/projects').send({ name: `vr-person-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = (await agent().post('/items').send({ type: 'TASK', title: `person-${++seq}`, projectId: p.body.id })).body;
     await storage.updateItem(c.id, { status: 'WORK' } as any);
     const r = await agent().post(`/items/${c.id}/validate`).set(internal()).send({ evidence: 'ok' });
@@ -227,7 +227,7 @@ describe('beae41a0: the list stays true', () => {
     const repo = tmp('agenfk-vr-held-');
     git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
     const p = await agent().post('/projects').send({ name: `vr-held-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = (await agent().post('/items').send({ type: 'TASK', title: `held-${++seq}`, projectId: p.body.id })).body;
     await storage.updateItem(c.id, { status: 'WORK' } as any);
     expect((await agent().post(`/items/${c.id}/validate`).set(internal()).send({ evidence: 'ok' })).status).toBe(422);
@@ -333,7 +333,7 @@ describe('beae41a0: the list stays true', () => {
     const repo = tmp('agenfk-vr-pk-');
     git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
     const p = await agent().post('/projects').send({ name: `vr-pk-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = (await agent().post('/items').send({ type: 'TASK', title: `pk-${++seq}`, projectId: p.body.id })).body;
     await storage.updateItem(c.id, { status: 'WORK' } as any);
     expect((await agent().post(`/items/${c.id}/validate`).set(internal()).send({ evidence: 'ok' })).status).toBe(422);

@@ -16,7 +16,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+// .native: on Windows it also expands 8.3 names, so the long-form sandbox matches an 8.3 TEMP (#208).
+const real = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
 
 /** A sandbox is an `agenfk-test-home-*` directory directly under the tmpdir - nothing else is deleted. */
 function isSandbox(home) {

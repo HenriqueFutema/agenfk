@@ -78,7 +78,7 @@ describe('the generated command actually resolves under bash', () => {
       const r = spawnSync('bash', ['-c', cmd], { encoding: 'utf8' });
       expect(r.stdout.trim()).toBe('hook-ran --client claude-code');
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

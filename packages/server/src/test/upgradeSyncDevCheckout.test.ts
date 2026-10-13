@@ -57,7 +57,7 @@ describe('defaultSelfExtract on a development checkout', () => {
       await defaultSelfExtract({ installRoot: root, targetVersion: '9.9.9' });
       expect(String((execSync.mock.calls[0] as unknown[] | undefined)?.[0] ?? '')).toMatch(/curl/);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -72,7 +72,7 @@ describe('defaultSelfExtract on a development checkout', () => {
       await defaultSelfExtract({ installRoot: link, targetVersion: '9.9.9' });
       expect(String((execSync.mock.calls[0] as unknown[] | undefined)?.[0] ?? '')).toMatch(/curl/);
     } finally {
-      fs.rmSync(real, { recursive: true, force: true });
+      fs.rmSync(real, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -87,7 +87,7 @@ describe('defaultSelfExtract on a development checkout', () => {
       expect(execSync).not.toHaveBeenCalled();
     } finally {
       forcedIno.value = null;
-      fs.rmSync(real, { recursive: true, force: true });
+      fs.rmSync(real, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

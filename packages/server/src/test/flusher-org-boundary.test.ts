@@ -442,10 +442,11 @@ describe('Flusher org boundary + deadletter (CGLAB-117)', () => {
     const flusher = new Flusher(storage, HUB_CONFIG, 'inst-1', 60_000, 500, http, blocked);
     await flusher.flush();
     expect(storage.hubOutboxCount()).toBe(1); // kept for retry, not deleted unrecorded
-    fs.rmSync(blocked, { recursive: true, force: true });
+    fs.rmSync(blocked, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
-  it('the deadletter file is 0600 — it embeds actor identities and titles', async () => {
+  // Windows has no POSIX mode bits (#208): owner-only files are a POSIX notion.
+  it.skipIf(process.platform === 'win32')('the deadletter file is 0600 — it embeds actor identities and titles', async () => {
     queue('m-1', 'acme');
     const { http } = makeHttp({
       postImpl: async () => ({
@@ -458,7 +459,7 @@ describe('Flusher org boundary + deadletter (CGLAB-117)', () => {
     expect(fs.statSync(dlPath).mode & 0o777).toBe(0o600);
   });
 
-  it('a pre-existing deadletter file is tightened to 0600 on write', async () => {
+  it.skipIf(process.platform === 'win32')('a pre-existing deadletter file is tightened to 0600 on write', async () => {
     // Creation mode only applies to new files; the chmod covers a file that
     // predates this code (or was created by a stryker mutant of the mode
     // option) and was left world-readable.

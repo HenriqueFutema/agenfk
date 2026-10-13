@@ -36,7 +36,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 beforeEach(() => { fs.rmSync(STORE, { force: true }); });
 

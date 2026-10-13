@@ -34,7 +34,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
   await new Promise<void>(r => __server.close(() => r()));
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 let repo: string;
@@ -58,7 +58,7 @@ const advanceTheTree = () => {
 /** A project whose verify runs in `repo`, with a parent already made. */
 const setup = async () => {
   const p = (await internal(agent().post('/projects')).send({ name: `propgate-${Date.now()}` })).body;
-  await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+  await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'exit 0' } as never);
   const parent = (await internal(agent().post('/items')).send({ type: 'STORY', title: 'p', projectId: p.id })).body;
   const make = async (title: string) =>
     (await internal(agent().post('/items')).send({ type: 'TASK', title, projectId: p.id, parentId: parent.id })).body;
@@ -80,7 +80,7 @@ const validate = async (id: string) => internal(agent().post(`/items/${id}/valid
 describe('the sibling gate on a custom flow terminal', () => {
   it('gates the exit step even when it is not named DONE', async () => {
     const p = (await internal(agent().post('/projects')).send({ name: `shipped-${Date.now()}` })).body;
-    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const f = (await internal(agent().post('/flows')).send({
       name: 'Ship Flow',
       steps: [
@@ -99,7 +99,7 @@ describe('the sibling gate on a custom flow terminal', () => {
     // A DONE sibling with a PASSED record that carries no commit.
     await storage.updateItem(c1.id, {
       status: 'DONE',
-      tests: [{ id: 'legacy', command: 'true', output: '', status: 'PASSED', executedAt: new Date() }],
+      tests: [{ id: 'legacy', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date() }],
     } as never);
     await storage.updateItem(c2.id, { status: 'CODE' } as any);
 
@@ -117,7 +117,7 @@ describe('the sibling gate on a custom flow terminal', () => {
 describe('which last steps end the flow', () => {
   const projectOnFlow = async (name: string, steps: any[]) => {
     const p = (await internal(agent().post('/projects')).send({ name: `${name}-${Date.now()}` })).body;
-    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const f = (await internal(agent().post('/flows')).send({ name, steps })).body;
     await internal(agent().post(`/projects/${p.id}/flow`)).send({ flowId: f.id });
     const item = (await internal(agent().post('/items')).send({ type: 'TASK', title: 'x', projectId: p.id })).body;
@@ -153,7 +153,7 @@ describe('which last steps end the flow', () => {
     // An EXPLICIT command, so the request reaches the endsFlow sites instead of
     // returning early with nothing to run - without it this test passes
     // whether or not the boundary conjunct exists.
-    const r = await internal(agent().post(`/items/${item.id}/validate`)).send({ evidence: 'ok', command: 'true' });
+    const r = await internal(agent().post(`/items/${item.id}/validate`)).send({ evidence: 'ok', command: 'exit 0' });
     expect(r.body.status).toBe('SHIP');
     const after = (await agent().get(`/items/${item.id}`)).body;
     expect(after.tests?.length ?? 0, 'a step before the end recorded a completion').toBe(0);
@@ -169,7 +169,7 @@ describe('which last steps end the flow', () => {
 describe('sibling propagation on a flow whose exit step is not named DONE', () => {
   const onFlow = async (steps: any[]) => {
     const p = (await internal(agent().post('/projects')).send({ name: `exit-${Date.now()}` })).body;
-    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const f = (await internal(agent().post('/flows')).send({ name: `Exit ${Date.now()}`, steps })).body;
     await internal(agent().post(`/projects/${p.id}/flow`)).send({ flowId: f.id });
     const parent = (await internal(agent().post('/items')).send({ type: 'STORY', title: 'p', projectId: p.id })).body;
@@ -208,7 +208,7 @@ describe('sibling propagation on a flow whose exit step is not named DONE', () =
     ]);
     const c1 = await make('c1', 'CODE');
     // With a command, so the move reaches the reply that tells of the commit (without one it advances before it).
-    const mid = await internal(agent().post(`/items/${c1.id}/validate`)).send({ evidence: 'ok', command: 'true' });
+    const mid = await internal(agent().post(`/items/${c1.id}/validate`)).send({ evidence: 'ok', command: 'exit 0' });
     expect(mid.body.status).toBe('CHECK');
     expect(mid.body.message, 'a move that does not end the flow told the agent to push').not.toMatch(/Push your branch/);
     const r1 = await validate(c1.id);
@@ -230,7 +230,7 @@ describe('sibling propagation on a flow whose exit step is not named DONE', () =
       { name: 'SHIP', label: 'Ship', order: 2 },
     ]);
     const c1 = await make('c1', 'SHIP');
-    await storage.updateItem(c1.id, { tests: [{ id: 'g', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: sha(), commitRoot: repo }] } as never);
+    await storage.updateItem(c1.id, { tests: [{ id: 'g', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date(), commit: sha(), commitRoot: repo }] } as never);
 
     const c2 = await make('c2', 'SHIP');
     const r2 = await validate(c2.id);
@@ -247,7 +247,7 @@ describe('sibling propagation on a flow whose exit step is not named DONE', () =
       { name: 'SHIPPED', label: 'Shipped', order: 3, isAnchor: true },
     ]);
     const c1 = await make('c1', 'HOLD');
-    await storage.updateItem(c1.id, { tests: [{ id: 'g', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: sha(), commitRoot: repo }] } as never);
+    await storage.updateItem(c1.id, { tests: [{ id: 'g', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date(), commit: sha(), commitRoot: repo }] } as never);
     const c2 = await make('c2', 'HOLD');
     const r2 = await validate(c2.id);
     expect(r2.body.status).toBe('SHIPPED');
@@ -321,7 +321,7 @@ describe('the sibling gate on a real tree', () => {
     await storage.updateItem(c1.id, {
       status: 'DONE',
       worktreePath: other,
-      tests: [{ id: 'w', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: otherSha }],
+      tests: [{ id: 'w', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date(), commit: otherSha }],
     } as never);
     await storage.updateItem(c2.id, { worktreePath: clone } as never);
 
@@ -356,7 +356,7 @@ describe('the sibling gate on a real tree', () => {
     await storage.updateItem(c1.id, {
       status: 'DONE',
       worktreePath: shared,
-      tests: [{ id: 'w', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: sha }],
+      tests: [{ id: 'w', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date(), commit: sha }],
     } as never);
     await storage.updateItem(c2.id, { worktreePath: shared } as never);
 
@@ -375,8 +375,8 @@ describe('the sibling gate on a real tree', () => {
     await storage.updateItem(c1.id, {
       status: 'DONE',
       tests: [
-        { id: 'old', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' },
-        { id: 'new', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: treeSha },
+        { id: 'old', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date(), commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' },
+        { id: 'new', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date(), commit: treeSha },
       ],
     } as never);
 
@@ -393,7 +393,7 @@ describe('the sibling gate on a real tree', () => {
     const c1 = await make('c1');
     await storage.updateItem(c1.id, {
       status: 'DONE',
-      tests: [{ id: 'legacy', command: 'true', output: '', status: 'PASSED', executedAt: new Date() }],
+      tests: [{ id: 'legacy', command: 'exit 0', output: '', status: 'PASSED', executedAt: new Date() }],
     } as never);
 
     const c2 = await make('c2');
@@ -431,7 +431,7 @@ describe('the sibling gate on a real tree', () => {
 describe('sibling propagation on an intermediate step says what happened', () => {
   const shipFlow = async () => {
     const p = (await internal(agent().post('/projects')).send({ name: `midprop-${Date.now()}` })).body;
-    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const f = (await internal(agent().post('/flows')).send({
       name: `Mid Flow ${Date.now()}`,
       steps: [
@@ -469,7 +469,7 @@ describe('sibling propagation on an intermediate step says what happened', () =>
 
   it('runs a command it was handed instead of propagating past it', async () => {
     const { card } = await shipFlow();
-    const r = await internal(agent().post(`/items/${card.id}/validate`)).send({ evidence: 'ok', command: 'false' });
+    const r = await internal(agent().post(`/items/${card.id}/validate`)).send({ evidence: 'ok', command: 'exit 1' });
     expect(r.body.output, JSON.stringify(r.body)).not.toBe('Sibling propagation');
     expect(((await storage.getItem(card.id)) as any).status).toBe('SPEC');
   });

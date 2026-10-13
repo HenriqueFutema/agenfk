@@ -7,6 +7,7 @@
  * are configured (so the argv/allowlist shape is what we pin down).
  */
 import { removeTestDb, testDbPath } from './helpers/testDb';
+import { markerAbove } from './helpers/markerAbove';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, closeStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, VERIFY_TOKEN, findProjectRoot } from '../server';
@@ -306,11 +307,12 @@ describe('findProjectRoot terminates', () => {
     try {
       expect(fs.realpathSync(findProjectRoot(deep))).toBe(fs.realpathSync(dir));
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
-  it('says NOT FOUND when it finds nothing, instead of its own start dir', () => {
+  // Needs a temp dir with no project marker above it (see markerAbove, #208).
+  it.skipIf(!!markerAbove(os.tmpdir()))('says NOT FOUND when it finds nothing, instead of its own start dir', () => {
     /*
      * The no-match answer used to be the (resolved) starting directory, which
      * made a failure indistinguishable from an answer: a worktree has no
@@ -324,7 +326,7 @@ describe('findProjectRoot terminates', () => {
     try {
       expect(findProjectRoot(dir)).toBeNull();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

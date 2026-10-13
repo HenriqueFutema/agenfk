@@ -15,8 +15,10 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
-const WRAPPER = new URL('../../../../scripts/stryker-home-wrap.mjs', import.meta.url).pathname;
+// fileURLToPath, not .pathname: a file URL's pathname is /C:/... on Windows.
+const WRAPPER = fileURLToPath(new URL('../../../../scripts/stryker-home-wrap.mjs', import.meta.url));
 
 function probe() {
   const r = spawnSync(process.execPath, [WRAPPER, '--probe'], { encoding: 'utf8' });

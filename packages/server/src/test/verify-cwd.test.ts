@@ -14,6 +14,7 @@
  * resolves the caller cwd to the project root.
  */
 import { removeTestDb, testDbPath } from './helpers/testDb';
+import { markerAbove } from './helpers/markerAbove';
 import { describe, it, expect, beforeEach, afterAll, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -57,7 +58,7 @@ let subDir: string;
 
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  if (projRoot && fs.existsSync(projRoot)) fs.rmSync(projRoot, { recursive: true, force: true });
+  if (projRoot && fs.existsSync(projRoot)) fs.rmSync(projRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 async function waitForRun(runId: string, timeoutMs = 15000) {
@@ -70,6 +71,9 @@ async function waitForRun(runId: string, timeoutMs = 15000) {
     await new Promise(r => setTimeout(r, 100));
   }
 }
+
+/** Prints the directory it runs in, natively, under sh and cmd.exe alike (`pwd` is not cmd's, #208). */
+const PRINT_CWD = 'node -e "console.log(process.cwd())"';
 
 async function itemOnFinalStep(name: string, verifyCommand: string) {
   const p = (await agent().post('/projects').send({ name })).body;
@@ -92,7 +96,7 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
 
   it('runs the command at the project ROOT even when the caller cwd is a subdirectory', async () => {
     if (!VERIFY_TOKEN) return;
-    const { item } = await itemOnFinalStep('CWD1', 'pwd');
+    const { item } = await itemOnFinalStep('CWD1', PRINT_CWD);
 
     const res = await agent()
       .post(`/items/${item.id}/validate`)
@@ -102,7 +106,7 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
 
     const done = await waitForRun(res.body.runId);
     expect(done.body.status).toBe('passed');
-    // `pwd` must print the repo root, NOT the subdirectory the caller was in.
+    // The command must print the repo root, NOT the subdirectory the caller was in.
     expect(done.body.output.trim()).toContain(projRoot);
     expect(done.body.output).not.toContain(path.join('packages', 'cli'));
   });
@@ -123,7 +127,7 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
 
   it('non-regression: a cwd already AT the project root is stored/used unchanged (MCP-path invariant)', async () => {
     if (!VERIFY_TOKEN) return;
-    const { projectId, item } = await itemOnFinalStep('CWD3', 'pwd');
+    const { projectId, item } = await itemOnFinalStep('CWD3', PRINT_CWD);
 
     const res = await agent()
       .post(`/items/${item.id}/validate`)
@@ -136,7 +140,8 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
     expect(proj.projectRoot).toBe(projRoot);
   });
 
-  it('REFUSES a cwd with no .agenfk ancestor: it does not become the project root', async () => {
+  // Needs a temp dir with no project marker above it (see markerAbove, #208).
+  it.skipIf(!!markerAbove(os.tmpdir()))('REFUSES a cwd with no .agenfk ancestor: it does not become the project root', async () => {
     if (!VERIFY_TOKEN) return;
     // A directory tree with NO .agenfk marker anywhere above it - which is
     // what a WORKTREE looks like, because `.agenfk/` is gitignored and does
@@ -157,7 +162,7 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
       expect(proj.projectRoot, 'a directory with no .agenfk marker was recorded as the project root').not.toBe(orphan);
       expect(proj.projectRoot ?? null).toBeNull();
     } finally {
-      fs.rmSync(orphan, { recursive: true, force: true });
+      fs.rmSync(orphan, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

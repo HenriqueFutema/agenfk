@@ -3602,9 +3602,12 @@ function syncCommandsToDir(
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     // Read content and inject 'name' frontmatter field if missing (required by OpenCode, Codex, Cursor, Gemini)
     let content = fs.readFileSync(src, 'utf8');
-    if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
+    // In the file's own line ending: a Windows checkout (core.autocrlf) opens
+    // with `---\r\n`, and matching only `---\n` skipped the injection there.
+    const open = /^---(\r?\n)/.exec(content);
+    if (open && !content.match(/^name:\s/m)) {
       const skillName = file.replace(/\.md$/, '');
-      content = content.replace('---\n', `---\nname: ${skillName}\n`);
+      content = `---${open[1]}name: ${skillName}${open[1]}${content.slice(open[0].length)}`;
     }
     fs.writeFileSync(dest, content);
     installed.push(dest);

@@ -53,10 +53,14 @@ let dir: string;
 let out: string[];
 let err: string[];
 
-/** Every `claude ...` command line the CLI ran, through either exec route. */
+/**
+ * Every `claude ...` command line the CLI ran, through either exec route. On
+ * Windows runTool launches claude by the absolute path of the claude.exe it
+ * found on PATH (BUG ad57c267), so a spawned file is named by its basename.
+ */
 const claudeCalls = () => [
   ...execSync.mock.calls.map(c => String(c[0])),
-  ...spawnSync.mock.calls.map(c => [c[0], ...(c[1] ?? [])].join(' ')),
+  ...spawnSync.mock.calls.map(c => [path.basename(String(c[0])).replace(/\.exe$/i, ''), ...(c[1] ?? [])].join(' ')),
 ].filter(c => c.startsWith('claude'));
 
 const writeConfig = (cfg: Record<string, unknown>) => {
@@ -75,7 +79,13 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation((...a) => { out.push(strip(a)); });
   vi.spyOn(console, 'error').mockImplementation((...a) => { err.push(strip(a)); });
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as any);
-  // Claude Code IS installed on this machine.
+  // Claude Code IS installed on this machine. On Windows runTool decides that
+  // by finding claude.exe on PATH (only the file's presence; spawnSync is
+  // mocked, so it never runs), not by what spawnSync answers.
+  const bin = path.join(home.dir, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'claude.exe'), '');
+  if (process.platform === 'win32') vi.stubEnv('PATH', bin);
   execSync.mockReturnValue('');
   spawnSync.mockReturnValue({ status: 0 });
   mockedAxios.get.mockResolvedValue({ data: { message: 'AgEnFK Framework API is running' } } as any);
@@ -83,12 +93,13 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   execSync.mockReset();
   spawnSync.mockReset();
   mockedAxios.get.mockReset();
   mockedAxios.post.mockReset();
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.rmSync(home.dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(home.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   home.dir = '';
 });
 

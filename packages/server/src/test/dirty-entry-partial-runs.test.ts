@@ -34,7 +34,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -96,7 +96,7 @@ async function setup(sub = false, steps?: any[]) {
   const runner = path.join(tools, 'runner.js');
   fs.writeFileSync(runner, RUNNER(log, deps, omit));
   const p = await agent().post('/projects').send({ name: `de-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true',
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0',
     testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml', relatedCommand: `node ${runner} related {files}` } } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `de-${++seq}`, projectId: p.body.id });
   await storage.updateItem(c.body.id, { status: 'START' } as any);

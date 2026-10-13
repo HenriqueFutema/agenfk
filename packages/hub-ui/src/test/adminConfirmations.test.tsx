@@ -7,7 +7,7 @@
  * dispatch, change the JIRA client ID). Each now asks first in the shared
  * ConfirmDialog, says what will happen, and sends nothing until confirmed.
  */
-import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, within, configure } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -24,6 +24,10 @@ import { api } from '../api';
 import { answerConfirm, forbidWindowConfirm, letMutationsLand } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
+// The first test's first find renders AdminKeys in a cold worker: ~0.9s on an
+// idle Windows box, so Testing Library's 1s default failed it under a loaded
+// full run. A real hang still fails at 5s (the flow-editor specs' margin).
+configure({ asyncUtilTimeout: 5000 });
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
 const writes = () => [api.post, api.put, api.delete].flatMap(f => (f as unknown as ReturnType<typeof vi.fn>).mock.calls);
 

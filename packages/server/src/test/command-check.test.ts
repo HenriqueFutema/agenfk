@@ -39,7 +39,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 beforeEach(() => { fs.rmSync(STORE, { force: true }); });
 
@@ -51,6 +51,9 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
 const flowWith = (checks: unknown[]) => [s('START', 0, { isAnchor: true }), s('WORK', 1, { checks }), s('NEXT', 2), s('END', 3, { isAnchor: true })];
 const cmd = (argv: string[], extra: Record<string, unknown> = {}) => ({ id: 'command-check', params: { name: 'lint', argv, ...extra } });
 const node = (code: string, ...args: string[]) => [process.execPath, '-e', code, ...args];
+// How the check shows node's path: bare when it needs no quoting, a JSON string otherwise -
+// always on Windows, whose paths hold backslashes (and here a space, in Program Files) (#208).
+const NODE = /^[\w@%+=:,./-]+$/.test(process.execPath) ? process.execPath : JSON.stringify(process.execPath);
 
 /** A card on WORK of a project whose flow carries `checks`; `root: false` gives it no tree. */
 async function onWork(checks: unknown[], { root = true, origin }: { root?: boolean; origin?: string } = {}) {
@@ -101,7 +104,7 @@ describe('efcacdeb (C2): a command check the server runs', () => {
     const v = await verdict(id);
     const [summary, ...output] = v.check.detail.split('\n');
     // Quoted as a JSON string: backslashes and quotes both escaped (CodeQL js/incomplete-sanitization).
-    expect(summary).toBe(`${process.execPath} -e "console.log('noise'); process.exit(0)" exited 0`);
+    expect(summary).toBe(`${NODE} -e "console.log('noise'); process.exit(0)" exited 0`);
     expect(output.join('\n')).toMatch(/noise/);
     const h = (await agent().get(`/items/${id}/check-history`)).body;
     expect(h[0].results.find((r: any) => r.id === 'command-check:lint').detail).toMatch(/exited 0\n[\s\S]*noise/);
@@ -174,7 +177,7 @@ describe('efcacdeb (C2): a command check the server runs', () => {
       const { id } = await onWork([cmd(argv, { approval: 'person' })]);
       const v = await verdict(id);
       expect(v.check).toMatchObject({ outcome: 'fail', blocking: true });
-      expect(v.check.detail).toContain(`${process.execPath} -e "process.exit(0)"`);
+      expect(v.check.detail).toContain(`${NODE} -e "process.exit(0)"`);
       expect(v.check.detail).toMatch(/approve/i);
     });
 

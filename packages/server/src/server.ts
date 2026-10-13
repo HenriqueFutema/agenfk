@@ -9,7 +9,7 @@ import { insideRoot, isTestPath, parseJunitXml, parseVitestJson, surfaceOf } fro
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
-import { suggestTestReport, withTestFiles } from './testReportHint';
+import { suggestTestReport, withTestFiles, quoteArg } from './testReportHint';
 import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
@@ -58,6 +58,7 @@ import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
+import { missingCommandOnWindows } from './commandNotFound.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -545,6 +546,23 @@ const describeExit = (
     return r.signal ? `killed by signal ${r.signal}, no exit code` : 'terminated without an exit code';
   }
   return `exit code ${r.code}`;
+};
+
+/**
+ * #208: cmd.exe answers a missing command with exit 1, a red suite's code. On
+ * Windows, after a failure, name the first word when cmd.exe could not have
+ * found it - the command itself already ran as written.
+ */
+const notFoundNote = (code: number | null, command: string, cwd: string | undefined): string => {
+  if (process.platform !== 'win32' || code !== 1) return '';
+  const missing = missingCommandOnWindows(command, {
+    pathEnv: process.env.PATH ?? process.env.Path ?? '',
+    pathExt: process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD',
+    // No root: the command ran where the server runs.
+    cwd: cwd || process.cwd(),
+    exists: (p) => fs.existsSync(p),
+  });
+  return missing ? ` - \`${missing}\` was not found (not a cmd.exe command, a file, or on PATH): the command could not be run` : '';
 };
 
 /** Hard cap on a verifyCommand's runtime; see its use in the validate route. */
@@ -4608,8 +4626,6 @@ interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: stri
 const WHOLE_SUITE_FILE = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|tsconfig[^/]*\.json|jsconfig\.json|\.babelrc[^/]*|babel\.config\.[^/]+|[^/]*\.config\.[cm]?[jt]s|vitest\.workspace\.[^/]+|[^/]*setup[^/]*\.[cm]?[jt]sx?|conftest\.py|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?)$/i;
 /** A file a related-tests command follows through imports: JS and TS sources (de5e5a03). */
 const GRAPH_FILE = /\.[cm]?[jt]sx?$/i;
-/** One argument per file, whatever its name holds. */
-const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
  * a36047ea — when a step changed code, not just tests: the project's related-
@@ -4629,7 +4645,10 @@ function relatedPlan(root: string, setting: TestReportSetting, entry: any, chang
   const tests = changed.filter(f => isTestPath(f, surface) && TEST_FILE_NAME.test(f));
   // de5e5a03: a related run follows imports. A snapshot, a fixture read from disk, a template: it traces no test to them.
   if (changed.some(f => !tests.includes(f) && !GRAPH_FILE.test(f))) return null;
-  return { entry, ran: tests, changed, command: template.split('{files}').join(changed.map(shellQuote).join(' ')), related: true };
+  // One argument per file, whatever its name holds, quoted for the shell that runs it (cmd.exe on Windows, #208).
+  const words = changed.map(f => quoteArg(f));
+  if (words.some(w => w === null)) return null;
+  return { entry, ran: tests, changed, command: template.split('{files}').join(words.join(' ')), related: true };
 }
 
 /** a36047ea: the hint a whole run gets when only code changed and the project has no related-tests command. */
@@ -6067,7 +6086,8 @@ app.delete("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, 
   if (!item.worktreePath) return res.json({ removed: false });
   // 686fdbf6: removal is --force; a card that chose this checkout would lose its work.
   const choosers = ((await storage.listItems({ projectId: item.projectId, limit: 1_000_000 } as any)) as any[])
-    .filter(o => o.id !== item.id && o.worktreeChoice === item.worktreePath);
+    .filter(o => o.id !== item.id && typeof o.worktreeChoice === 'string' && o.worktreeChoice !== 'root'
+      && path.resolve(o.worktreeChoice) === path.resolve(item.worktreePath));
   if (choosers.length) {
     return res.status(409).json({
       error: `Refusing to remove ${item.worktreePath}: ${choosers.map(o => `card ${o.id}`).join(', ')} chose to run there. `
@@ -10156,7 +10176,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${runRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}${staysOn(failureStatus)}`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${runRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}${timedOut || spawnError ? '' : notFoundNote(code, resolvedCommand, runRoot)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}${staysOn(failureStatus)}`,
       output: preview,
     });
   }

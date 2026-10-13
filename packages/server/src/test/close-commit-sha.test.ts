@@ -12,7 +12,7 @@ import { commitStagedForCard } from '../closeCommit';
 import { posixShell } from './helpers/posixShell';
 
 const dirs: string[] = [];
-afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();
 const git = (args: string[]) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 

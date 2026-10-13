@@ -218,7 +218,7 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     seedInstall();
   });
   afterEach(() => {
-    rmSync(home, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('removes all three hook bins and the agenfk CLI symlink (Bug 2)', () => {

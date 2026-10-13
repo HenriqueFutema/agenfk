@@ -343,7 +343,10 @@ describe('resuming a conversation', () => {
   it('ignores a resume request for an agent that cannot do it', () => {
     // Rather than emitting a flag the agent does not know, which would stop it
     // launching.
-    expect(resolveAgentCommand('shell', { agentSessionId: UUID, resume: true }).args).toEqual(['-l']);
+    // The shell's own argv, untouched: `-l` on a Unix login shell, none for
+    // PowerShell on Windows (platform.test.ts pins the per-shell rules).
+    expect(resolveAgentCommand('shell', { agentSessionId: UUID, resume: true }).args)
+      .toEqual(platform.shellAgent(process.env, accountShell()).args);
   });
 
   it('refuses anything that is not a uuid, rather than escaping it', () => {

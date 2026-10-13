@@ -41,18 +41,19 @@ let __server: import('http').Server;
 const agent = () => request(__server);
 const cleanup: string[] = [];
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 beforeAll(async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-brief-home-'));
   cleanup.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
-  process.env.HOME = savedHome;
+  process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function makeRepo(): { dir: string; base: string; tip: string } {
@@ -120,7 +121,7 @@ describe('CGLAB-457: GET /items/:id/review-brief', () => {
     fs.mkdirSync(sub, { recursive: true });
     // The tree is `sub`: the report is named relative to it, git prints paths from the repository root, so the
     // prefix has to line the two up or the report reads as the card's own change.
-    await storage.updateProject(pid, { projectRoot: sub, testReport: { format: 'junit-xml', command: 'true', reportPath: '.reports/report.xml' } } as never);
+    await storage.updateProject(pid, { projectRoot: sub, testReport: { format: 'junit-xml', command: 'exit 0', reportPath: '.reports/report.xml' } } as never);
     const id = await cardAt(pid, base);
     fs.mkdirSync(path.join(sub, '.reports'), { recursive: true });
     fs.writeFileSync(path.join(sub, '.reports', 'report.xml'), '<tests/>');

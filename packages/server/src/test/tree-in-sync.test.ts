@@ -38,7 +38,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -65,7 +65,7 @@ async function card(root: string, todo: Record<string, unknown> = { role: 'backl
   const f = await agent().post('/flows').send({ name: `sync-${++seq}`, steps: [s('TODO', 0, { isAnchor: true, ...todo }), s('WORK', 1), s('DONE', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const p = await agent().post('/projects').send({ name: `sync-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'true' } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'exit 0' } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `sync-${++seq}`, projectId: p.body.id });
   return c.body.id as string;
 }

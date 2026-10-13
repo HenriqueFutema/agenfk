@@ -94,7 +94,7 @@ describe('the per-run sandbox is removed when the run ends', () => {
       expect(fs.existsSync(prefixedElsewhere)).toBe(true);
       expect(fs.existsSync(nested)).toBe(true);
     } finally {
-      fs.rmSync(notOurs, { recursive: true, force: true });
+      fs.rmSync(notOurs, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       fs.rmSync(path.dirname(nested), { recursive: true, force: true });
     }
   });
@@ -104,7 +104,7 @@ describe('the per-run sandbox is removed when the run ends', () => {
     const config = sharedTest({ include: [] });
     // Building the config here mints a sandbox of its own, never this run's.
     expect(config.env.HOME).not.toBe(process.env.HOME);
-    fs.rmSync(config.env.HOME, { recursive: true, force: true });
+    fs.rmSync(config.env.HOME, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     // Absolute, or a package that runs this config from its own directory
     // (packages/hub-ui) fails to load it before running a single test.
     expect(config.globalSetup).toContain(path.join(REPO_ROOT, 'scripts/vitest-sandbox-teardown.mjs'));

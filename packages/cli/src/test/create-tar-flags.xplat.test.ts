@@ -28,7 +28,7 @@ const BSD = 'bsdtar 3.8.8 - libarchive 3.8.8 zlib/1.2.13.1-motley\n';
 
 let work: string;
 beforeAll(() => { work = mkdtempSync(path.join(os.tmpdir(), 'agenfk-create-tar-')); });
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+afterAll(() => rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 /** Evaluate `expr` against the module's exports in a child that only requires it. */
 function fromModule(expr: string): unknown {

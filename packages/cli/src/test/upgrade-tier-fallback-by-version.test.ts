@@ -51,7 +51,7 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(process, 'exit').mockImplementation((() => undefined) as any);
 });
-afterEach(() => { vi.restoreAllMocks(); mockedAxios.get.mockReset(); fs.rmSync(home, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); mockedAxios.get.mockReset(); fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 describe('the CLI tier check, server down (BUG 022b229a)', () => {
   it('names the newest stable by version, not the older-line hotfix published last', async () => {

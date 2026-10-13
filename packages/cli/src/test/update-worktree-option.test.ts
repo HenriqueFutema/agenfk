@@ -94,10 +94,14 @@ describe('agenfk update <id> --worktree (686fdbf6)', () => {
 
   it('sends an existing path as it is on disk, links resolved (git lists /private/tmp, not /tmp)', async () => {
     mockedAxios.put.mockResolvedValue({ data: { id: ITEM, title: 'T', type: 'TASK', status: 'TODO' } });
-    mockExistsSync.mockImplementation((p: string) => p === '/tmp/wt');
-    mockRealpathSync.mockImplementation((p: string) => (p === '/tmp/wt' ? '/private/tmp/wt' : p));
+    // The CLI resolves what was typed first, so the mocks key on the host's
+    // spelling of it: /tmp/wt here, C:\tmp\wt on Windows.
+    const typed = path.resolve('/tmp/wt');
+    const onDisk = path.resolve('/private/tmp/wt');
+    mockExistsSync.mockImplementation((p: string) => p === typed);
+    mockRealpathSync.mockImplementation((p: string) => (p === typed ? onDisk : p));
     await program.parseAsync(['node', 'agenfk', 'update', ITEM, '--worktree', '/tmp/wt']);
-    expect(mockedAxios.put).toHaveBeenLastCalledWith(`${API}/items/${ITEM}`, expect.objectContaining({ worktree: '/private/tmp/wt' }));
+    expect(mockedAxios.put).toHaveBeenLastCalledWith(`${API}/items/${ITEM}`, expect.objectContaining({ worktree: onDisk }));
   });
 
   it("sends 'none' for the project root, and 'inherit' to clear the choice", async () => {

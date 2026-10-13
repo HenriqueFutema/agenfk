@@ -108,7 +108,34 @@ const installFakeGh = (): string => {
     'printf %s "$AGENFK_TEST_PR_JSON"',
   ].join('\n'));
   fs.chmodSync(gh, 0o755);
+  if (process.platform === 'win32') installWindowsGh(dir);
   return dir;
+};
+
+/**
+ * Windows (#208): the route runs `execFileSync('gh', ...)` with no shell, which
+ * only ever finds an `.exe` - the real gh is one - so a script cannot stand in.
+ * The fake is node.exe copied as gh.exe plus a preload, handed over in
+ * NODE_OPTIONS, that answers as the script above does and exits before node
+ * looks for a script of its own. Every other node process skips the preload.
+ */
+let ghNodeOptions = '';
+const installWindowsGh = (dir: string): void => {
+  fs.copyFileSync(process.execPath, path.join(dir, 'gh.exe'));
+  const stub = path.join(dir, 'gh-stub.cjs');
+  fs.writeFileSync(stub, [
+    "const path = require('path'), fs = require('fs');",
+    "if (path.basename(process.execPath).toLowerCase() === 'gh.exe') {",
+    // node took gh's first word for its script and resolved it; its name is the word.
+    "  const args = [path.basename(process.argv[1] || ''), ...process.argv.slice(2)];",
+    "  if (args[0] === 'auth') process.exit(0);",
+    "  if (process.env.AGENFK_TEST_PR_FAIL) { fs.writeSync(2, 'no pull requests found\\n'); process.exit(1); }",
+    "  fs.writeFileSync(process.env.AGENFK_TEST_GH_ARGV, args.map(a => a + '\\n').join(''));",
+    "  fs.writeSync(1, process.env.AGENFK_TEST_PR_JSON || '');",
+    '  process.exit(0);',
+    '}',
+  ].join('\n'));
+  ghNodeOptions = `--require ${JSON.stringify(stub)}`;
 };
 
 const setPr = (over: Record<string, unknown> = {}) => {
@@ -127,6 +154,7 @@ const setPr = (over: Record<string, unknown> = {}) => {
 const post = (body: Record<string, unknown>) =>
   agent().post(`/projects/${projectId}/tasks-from-pr`).send(body);
 
+const savedNodeOptions = process.env.NODE_OPTIONS;
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
   await removeTestDb(TEST_DB, closeStorage);
@@ -136,13 +164,15 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  fs.rmSync(binDir, { recursive: true, force: true });
+  fs.rmSync(binDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   process.env.PATH = realPath;
+  if (savedNodeOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = savedNodeOptions;
 });
 
 beforeEach(async () => {
   await initStorage();
   process.env.PATH = `${binDir}${path.delimiter}${realPath}`;
+  if (ghNodeOptions) process.env.NODE_OPTIONS = ghNodeOptions;
   process.env.AGENFK_TEST_GH_ARGV = path.join(binDir, 'argv.txt');
   delete process.env.AGENFK_TEST_PR_FAIL;
   setPr();
@@ -174,9 +204,9 @@ afterEach(() => {
    * epic already has a card open on rotating failures; not adding to it.
    */
   const worktreeRoot = path.join(os.homedir(), '.agenfk', 'worktrees', path.basename(repo));
-  fs.rmSync(worktreeRoot, { recursive: true, force: true });
-  fs.rmSync(repo, { recursive: true, force: true });
-  fs.rmSync(origin, { recursive: true, force: true });
+  fs.rmSync(worktreeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(origin, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('POST /projects/:id/tasks-from-pr', () => {
@@ -209,7 +239,7 @@ describe('POST /projects/:id/tasks-from-pr', () => {
     expect(fs.existsSync(path.join(res.body.worktree.path, 'f.txt')),
       'the worktree does not contain the PR\'s file — it was branched from local HEAD').toBe(true);
     expect(git(res.body.worktree.path, 'log', '-1', '--format=%s').trim()).toBe('work');
-    fs.rmSync(res.body.worktree.path, { recursive: true, force: true });
+    fs.rmSync(res.body.worktree.path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('passes the PR number as its own argv entry', async () => {
@@ -236,7 +266,7 @@ describe('a branch that already has a card', () => {
     // is a failure scheduled for later.
     const first = await post({ prNumber: 42 });
     expect(first.status).toBe(201);
-    if (first.body.worktree?.path) fs.rmSync(first.body.worktree.path, { recursive: true, force: true });
+    if (first.body.worktree?.path) fs.rmSync(first.body.worktree.path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
     const second = await post({ prNumber: 42 });
     expect(second.status).toBe(200);

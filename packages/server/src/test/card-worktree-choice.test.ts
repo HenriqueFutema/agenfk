@@ -39,7 +39,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -63,7 +63,7 @@ async function setup() {
   const f = await agent().post('/flows').send({ name: `wtc-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const p = await agent().post('/projects').send({ name: `wtc-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'true' } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'exit 0' } as never);
   const epic = await agent().post('/items').send({ type: 'EPIC', title: `wtc-epic-${++seq}`, projectId: p.body.id });
   await storage.updateItem(epic.body.id, { status: 'WORK', worktreePath: wt } as any);
   const child = await agent().post('/items').send({ type: 'TASK', title: `wtc-child-${++seq}`, projectId: p.body.id, parentId: epic.body.id });
@@ -164,7 +164,7 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
   it('a verify of a card whose chosen tree is gone says how to choose another', async () => {
     const t = await setup();
     expect((await put(t.child, { worktree: t.wt2 })).status).toBe(200);
-    fs.rmSync(t.wt2, { recursive: true, force: true });
+    fs.rmSync(t.wt2, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     const res = await verifyFrom(t.child, t.root);
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/--worktree inherit/);

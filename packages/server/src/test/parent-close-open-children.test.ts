@@ -31,6 +31,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -39,7 +40,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function repo(): string {
@@ -55,7 +56,7 @@ async function setupWith(steps: any[], extra: Record<string, unknown> = {}) {
   const f = await agent().post('/flows').send({ name: `pc-${++seq}`, steps });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const p = await agent().post('/projects').send({ name: `pc-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo(), verifyCommand: 'true', ...extra } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo(), verifyCommand: 'exit 0', ...extra } as never);
   return p.body.id as string;
 }
 async function follow(id: string): Promise<{ status: number; body: any }> {
@@ -72,7 +73,7 @@ async function setup() {
   const f = await agent().post('/flows').send({ name: `pc-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const p = await agent().post('/projects').send({ name: `pc-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo(), verifyCommand: 'true' } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo(), verifyCommand: 'exit 0' } as never);
   return p.body.id as string;
 }
 async function card(projectId: string, status: string, extra: Record<string, unknown> = {}) {
@@ -124,7 +125,9 @@ describe("a card's final move while it has open children", () => {
     const release = path.join(gate, 'release');
     const pid = await setupWith(
       [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })],
-      { verifyCommand: `touch '${started}'; while [ ! -f '${release}' ]; do sleep 0.05; done` },
+      // Node, not touch/while/sleep: the server runs it with sh off Windows and cmd.exe on it (#208).
+      { verifyCommand: nodeCommand(`const fs = require('fs'); fs.writeFileSync(${JSON.stringify(started)}, '');`
+        + ` const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) clearInterval(t); }, 50);`) },
     );
     const parent = await card(pid, 'WORK');
     const run = follow(parent);

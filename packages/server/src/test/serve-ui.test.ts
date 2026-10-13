@@ -55,7 +55,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  if (uiDir) fs.rmSync(uiDir, { recursive: true, force: true });
+  if (uiDir) fs.rmSync(uiDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 // ── Ordering note ────────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ describe('resolveUiDir', () => {
     try {
       expect(resolveUiDir(empty)).toBeNull();
     } finally {
-      fs.rmSync(empty, { recursive: true, force: true });
+      fs.rmSync(empty, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -98,7 +98,7 @@ describe('resolveUiDir', () => {
       expect(resolveUiDir(path.join(fakeShipped, 'index.html'))).not.toBe(fakeShipped);
       expect(resolveUiDir(empty)).toBeNull();
     } finally {
-      fs.rmSync(empty, { recursive: true, force: true });
+      fs.rmSync(empty, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       if (staged) fs.rmSync(path.join(fakeShipped, 'index.html'), { force: true });
     }
   });
@@ -114,7 +114,7 @@ describe('resolveUiDir', () => {
       fs.mkdirSync(path.join(srcRoot, 'node_modules'));
       expect(resolveUiDir(srcRoot)).toBeNull();
     } finally {
-      fs.rmSync(srcRoot, { recursive: true, force: true });
+      fs.rmSync(srcRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 

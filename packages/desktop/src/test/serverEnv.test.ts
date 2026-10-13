@@ -13,7 +13,9 @@ import * as path from 'path';
 import { resolveDbPath, buildServerEnv } from '../main/serverEnv.js';
 import { profileFor } from '../main/platform.js';
 
-const HOME = '/home/dev';
+// Resolved, so it is spelled as the host spells a home (C:\home\dev on
+// Windows) and the paths the product joins under it start with it.
+const HOME = path.resolve('/home/dev');
 const CONFIG = path.join(HOME, '.agenfk', 'config.json');
 
 /** Stub filesystem: only the listed files exist, with the given contents. */

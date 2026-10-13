@@ -43,19 +43,20 @@ let __server: import('http').Server;
 const agent = () => request(__server);
 const cleanup: string[] = [];
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 let home: string;
 beforeAll(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-review-home-'));
   cleanup.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
-  process.env.HOME = savedHome;
+  process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -154,11 +155,11 @@ describe('CGLAB-381: review records', () => {
     fs.writeFileSync(target, line({ sessionId: 's', timestamp: FUTURE }));
     const link = path.join(home, '.claude', 'projects', '-repo', 'link.jsonl');
     fs.mkdirSync(path.dirname(link), { recursive: true });
-    fs.symlinkSync(target, link);
     // Guard: the folder itself is a session folder, so the refusal below is the link's.
     const beside = path.join(path.dirname(link), 'beside.jsonl');
     fs.writeFileSync(beside, line({ sessionId: 's', timestamp: FUTURE }));
     expect(transcriptRoot(beside)).not.toBeNull();
+    fs.symlinkSync(target, link);
     const res = await record(id, { transcript: link, range: `${base}..${tip}`, findings: [] });
     expect(res.status).toBe(400);
     expect(res.body.error).toContain(`${link} is not a transcript in a harness session folder`);

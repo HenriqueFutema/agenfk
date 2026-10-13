@@ -37,6 +37,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -45,7 +46,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -64,11 +65,13 @@ function makeRepo(): string {
 }
 
 /** A suite writing a JUnit report of two passing tests, counting its runs in a log outside the tree. */
-const JUNIT = `printf '<testsuite><testcase file="tests/a.test.js" name="t0"/><testcase file="tests/a.test.js" name="t1"/></testsuite>' > report.xml`;
+// Node, not printf/echo: the server runs it with sh off Windows and cmd.exe on it (#208).
+const JUNIT_JS = `require('fs').writeFileSync('report.xml', '<testsuite><testcase file="tests/a.test.js" name="t0"/><testcase file="tests/a.test.js" name="t1"/></testsuite>');`;
 function counted(tag: string) {
   const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-closegreen-log-')), 'runs');
   dirs.push(path.dirname(log));
-  return { command: `echo ${tag} >> '${log}'; ${JUNIT}`, runs: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) };
+  const command = nodeCommand(`require('fs').appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${tag}\n`)});${JUNIT_JS}`);
+  return { command, runs: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) };
 }
 
 let seq = 0;

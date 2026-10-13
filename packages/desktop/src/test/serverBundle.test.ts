@@ -38,7 +38,7 @@ beforeAll(() => {
 }, 120_000);
 
 afterAll(() => {
-  if (isolated) fs.rmSync(isolated, { recursive: true, force: true });
+  if (isolated) fs.rmSync(isolated, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('the bundled server', () => {
@@ -71,6 +71,12 @@ describe('the bundled server', () => {
       env: {
         ...process.env,
         AGENFK_DB_PATH: db,
+        // A home of its own: the server records its port in ~/.agenfk/server-port
+        // and only removes it on a graceful shutdown. On Windows the kill below is
+        // TerminateProcess, so in the run's shared sandbox HOME the stale 3977
+        // was read by every later spec that resolves the board URL (ui-open).
+        HOME: isolated,
+        USERPROFILE: isolated,
         AGENFK_PORT: '3977',
         NODE_ENV: 'production',
         NODE_PATH: '',
@@ -95,7 +101,14 @@ describe('the bundled server', () => {
       child.on('exit', () => { clearTimeout(timer); resolve(false); });
     });
 
+    // Wait for it to be gone, not just signalled: on Windows the kill lands
+    // asynchronously, and a child still holding its cwd and the sqlite file
+    // makes afterAll's rmSync of `isolated` fail with EPERM.
+    const gone = child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve()
+      : new Promise<void>(resolve => child.once('exit', () => resolve()));
     child.kill('SIGTERM');
+    await gone;
 
     expect(output, 'the bundled server could not resolve a dependency').not.toMatch(/Cannot find module/);
     expect(started, `server never reported listening. Output:\n${output.slice(0, 800)}`).toBe(true);

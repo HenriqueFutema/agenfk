@@ -46,7 +46,7 @@ afterAll(async () => {
  * repo's own checkout is no stand-in: `.agenfk/` is untracked, so CI has none.
  */
 const madeDirs: string[] = [];
-afterAll(() => { for (const d of madeDirs) fs.rmSync(d, { recursive: true, force: true }); });
+afterAll(() => { for (const d of madeDirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 function markedProjectDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-orphan-'));
   madeDirs.push(dir);

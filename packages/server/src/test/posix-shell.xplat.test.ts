@@ -53,7 +53,7 @@ describe('posixShell()', () => {
 
   describe('on this machine', () => {
     let dir = '';
-    afterEach(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); dir = ''; });
+    afterEach(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); dir = ''; });
 
     it('runs a git fixture string with POSIX semantics', () => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-posix-shell-'));

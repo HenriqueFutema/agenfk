@@ -9,7 +9,7 @@ import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
 import { forceLocalFlag, tarPath } from '../bin/tar-flags.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -508,13 +508,21 @@ async function run() {
         } else {
             detail(`${GREEN}[1b/14] Refreshing production dependencies (npm ci --omit=dev)...${NC}`);
         }
-        const npmCiResult = spawnSync(npmCiCmd, ['ci', '--omit=dev', '--ignore-scripts'], {
+        const npmCiArgs = ['ci', '--omit=dev', '--ignore-scripts'];
+        const npmCiOpts = {
             cwd: rootDir,
             stdio: childStdio,
             encoding: 'utf8',
             maxBuffer: childMaxBuffer,
             windowsHide: true,
-        });
+        };
+        // .cmd scripts need a shell on Windows (MinGW + native). There the line
+        // goes as ONE string: args beside shell:true make Node 24 print a
+        // DEP0190 deprecation warning on every install and upgrade. The args are
+        // fixed literals, so joining them escapes nothing.
+        const npmCiResult = os.platform() === 'win32'
+            ? spawnSync([npmCiCmd, ...npmCiArgs].join(' '), { ...npmCiOpts, shell: true, windowsHide: true })
+            : spawnSync(npmCiCmd, npmCiArgs, { ...npmCiOpts, windowsHide: true });
         if (npmCiResult.status !== 0) {
             if (childOutput(npmCiResult)) console.log(childOutput(npmCiResult));
             warn(`npm ci failed (${npmCiResult.error ? npmCiResult.error.message : `exit ${npmCiResult.status}`}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.`);
@@ -971,9 +979,7 @@ async function run() {
                 }
 
                 // Inject 'name' field if missing
-                if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
-                    content = content.replace('---\n', `---\nname: ${skillName}\n`);
-                }
+                content = withSkillName(content, skillName);
                 const dest = path.join(skillDir, 'SKILL.md');
                 await fs.writeFile(dest, content, 'utf8');
                 detail(`  Installed Claude Skill: ${dest}`);
@@ -1050,9 +1056,7 @@ async function run() {
                 await fs.mkdir(skillDir, { recursive: true });
                 let content = readFileSync(path.join(commandsDir, file), 'utf8');
                 // Inject 'name' field if missing (required by Codex, OpenCode, Cursor, Gemini)
-                if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
-                    content = content.replace('---\n', `---\nname: ${skillName}\n`);
-                }
+                content = withSkillName(content, skillName);
                 const dest = path.join(skillDir, 'SKILL.md');
                 writeFileSync(dest, content, 'utf8');
                 detail(`  Installed: ${dest}`);

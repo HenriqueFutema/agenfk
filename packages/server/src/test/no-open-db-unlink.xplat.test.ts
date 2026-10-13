@@ -80,9 +80,9 @@ describe('test databases', () => {
       afterAll(() => { for (const s of ['', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s); });
       beforeEach(async () => { fs.rmSync(dbPath, { force: true }); await initStorage(); });
       it('x', () => { fs.unlinkSync(DB_PATH); });
-      afterAll(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+      afterAll(() => { fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
       afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
-      afterAll(() => { fs.rmSync(sandbox, { recursive: true, force: true }); });
+      afterAll(() => { fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
       afterAll(async () => { await storage.shutdown(); fs.unlinkSync(dbPath); });
       afterAll(() => { for (const s of ['', '-wal']) { const f = TEST_DB + s; if (fs.existsSync(f)) fs.unlinkSync(f); } });
       afterAll(async () => { await new Promise(r => __server.close(() => r())); fs.unlinkSync(TEST_DB); });

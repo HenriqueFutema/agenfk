@@ -108,7 +108,7 @@ describe('GET /items/:id/git-status', () => {
     expect(res.body.files.map((f: { path: string }) => f.path)).toContain('brand new.txt');
 
     execFileSync('git', ['worktree', 'remove', '--force', wt], { cwd: repo });
-    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('answers plainly when the directory is not a repository', async () => {
@@ -120,6 +120,6 @@ describe('GET /items/:id/git-status', () => {
     await internal(agent().put(`/items/${item.body.id}`)).send({ worktreePath: notARepo });
     const res = await agent().get(`/items/${item.body.id}/git-status`);
     expect(res.status).toBe(409);
-    fs.rmSync(notARepo, { recursive: true, force: true });
+    fs.rmSync(notARepo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 });

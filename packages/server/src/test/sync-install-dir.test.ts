@@ -39,8 +39,8 @@ beforeEach(() => {
   dst = mkdtempSync(path.join(os.tmpdir(), 'agenfk-sync-dst-'));
 });
 afterEach(() => {
-  rmSync(src, { recursive: true, force: true });
-  rmSync(dst, { recursive: true, force: true });
+  rmSync(src, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  rmSync(dst, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('pruneInstallDir removes files deleted upstream', () => {
@@ -224,7 +224,7 @@ describe('pruneInstallDir refuses to destroy data', () => {
       expect(removed).toEqual([]);
       expect(failed.map((f: { path: string }) => f.path)).toContain('commands');
     } finally {
-      rmSync(outside, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 

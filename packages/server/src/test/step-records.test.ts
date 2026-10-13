@@ -42,7 +42,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -231,7 +231,7 @@ describe('CGLAB-379: step records', () => {
 
     it('records the report as unavailable - never passed - when it cannot be read', async () => {
       const { dir } = makeRepo();
-      const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'true', reportPath: 'report.json' } });
+      const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'exit 0', reportPath: 'report.json' } });
       const id = await card(p, 'IN_PROGRESS');
       const res = await agent().post(`/items/${id}/step-records/capture`).set(internal());
       expect(res.status).toBe(200);
@@ -354,7 +354,7 @@ describe('CGLAB-379: step records', () => {
       fs.writeFileSync(path.join(outside, 'report.json'), 'sentinel');
       // A junction on Windows (a symlink needs admin there): lstat calls it a link all the same.
       linkDir(outside, path.join(dir, 'out'));
-      const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'true', reportPath: 'out/report.json' } });
+      const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'exit 0', reportPath: 'out/report.json' } });
       const res = await agent().post(`/items/${await card(p, 'IN_PROGRESS')}/step-records/capture`).set(internal());
       expect(res.body.available).toBe(false);
       expect(fs.existsSync(path.join(outside, 'report.json')), 'the capture deleted a file outside the tree').toBe(true);
@@ -385,7 +385,7 @@ describe('CGLAB-379: step records', () => {
     });
 
     it('refuses when the card has no tree to run in', async () => {
-      const id = await card(await project({ verifyCommand: 'true' }), 'IN_PROGRESS');
+      const id = await card(await project({ verifyCommand: 'exit 0' }), 'IN_PROGRESS');
       const res = await agent().post(`/items/${id}/step-records/capture`).set(internal());
       expect(res.status).toBe(400);
     });

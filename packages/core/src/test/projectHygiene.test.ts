@@ -93,3 +93,34 @@ describe('a project root that must be refused', () => {
     expect(isPersistableProjectRoot('/', home)).toBe(false);
   });
 });
+
+/**
+ * GitHub #208: the same refusals for Windows paths. The guard compared
+ * `${home}/.agenfk`, which a `C:\Users\x` home never matches, refused `/` but
+ * not `C:\`, and was case-sensitive on a filesystem that is not.
+ */
+describe('a project root that must be refused, on Windows', () => {
+  const home = 'C:\\Users\\Someone';
+  const ok = (root: string | null | undefined) => isPersistableProjectRoot(root, home, 'win32');
+
+  it('refuses the home directory, however it is spelled', () => {
+    for (const spelling of ['C:\\Users\\Someone', 'C:\\Users\\Someone\\', 'c:\\users\\someone', 'C:/Users/Someone', 'C:\\Users\\Someone\\.']) {
+      expect(ok(spelling), spelling).toBe(false);
+    }
+  });
+
+  it('refuses the agenfk directory itself', () => {
+    expect(ok('C:\\Users\\Someone\\.agenfk')).toBe(false);
+    expect(ok('C:/Users/Someone/.agenfk/')).toBe(false);
+  });
+
+  it('refuses a drive root', () => {
+    for (const root of ['C:\\', 'C:/', 'D:\\', '/']) expect(ok(root), root).toBe(false);
+  });
+
+  it('accepts a real repository under home, and nothing at all is still refused', () => {
+    expect(ok('C:\\Users\\Someone\\code\\agenfk')).toBe(true);
+    expect(ok('D:\\work\\agenfk')).toBe(true);
+    expect(ok('')).toBe(false);
+  });
+});

@@ -29,6 +29,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, io } from '../server';
 import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -37,7 +38,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -111,7 +112,15 @@ describe('9569b4d7: a running verify is visible to the board', () => {
 
   it('a runner that leaves a process behind does not hold the run open (review)', async () => {
     const t = await setup(0);
-    await storage.updateProject(t.pid, { verifyCommand: 'sleep 30 & echo started-a-leftover' } as never);
+    // The command exits at once and leaves a process holding its output open
+    // for 30s. In node rather than `sleep 30 &`, which is sh's (#208); the
+    // leftover runs outside the repo so it cannot hold the directory either.
+    const leftover = nodeCommand(
+      // detached + unref: the command returns at once, as sh does after `&`.
+      "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'inherit', cwd: require('os').tmpdir(), detached: true, windowsHide: true }).unref();"
+      + " console.log('started-a-leftover');",
+    );
+    await storage.updateProject(t.pid, { verifyCommand: leftover } as never);
     const v = await agent().post(`/items/${t.id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
     expect(v.status).toBe(202);
     const t0 = Date.now();

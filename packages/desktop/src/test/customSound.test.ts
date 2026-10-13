@@ -54,7 +54,7 @@ beforeEach(() => {
   __forgetEncodedSound();
 });
 afterEach(() => {
-  fs.rmSync(userData, { recursive: true, force: true });
+  fs.rmSync(userData, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('choosing a sound', () => {

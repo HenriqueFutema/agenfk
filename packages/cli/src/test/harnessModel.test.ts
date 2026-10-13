@@ -30,7 +30,7 @@ beforeEach(() => {
   for (const k of HARNESS_VARS) delete process.env[k];
 });
 afterEach(() => {
-  fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   for (const k of HARNESS_VARS) {
     if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k];
   }

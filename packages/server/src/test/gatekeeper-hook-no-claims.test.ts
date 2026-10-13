@@ -27,7 +27,7 @@ beforeAll(() => {
   fs.mkdirSync(path.dirname(editedFile), { recursive: true });
   fs.writeFileSync(editedFile, 'x');
 });
-afterAll(() => { try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ } });
+afterAll(() => { try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ } });
 
 function startItemsServer(items: unknown[]): Promise<{ port: number; close: () => Promise<void> }> {
   return new Promise((resolve) => {

@@ -61,7 +61,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const s of spies) s.mockRestore();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   mockedAxios.get.mockReset();
   mockedAxios.post.mockReset();
 });

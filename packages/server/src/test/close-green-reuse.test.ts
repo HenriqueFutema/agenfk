@@ -43,7 +43,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -71,7 +71,7 @@ setTimeout(() => {
   process.exit(${exitCode});
 }, ${sleepMs});`);
   const p = await agent().post('/projects').send({ name: `cg-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
   const card = async () => {
     const c = await agent().post('/items').send({ type: 'TASK', title: `cg-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'WORK' } as any);
@@ -207,7 +207,8 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
   });
 
-  it('no stamp when a file became executable after the run: the mode is content too', async () => {
+  // No exec bit on Windows: chmod changes nothing git sees there (core.filemode=false) (#208).
+  it.skipIf(process.platform === 'win32')('no stamp when a file became executable after the run: the mode is content too', async () => {
     const t = await setup();
     const a = await t.card();
     fs.writeFileSync(path.join(t.repo, 'run.sh'), 'echo hi\n');

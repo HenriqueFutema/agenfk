@@ -399,7 +399,7 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
         fs.writeFileSync(path.join(dir, 'tests/a.test.ts'), 'two');
         expect(mod.surfaceOf(dir, ['tests/a.test.ts']).files['tests/a.test.ts']).not.toBe(s.files['tests/a.test.ts']);
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
 
@@ -410,7 +410,7 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
         const s = mod.surfaceOf(dir, ['gone.test.ts', '../../etc/passwd']);
         expect(s.files).toEqual({});
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
 
@@ -425,7 +425,7 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
         const s = mod.surfaceOf(dir, [], ['tests/helpers']);
         expect(Object.keys(s.files).sort()).toEqual(['package.json', 'tests/helpers/fixture.ts', 'vitest.setup.ts']);
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
 
@@ -439,7 +439,7 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
         expect(Object.keys(s.files)).toContain('tests/test_a.py');
         expect(s.missing).toEqual(['tests/gone.py']);
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
 
@@ -453,7 +453,7 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
         expect(Object.keys(s.files)).toContain('tests/test_a.py');
         expect(s.missing).toEqual([]);
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
 
@@ -472,7 +472,7 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
         expect(Date.now() - start).toBeLessThan(1000);
         expect(Object.keys(s.files)).toEqual(['tests/real.ts']);
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
 
@@ -495,7 +495,7 @@ Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
     const within = async (files: Record<string, string>, fn: (mod: any, dir: string, listTree: () => string[]) => void) => {
       const mod = await load();
       const dir = tree(files);
-      try { fn(mod, dir, () => Object.keys(files)); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+      try { fn(mod, dir, () => Object.keys(files)); } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
     };
 
     it('is the declared test paths, walked in full - fixtures included - plus what the report names', () => within(

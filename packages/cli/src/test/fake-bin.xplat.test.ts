@@ -26,7 +26,7 @@ import * as path from 'path';
 import { fakeBin, hostTar } from './helpers/fakeBin';
 
 let work = '';
-afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true }); work = ''; });
+afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); work = ''; });
 const tmp = () => (work = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fakebin-')));
 
 const sh = (cmd: string, env: NodeJS.ProcessEnv, cwd?: string) =>

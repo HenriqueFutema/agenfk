@@ -7,7 +7,7 @@
  * revokes. Each test renders TWO rows, so a name that ignores its row cannot
  * pass by accident.
  */
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, configure } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -24,6 +24,10 @@ import { ThemeProvider } from '../ThemeContext';
 import { api } from '../api';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
+// The first test's first find renders AdminKeys in a cold worker: ~0.9s on an
+// idle Windows box, so Testing Library's 1s default failed it under a loaded
+// full run. A real hang still fails at 5s (the flow-editor specs' margin).
+configure({ asyncUtilTimeout: 5000 });
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
 const post = api.post as unknown as ReturnType<typeof vi.fn>;
 

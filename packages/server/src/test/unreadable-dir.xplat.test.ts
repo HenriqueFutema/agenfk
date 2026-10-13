@@ -19,7 +19,7 @@ import { makeUnreadable } from './helpers/unreadableDir';
 const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 
 let work = '';
-afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true }); work = ''; });
+afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); work = ''; });
 
 describe('makeUnreadable()', () => {
   // root reads through chmod 000; the specs that use this skip as root too.
@@ -50,7 +50,7 @@ describe('makeUnreadable()', () => {
     fs.writeFileSync(path.join(dir, 'x.md'), 'x');
 
     makeUnreadable(dir)();
-    fs.rmSync(work, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
     expect(fs.existsSync(work)).toBe(false);
     work = '';

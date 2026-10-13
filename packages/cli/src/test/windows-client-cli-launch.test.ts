@@ -134,7 +134,7 @@ describe('resolveWindowsTool: which file a Windows launch runs', () => {
     fs.writeFileSync(path.join(b, 'tool.exe'), '');
     fs.writeFileSync(path.join(b, 'tool.js'), '');
   });
-  afterAll(() => { for (const d of [a, b]) fs.rmSync(d, { recursive: true, force: true }); });
+  afterAll(() => { for (const d of [a, b]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
   for (const impl of IMPLS) {
     describe(impl.side, () => {
@@ -173,7 +173,7 @@ describe('resolveWindowsTool: which file a Windows launch runs', () => {
           fs.writeFileSync(path.join(c, 'tool.cmd'), '');
           expect(impl.resolveWindowsTool('tool', { PATH: c, PATHEXT: '.EXE;.CMD' })).toBe(path.join(c, 'tool.cmd'));
         } finally {
-          fs.rmSync(c, { recursive: true, force: true });
+          fs.rmSync(c, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
         }
       });
 
@@ -198,7 +198,7 @@ describe('runTool launches a client CLI by bare name on this platform', () => {
   });
   afterAll(() => {
     restorePath(savedPath);
-    fs.rmSync(bin.dir, { recursive: true, force: true });
+    fs.rmSync(bin.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   for (const impl of IMPLS) {
@@ -243,7 +243,7 @@ describe('runTool launches a client CLI by bare name on this platform', () => {
         expect(fs.existsSync(path.join(cwd, 'decoy.log')), impl.side).toBe(false);
       }
     } finally {
-      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -272,7 +272,7 @@ describe('runTool launches a client CLI by bare name on this platform', () => {
         restorePath(saved);
       }
     } finally {
-      fs.rmSync(exeDir, { recursive: true, force: true });
+      fs.rmSync(exeDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });
@@ -283,7 +283,7 @@ describe('the installer and uninstaller reach the client CLIs', () => {
   // A profile path with a space and '&', the shape that has to survive cmd.exe.
   const newHome = () => { const h = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk home & co-')); homes.push(h); return h; };
   beforeEach(() => { bin = fakeBin(['claude', 'codex', 'gemini']); });
-  afterEach(() => fs.rmSync(bin.dir, { recursive: true, force: true }));
+  afterEach(() => fs.rmSync(bin.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   afterAll(() => { for (const h of homes) cleanupHome(h); });
 
   for (const client of ['claude', 'gemini'] as const) {
@@ -350,7 +350,7 @@ describe('agenfk configure-ide reaches claude', () => {
   afterEach(() => {
     restorePath(savedPath);
     vi.restoreAllMocks();
-    for (const d of [bin.dir, home.dir, project]) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of [bin.dir, home.dir, project]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     home.dir = '';
   });
 

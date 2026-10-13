@@ -109,7 +109,7 @@ describe('linking a card to a JIRA item', () => {
 
   afterAll(async () => {
     await removeTestDb(TEST_DB, closeStorage);
-    fs.rmSync(SANDBOX_HOME, { recursive: true, force: true });
+    fs.rmSync(SANDBOX_HOME, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   beforeEach(async () => {

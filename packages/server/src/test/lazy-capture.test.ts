@@ -39,7 +39,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -94,7 +94,7 @@ async function setup(opts: { runnerName?: string; sub?: boolean } = {}) {
   const runner = path.join(tools, opts.runnerName ?? 'vitest.js');
   fs.writeFileSync(runner, RUNNER(log));
   const p = await agent().post('/projects').send({ name: `lz-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner} run`, reportPath: 'report.xml' } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner} run`, reportPath: 'report.xml' } } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `lz-${++seq}`, projectId: p.body.id });
   await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
   const runs = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);

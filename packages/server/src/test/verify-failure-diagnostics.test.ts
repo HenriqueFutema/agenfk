@@ -62,7 +62,7 @@ import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 const itemLogDir = (itemId: string) => path.join(getVerifyLogRoot(), itemId);
 const dbLogsDir = () => path.join(path.dirname(TEST_DB), 'logs');
 
-const rmrf = (p: string) => { if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true }); };
+const rmrf = (p: string) => { if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); };
 /** Empty the log root without deleting the root itself (other tests hold it). */
 const clearLogRoot = () => {
   const root = getVerifyLogRoot();
@@ -127,9 +127,12 @@ describe('POST /items/:id/validate — failure diagnostics (BUG b233143b)', () =
       .send({ command: 'this-binary-does-not-exist-agenfk' });
 
     expect(res.status).toBe(422);
-    // 127 is "command not found" from the shell. Reported as itself, so a broken
-    // PATH or a missing script is not misread as a red test suite.
-    expect(res.body.message).toMatch(/exit code\D*127/);
+    // 127 is "command not found" from sh. Reported as itself, so a broken PATH or
+    // a missing script is not misread as a red test suite. cmd.exe answers 1, a
+    // red suite's code, so there the report names the command it could not find (#208).
+    expect(res.body.message).toMatch(process.platform === 'win32'
+      ? /exit code 1\b.*this-binary-does-not-exist-agenfk.*not found/
+      : /exit code\D*127/);
   });
 
   it('names the runtime cap when the command was killed, not a plain failure', async () => {
@@ -390,7 +393,9 @@ describe('POST /items/:id/validate — review findings (BUG b233143b)', () => {
     expect(elapsed).toBeLessThan(6000);
   }, 25000);
 
-  it('names the signal when the command dies by one, instead of "exit code null"', async () => {
+  // POSIX signals and sh's `exec`: Windows has neither - a process there ends
+  // with an exit code, which the other tests here cover (#208).
+  it.skipIf(process.platform === 'win32')('names the signal when the command dies by one, instead of "exit code null"', async () => {
     if (!VERIFY_TOKEN) return;
     // An OOM kill is ordinary on a constrained machine. "exit code null" is the
     // least informative thing this line could produce.

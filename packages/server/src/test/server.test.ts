@@ -836,7 +836,7 @@ describe('JIRA Integration', () => {
 
   afterAll(() => {
     vi.mocked(os.homedir).mockRestore();
-    try { fs.rmSync(jiraSandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(jiraSandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
   });
 
 });

@@ -109,7 +109,7 @@ afterAll(async () => {
   // Restore ambient state: process.env is process-global and vitest reuses
   // workers, so leaving the override set would redirect a sibling file.
   setVerifyLogRootForTests(null);
-  if (fs.existsSync(VERIFY_LOG_ROOT)) fs.rmSync(VERIFY_LOG_ROOT, { recursive: true, force: true });
+  if (fs.existsSync(VERIFY_LOG_ROOT)) fs.rmSync(VERIFY_LOG_ROOT, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   // Restore the original jira token state (sandbox-scoped since item 9c297075)
   if (globalSavedToken) {
     fs.writeFileSync(GLOBAL_TOKEN_PATH, globalSavedToken);
@@ -119,7 +119,7 @@ afterAll(async () => {
   // Clean up test DB
   await removeTestDb(TEST_DB, closeStorage);
   vi.mocked(os.homedir).mockRestore();
-  try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
 });
 
 
@@ -1975,7 +1975,7 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
   };
   const roots: string[] = [];
   const makeRoot = (): string => { const d = realRoot(); roots.push(d); return d; };
-  afterEach(() => { for (const d of roots.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+  afterEach(() => { for (const d of roots.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
   it('persists cwd on the project when validate is called with cwd in body', async () => {
     if (!VERIFY_TOKEN) return;
@@ -2173,7 +2173,7 @@ describe('PUT /items/:id — comment with step field', () => {
 
 describe('POST /items/:id/validate — full-output log persistence', () => {
   const LOGS_DIR = VERIFY_LOG_ROOT;
-  const rmLogs = () => { if (fs.existsSync(LOGS_DIR)) fs.rmSync(LOGS_DIR, { recursive: true, force: true }); };
+  const rmLogs = () => { if (fs.existsSync(LOGS_DIR)) fs.rmSync(LOGS_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); };
 
   beforeEach(async () => { await initStorage(); rmLogs(); });
   afterEach(() => { rmLogs(); });

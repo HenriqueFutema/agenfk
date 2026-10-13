@@ -34,6 +34,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, unapprovedFileVerify } from '../server';
 import { commandFingerprint } from '@agenfk/core';
 import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -42,11 +43,14 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 /** A JUnit report of two passing tests, as a command. */
-const JUNIT = `printf '<testsuite><testcase file="tests/a.test.js" name="t0"/><testcase file="tests/a.test.js" name="t1"/></testsuite>' > report.xml`;
+// Node, not touch/printf: the server runs it with sh off Windows and cmd.exe on it (#208).
+const JUNIT_JS = `require('fs').writeFileSync('report.xml', '<testsuite><testcase file="tests/a.test.js" name="t0"/><testcase file="tests/a.test.js" name="t1"/></testsuite>');`;
+/** Leaves `marker` in the tree, then writes the report: proof the command really ran. */
+const markThenReport = (marker: string) => nodeCommand(`require('fs').writeFileSync(${JSON.stringify(marker)}, '');${JUNIT_JS}`);
 
 /** A repository whose .agenfk/project.json declares `verifyCommand`. */
 function repoDeclaring(verifyCommand: string): string {
@@ -106,7 +110,7 @@ const report = { format: 'junit-xml', reportPath: 'report.xml' };
 
 describe('a repository command on every verify path', () => {
   it('in a background run: refused, with the fingerprint and command the caller needs, and never run', async () => {
-    const command = `touch FILE_RAN && ${JUNIT}`;
+    const command = markThenReport('FILE_RAN');
     const dir = repoDeclaring(command);
     // A capture check on a step that is not the last: the verify goes to the background.
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('CHECK', 2), s('END', 3, { isAnchor: true })]), { projectRoot: dir, testReport: report });
@@ -119,7 +123,7 @@ describe('a repository command on every verify path', () => {
   });
 
   it('once a person approves it, the same command runs', async () => {
-    const command = `touch FILE_RAN && ${JUNIT}`;
+    const command = markThenReport('FILE_RAN');
     const dir = repoDeclaring(command);
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('CHECK', 2), s('END', 3, { isAnchor: true })]), { projectRoot: dir, testReport: report });
     expect((await approve(pid, command)).status).toBe(200);
@@ -134,7 +138,7 @@ describe('a repository command on every verify path', () => {
     const dir = repoDeclaring('echo from-the-file');
     // The STORED report command needs no approval and runs in the capture; the file's command gates the close.
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('END', 2, { isAnchor: true })]), {
-      projectRoot: dir, testReport: { ...report, command: `touch REPORT_RAN && ${JUNIT}` },
+      projectRoot: dir, testReport: { ...report, command: markThenReport('REPORT_RAN') },
     });
     const id = await card(pid, 'WORK');
     const res = await validate(id);

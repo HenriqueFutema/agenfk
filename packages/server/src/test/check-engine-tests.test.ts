@@ -42,19 +42,20 @@ const agent = () => request(__server);
 const repos: string[] = [];
 // Review transcripts (CGLAB-381) live under a sandboxed HOME, never the real ~/.claude.
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 let home: string;
 beforeAll(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-tests-home-'));
   repos.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
-afterAll(() => { process.env.HOME = savedHome; });
+afterAll(() => { process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile; });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });

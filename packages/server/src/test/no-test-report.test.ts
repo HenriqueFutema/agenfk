@@ -39,7 +39,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -106,7 +106,7 @@ describe('5a8d22e6: the refusal says NO_TEST_REPORT once, with the command that 
 
   it('is not raised when the project has a test report (the checks are judged on it)', async () => {
     const t = await setup('echo vitest run');
-    await storage.updateProject(t.pid, { testReport: { format: 'junit-xml', command: 'true', reportPath: 'report.xml' } } as never);
+    await storage.updateProject(t.pid, { testReport: { format: 'junit-xml', command: 'exit 0', reportPath: 'report.xml' } } as never);
     const res = await validate(t.id);
     expect(res.body.error).not.toBe('NO_TEST_REPORT');
   });

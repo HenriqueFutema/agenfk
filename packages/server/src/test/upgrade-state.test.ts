@@ -18,7 +18,7 @@ describe('upgradeState — file-backed persistence', () => {
     dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-upgrade-state-'));
   });
   afterEach(() => {
-    fs.rmSync(dbDir, { recursive: true, force: true });
+    fs.rmSync(dbDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('returns null when nothing has been written yet', () => {

@@ -75,7 +75,7 @@ const tmp = (prefix: string) => {
 
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 async function waitForRun(runId: string, timeoutMs = 15000) {

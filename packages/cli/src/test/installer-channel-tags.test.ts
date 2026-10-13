@@ -23,7 +23,7 @@ import { newestChannelTag } from '../../../../bin/version-utils.mjs';
 
 let work: string;
 beforeAll(() => { work = mkdtempSync(path.join(os.tmpdir(), 'agenfk-channel-')); });
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+afterAll(() => rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 type Rel = { tag_name: string; prerelease: boolean; published_at: string };
 const rel = (tag_name: string, prerelease: boolean, published_at: string): Rel => ({ tag_name, prerelease, published_at });

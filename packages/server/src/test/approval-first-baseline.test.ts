@@ -42,7 +42,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -395,7 +395,7 @@ describe('961f301d review: a verify that waits on nobody is judged once', () => 
     const repo = tmp('agenfk-af-warn-');
     git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
     const p = await agent().post('/projects').send({ name: `af-warn-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `af-warn-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
     expect((await validate(c.body.id)).status).toBe(200);

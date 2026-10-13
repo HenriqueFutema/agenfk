@@ -39,7 +39,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -83,7 +83,7 @@ async function setup() {
   const runner = path.join(tools, 'vitest.js');
   fs.writeFileSync(runner, RUNNER(log));
   const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner} run`, reportPath: 'report.xml' } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner} run`, reportPath: 'report.xml' } } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id });
   await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
   const runs = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
@@ -270,7 +270,7 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
   it('a card with no tree and a test report: answers (never a 500) when the capture is only a non-blocking entry', async () => {
     const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TESTS', 2, { checks: [{ id: 'existing-tests-still-green', severity: 'warn' }] }), s('END', 3, { isAnchor: true })] });
     const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, verifyCommand: 'true', testReport: { format: 'junit-xml', command: 'true', reportPath: 'report.xml' } } as never);
+    await storage.updateProject(p.body.id, { flowId: f.body.id, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: 'exit 0', reportPath: 'report.xml' } } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
     const res = await agent().get(`/items/${c.body.id}/leave-plan?predict=1`);

@@ -62,7 +62,7 @@ describe('POST /projects/:id/tasks-from-branch', () => {
   });
   afterAll(async () => {
     await removeTestDb(TEST_DB, closeStorage);
-    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   beforeEach(async () => {
     await initStorage();

@@ -47,7 +47,7 @@ beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(async () => {
   await removeTestDb(TEST_DB, closeStorage);
-  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true });
+  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 beforeEach(() => { fs.rmSync(STORE, { force: true }); });
 
@@ -111,7 +111,8 @@ describe('CGLAB-383: enrolling a passkey', () => {
 
   it('keeps the store readable by the user only, and never serves the public keys over status', async () => {
     await enroll();
-    expect(fs.statSync(STORE).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX mode bits (#208): the owner-only check is a POSIX one.
+    if (process.platform !== 'win32') expect(fs.statSync(STORE).mode & 0o777).toBe(0o600);
     const st = (await agent().get('/webauthn/status')).body;
     expect(JSON.stringify(st)).not.toMatch(/publicKey/);
   });

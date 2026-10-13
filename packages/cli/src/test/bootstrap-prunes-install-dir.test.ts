@@ -70,7 +70,7 @@ function run(source: string, home: string, bin: FakeBin, args: string[] = []) {
 }
 
 beforeAll(() => { work = mkdtempSync(path.join(os.tmpdir(), 'agenfk-bootstrap-')); });
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+afterAll(() => rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 describe('npx upgrade, --rebuild: prunes against the npx source tree', () => {
   // --rebuild fetches no archive, so the source tree really is the last writer.

@@ -23,7 +23,7 @@ import * as path from 'path';
 import { linkDir, canSymlink } from './helpers/links';
 
 let work = '';
-afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true }); work = ''; });
+afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); work = ''; });
 const tmp = () => (work = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-links-')));
 
 describe('linkDir()', () => {
@@ -64,7 +64,7 @@ describe('linkDir()', () => {
     const link = path.join(dir, 'link');
     linkDir(target, link);
 
-    fs.rmSync(link, { recursive: true, force: true });
+    fs.rmSync(link, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
     expect(fs.existsSync(link)).toBe(false);
     expect(fs.readFileSync(path.join(target, 'precious.txt'), 'utf8')).toBe('keep');

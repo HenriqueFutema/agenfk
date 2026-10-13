@@ -80,7 +80,7 @@ describe('tarPathFor', () => {
 
 describe('on this machine', () => {
   let work = '';
-  afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true }); work = ''; });
+  afterEach(() => { if (work) fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); work = ''; });
 
   /** A gzipped archive with one real file and one AppleDouble twin, built by the tar on PATH. */
   function archive(): string {

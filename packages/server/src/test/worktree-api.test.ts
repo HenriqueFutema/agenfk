@@ -174,7 +174,7 @@ describe('POST /items/:id/worktree', () => {
       expect(fs.readdirSync(victim), 'it wrote outside the base before refusing').toEqual([]);
     } finally {
       try { fs.unlinkSync(link); } catch { /* best effort */ }
-      fs.rmSync(victim, { recursive: true, force: true });
+      fs.rmSync(victim, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -230,7 +230,7 @@ describe('GET /items/:id/worktree', () => {
     // recreate rather than assume it can cd there.
     const item = await makeItem();
     const created = await agent().post(`/items/${item.id}/worktree`).send({ root });
-    fs.rmSync(created.body.path, { recursive: true, force: true });
+    fs.rmSync(created.body.path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
     const res = await agent().get(`/items/${item.id}/worktree`);
     expect(res.body.path).toBe(created.body.path);
@@ -391,7 +391,7 @@ describe('project root must never become the home directory (CGLAB-166 review)',
     try {
       expect(findProjectRoot(realRoot)).toBe(realRoot);
     } finally {
-      fs.rmSync(realRoot, { recursive: true, force: true });
+      fs.rmSync(realRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });
