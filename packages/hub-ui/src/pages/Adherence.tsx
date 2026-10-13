@@ -54,8 +54,8 @@ function Score({ compliant, judged }: { compliant: number; judged: number }) {
   const pct = pctOf(compliant, judged);
   return (
     <span className="font-mono tabular-nums text-ink">
-      <span aria-hidden="true" title={`${compliant} of ${judged} transitions stayed within the flow revision in force`}>{pct}%</span>
-      <span className="sr-only">{`${pct}%, ${compliant} of ${judged} transitions stayed within the flow revision in force`}</span>
+      <span aria-hidden="true" title={`${compliant} of ${judged} moves between steps of the flow`}>{pct}%</span>
+      <span className="sr-only">{`${pct}%, ${compliant} of ${judged} moves between steps of the flow`}</span>
     </span>
   );
 }
@@ -148,15 +148,17 @@ export function AdherencePage() {
       <PageHeader
         eyebrow="Dashboard"
         title="Flow adherence"
-        subtitle="How often work moved within the flow revision in force, across every connected installation."
+        subtitle="How often work moved between steps of the flow, across every connected installation."
         toolbar={<PeriodControl ranges={RANGES} active={range} onPick={setRange} />}
       />
 
-      {/* The two scoring rules, stated where the numbers are: a reader should not
-          have to discover them from a surprising tile. */}
+      {/* The scoring rule, stated where the numbers are: a reader should not
+          have to discover it from a surprising tile. The revision is not the
+          thing being measured — it only records which immutable flow judged
+          the move. */}
       <p className="text-caption text-ink-tertiary">
-        A move between two steps of the same flow revision counts as compliant — rolling back is working the flow, not breaking it.
-        Transitions from before flows were stamped count on neither side.
+        A move counts as compliant when both its start and end are steps of the flow — rolling back is working the flow, not breaking it.
+        Moves to or from PAUSED, BLOCKED or anything off-flow are not. Transitions from before flows were stamped count on neither side.
       </p>
 
       <QueryState
@@ -174,10 +176,10 @@ export function AdherencePage() {
         {data => (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <StatTile label="Score" value={data.judged ? `${pctOf(data.compliant, data.judged)}%` : '—'} hint={`${data.compliant} of ${data.judged} transitions within the flow revision`} />
-              <StatTile label="Judged" value={data.judged} hint="stamped with a flow revision" />
-              <StatTile label="Compliant" value={data.compliant} series={1} hint="stayed within the revision" />
-              <StatTile label="Off-flow" value={offFlow} higherIsBetter={false} hint="moved outside the revision" />
+              <StatTile label="Score" value={data.judged ? `${pctOf(data.compliant, data.judged)}%` : '—'} hint={`${data.compliant} of ${data.judged} moves between steps of the flow`} />
+              <StatTile label="Judged" value={data.judged} hint="moves the flow could judge" />
+              <StatTile label="Compliant" value={data.compliant} series={1} hint="started and ended on flow steps" />
+              <StatTile label="Off-flow" value={offFlow} higherIsBetter={false} hint="touched a non-step (PAUSED, BLOCKED, …)" />
             </div>
 
             <section className="space-y-3 pt-2">

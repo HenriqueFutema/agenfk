@@ -62,8 +62,8 @@ function AdherenceScore({ a }: { a: Adherence | undefined }) {
   const pct = adherencePct(c);
   return (
     <span className="font-mono tabular-nums text-ink">
-      <span aria-hidden="true" title={`${c.compliant} of ${c.judged} transitions stayed within the flow revision in force`}>{pct}%</span>
-      <span className="sr-only">{`${pct}%, ${c.compliant} of ${c.judged} transitions stayed within the flow revision in force`}</span>
+      <span aria-hidden="true" title={`${c.compliant} of ${c.judged} moves between steps of the flow`}>{pct}%</span>
+      <span className="sr-only">{`${pct}%, ${c.compliant} of ${c.judged} moves between steps of the flow`}</span>
     </span>
   );
 }
@@ -1009,7 +1009,7 @@ export function PrOverviewPage() {
               <StatTile
                 label="Adherence"
                 value={d.adherence.judged ? `${adherencePct(d.adherence)}%` : '—'}
-                hint={`${d.adherence.compliant} of ${d.adherence.judged} transitions within the flow revision`}
+                hint={`${d.adherence.compliant} of ${d.adherence.judged} moves between steps of the flow`}
               />
             )}
           </div>
