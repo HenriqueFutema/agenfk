@@ -2,6 +2,25 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.44] — 2026-10-13
+
+Pre-release, cut from the `beta` line (PR #236). Cumulative over `2.0.0-beta.43`.
+
+### The project id stays out of version control (CGLAB-625)
+
+- `projectId` is a row in one machine's database, so it now lives in the git-ignored
+  `.agenfk/local.json`. `.agenfk/project.json` carries only the repository's shared settings
+  (`verifyCommand`, `flow`, `setupCommand`, ...). `agenfk init` writes `local.json` and adds
+  `.agenfk/local.json` to `.gitignore` unless git already ignores it.
+- `agenfk init --project <id>` links a fresh clone; `agenfk init --help` states which file is
+  shared and which is this machine's.
+- Existing repositories keep working: an id still in `project.json` is read with a warning, and
+  re-running `agenfk init` moves it into `local.json` when this machine's server has that project.
+  An emptied `project.json` stays as `{}` so other clones keep their project marker.
+- A git worktree takes its project id from its main checkout; `agenfk init` and `configure-ide`
+  refuse to run inside one.
+- The CLI, MCP server, gatekeeper/mcp-enforcer hooks and run hook resolve the project the same way.
+
 ## [2.0.0-beta.43] — 2026-10-13
 
 Pre-release, cut from the `beta` line (PR #231). Cumulative over `2.0.0-beta.42`.
