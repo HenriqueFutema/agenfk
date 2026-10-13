@@ -32,7 +32,13 @@ describe('the built server', () => {
       );
     }
 
-    const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-boot-')), 'db.sqlite');
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-boot-'));
+    const dbPath = path.join(work, 'db.sqlite');
+    // #208: its own home. The server records its port in ~/.agenfk/server-port
+    // and removes it on SIGTERM; on Windows kill() ends it at once, so in the
+    // suite's shared home the file outlived it and later specs read port 3987.
+    const home = path.join(work, 'home');
+    fs.mkdirSync(home);
     const child = spawn(process.execPath, [ENTRY], {
       env: {
         ...process.env,
@@ -54,6 +60,8 @@ describe('the built server', () => {
         AGENFK_PORT: '3987',
         AGENFK_DB_PATH: dbPath,
         AGENFK_HUB_URL: '',
+        HOME: home,
+        USERPROFILE: home,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -84,7 +92,13 @@ describe('the built server', () => {
     });
 
     const ok = await listening;
+    const exited = new Promise<void>(resolve => {
+      if (child.exitCode !== null || child.signalCode !== null) resolve();
+      else child.once('exit', () => resolve());
+    });
     child.kill();
+    await exited;
+    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     expect(ok, `the server did not report listening:\n${output.join('')}`).toBe(true);
     expect(output.join(''), 'a middleware rejected its own configuration').not.toMatch(/ValidationError/);
   }, 30_000);
