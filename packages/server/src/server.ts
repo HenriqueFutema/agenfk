@@ -60,6 +60,7 @@ import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
 import { killProcessTree } from './killTree.js';
+import { readRemoteUrl } from './projectRemote.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -229,17 +230,11 @@ async function warmProjectRemote(projectId: string): Promise<void> {
     const proj = await storage.getProject(projectId);
     const root = (proj as any)?.projectRoot;
     if (!root) { projectRemoteCache.set(projectId, ''); return; }
-    const { execFile } = await import('child_process');
-    // Async execFile (not execSync): this runs on the request path AND per
-    // project in the flow-sync poller loop; a synchronous git hang (network
-    // mount, credential prompt) would block the whole Node event loop. execFile
-    // keeps it off-thread; the 1.5s timeout + closed stdin bound the wait.
-    const out = await new Promise<string>((resolve) => {
-      execFile('git', ['remote', 'get-url', 'origin'], { cwd: root, timeout: 1500, windowsHide: true }, (err, stdout) => {
-        resolve(err ? '' : (stdout || '').toString().trim());
-      });
-    });
-    projectRemoteCache.set(projectId, out || '');
+    // Async and bounded (it runs on the request path AND per project in the
+    // flow-sync poller); a lookup that timed out is not remembered, so the next
+    // event asks again (#208 review - see projectRemote.ts).
+    const { url, cacheable } = await readRemoteUrl(root);
+    if (cacheable) projectRemoteCache.set(projectId, url);
   } catch {
     projectRemoteCache.set(projectId, '');
   }

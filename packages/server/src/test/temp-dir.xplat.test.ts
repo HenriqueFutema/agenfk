@@ -26,16 +26,16 @@ describe('removeTempDir()', () => {
     expect(fs.existsSync(dir)).toBe(false);
   });
 
-  it('on Windows, warns and goes on when the directory is still in use (EBUSY, EPERM)', () => {
-    for (const code of ['EBUSY', 'EPERM']) {
-      const d = deps('win32', code);
-      expect(() => removeTempDir('C:\\held', d)).not.toThrow();
-      expect(d.warned).toEqual([`[test teardown] left C:\\held: a background process still has it open (${code})`]);
-    }
+  it('on Windows, warns and goes on when the directory is still in use (EBUSY)', () => {
+    const d = deps('win32', 'EBUSY');
+    expect(() => removeTempDir('C:\\held', d)).not.toThrow();
+    expect(d.warned).toEqual(['[test teardown] left C:\\held: a background process still has it open (EBUSY)']);
   });
 
-  it('on Windows, still throws any other error', () => {
-    expect(() => removeTempDir('C:\\x', deps('win32', 'EINVAL'))).toThrow(/EINVAL/);
+  it('on Windows, still throws EPERM - a read-only file or a deny ACE left unrestored - and any other error', () => {
+    for (const code of ['EPERM', 'EINVAL']) {
+      expect(() => removeTempDir('C:\\x', deps('win32', code)), code).toThrow(new RegExp(code));
+    }
   });
 
   it('off Windows, a directory in use is still an error', () => {
