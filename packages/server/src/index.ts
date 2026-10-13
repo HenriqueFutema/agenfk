@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { toToon, nextPollDelay, POLL_CAP_MS } from "@agenfk/core";
+import { toToon, nextPollDelay, POLL_CAP_MS, resolveProjectIdentity } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
@@ -111,18 +111,9 @@ const findProjectRoot = (startDir: string): string => {
   return startDir;
 };
 
+// CGLAB-625: local.json first, else a legacy id in project.json.
 const findProjectId = (startDir: string): string | null => {
-  const root = findProjectRoot(startDir);
-  const projFile = path.join(root, ".agenfk", "project.json");
-  if (fs.existsSync(projFile)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(projFile, "utf8"));
-      return config.projectId || null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  return resolveProjectIdentity(findProjectRoot(startDir))?.projectId ?? null;
 };
 
 export const server = new Server(

@@ -27,6 +27,7 @@ export * from './decompositionContract';
 export * from './reviewProposal';
 export * from './projectSettings';
 export * from './projectFile';
+export * from './projectIdentity';
 export * from './commandApproval';
 export * from './privateFile';
 export * from './releaseChannel';

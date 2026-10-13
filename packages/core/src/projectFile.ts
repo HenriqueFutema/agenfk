@@ -159,7 +159,14 @@ export function readProjectFile(raw: string): ProjectFileRead {
   const projectId = typeof input.projectId === 'string' && input.projectId.trim()
     ? input.projectId.trim()
     : null;
-  if (!projectId) problems.push('The project file has no projectId, so it names no project.');
+  // CGLAB-625: the id is this machine's and lives in the git-ignored local.json.
+  // Still read here, so a repository from before the split keeps working.
+  if (projectId) {
+    problems.push(
+      'projectId names a row in one machine\'s database, so it belongs in the git-ignored .agenfk/local.json, not in this shared file. '
+      + 'Run agenfk init here to move it.',
+    );
+  }
 
   return { value: { projectId, settings }, problems };
 }
