@@ -1,8 +1,9 @@
 /**
  * #208 phase 6: the whole suite runs on Windows in CI, not only the curated
- * subset in vitest.windows.config.ts. A full local run on a managed Windows
- * box takes over an hour, so GitHub's runners are where it is checked, split
- * into shards so it costs minutes of wall-clock time.
+ * subset in vitest.windows.config.ts (which stays as a quick local run, `npm
+ * run test:windows`). A full local run on a managed Windows box takes over an
+ * hour, so GitHub's runners are where it is checked, split into shards so it
+ * costs minutes of wall-clock time.
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
@@ -46,15 +47,49 @@ describe('Windows full-suite CI job (#208)', () => {
     expect(job).toMatch(/run:\s*npm run build\s*$/m);
   });
 
-  it('does not fail the workflow while the suite is not yet green on Windows', () => {
-    expect(job).toMatch(/continue-on-error:\s*true/);
+  it('is blocking: a Windows failure fails the workflow', () => {
+    expect(job).not.toMatch(/continue-on-error/);
   });
 
   it('starts with the other jobs instead of waiting for them', () => {
     expect(job).not.toMatch(/^\s+needs:/m);
   });
 
-  it('leaves the blocking Windows subset job in place until the full suite replaces it', () => {
-    expect(jobBlock(content, 'windows-compat')).toContain('npm run test:windows');
+  it('replaces the curated subset run, which the full suite contains', () => {
+    expect(content).not.toMatch(/run:\s*npm run test:windows/);
+    expect(content).not.toMatch(/run:.*vitest\.windows\.config/);
+  });
+
+  // "Windows compat" is a required status check on main ("Protect main branch"
+  // ruleset): the name stays, and now means the whole suite passed on Windows.
+  describe('the "Windows compat" required check', () => {
+    const gate = jobBlock(content, 'windows-compat');
+
+    it('keeps its check name, so the ruleset that requires it needs no change', () => {
+      expect(gate).toMatch(/^\s+name:\s*Windows compat\s*$/m);
+    });
+
+    it('waits for every shard and reports even when one failed or was cancelled', () => {
+      expect(gate).toMatch(/needs:\s*\[?\s*windows-full\s*\]?/);
+      expect(gate).toMatch(/if:\s*\$\{\{\s*always\(\)\s*\}\}/);
+    });
+
+    it('passes only when the full-suite shards all succeeded', () => {
+      expect(gate).toMatch(/needs\.windows-full\.result/);
+      expect(gate).toMatch(/success/);
+    });
+  });
+
+  it('runs under a HOME with a space and accents, as the subset job did (#201)', () => {
+    expect(job).toMatch(/AGENFK_TEST_UNICODE_HOME:\s*'1'/);
+  });
+
+  it('proves the run left the real HOME untouched, as the subset job did', () => {
+    const snapshot = job.indexOf('home-integrity.mjs snapshot');
+    const test = job.indexOf('npx vitest run');
+    const verify = job.indexOf('home-integrity.mjs verify');
+    expect(snapshot).toBeGreaterThan(-1);
+    expect(test).toBeGreaterThan(snapshot);
+    expect(verify).toBeGreaterThan(test);
   });
 });

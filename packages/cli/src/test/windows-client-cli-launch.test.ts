@@ -381,7 +381,7 @@ describe('agenfk configure-ide reaches claude', () => {
 
 describe('claudeMcpServerCommand: what Claude Code is told to start', () => {
   // Both sides take the platform explicitly, so a Linux run pins the Windows
-  // shape too; the windows-compat CI job then runs the end-to-end specs above
+  // shape too; the windows-full CI job then runs the end-to-end specs above
   // on a real Windows.
   for (const impl of [
     { side: 'installer (scripts/install-helpers.mjs)', fn: scriptsMcpCommand },

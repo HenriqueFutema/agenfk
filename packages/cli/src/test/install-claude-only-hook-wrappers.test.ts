@@ -9,8 +9,8 @@
  *
  * Contract: after a single-client install into an empty HOME, every agenfk hook
  * it registered names a file that exists, and Claude's hooks run under the hook
- * shell. Named install-*.test.ts, so the windows-compat job runs it on
- * windows-latest as well as the normal Linux run.
+ * shell. The windows-full CI job runs it on windows-latest as well as the
+ * normal Linux run (and, named install-*.test.ts, `npm run test:windows` too).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
