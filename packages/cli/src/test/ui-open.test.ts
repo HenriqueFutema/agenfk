@@ -248,8 +248,9 @@ describe('agenfk ui --open browser launch', () => {
     const calls = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
     expect(calls.length).toBeGreaterThan(0);
     for (const cmd of calls) {
-      // exactly the two wrapping quotes around the URL — nothing else
-      expect((cmd.match(/"/g) ?? []).length).toBe(2);
+      // exactly the two wrapping quotes around the URL — nothing else. Windows' `start "" "<url>"`
+      // also carries the empty window title, which is not the id's: set it aside first.
+      expect((cmd.replace(/\bstart "" /, 'start ').match(/"/g) ?? []).length).toBe(2);
       expect(cmd).not.toMatch(/\$\(|`|; /);
     }
     // and the id still round-trips losslessly through the query string

@@ -1177,8 +1177,13 @@ program
         try {
           execSync(`cygstart "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
         } catch {
-          execSync(`start "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
+          // `start`'s first quoted argument is the window TITLE: without the empty one it opened nothing.
+          execSync(`start "" "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
         }
+      } else if (process.platform === 'win32') {
+        // PowerShell, cmd, the desktop app: native Windows had no branch, so the
+        // browser never opened outside Git Bash (#208 - CI under a native PATH).
+        execSync(`start "" "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       } else if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
         execSync(`cmd.exe /c start "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       } else if (process.platform === 'linux') {
