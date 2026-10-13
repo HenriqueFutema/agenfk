@@ -49,7 +49,8 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
 const until = async (pred: () => Promise<boolean>, ms = 10_000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) { if (await pred()) return; await new Promise(r => setTimeout(r, 30)); }
-  expect(false, 'timed out waiting for the condition').toBe(true);
+  const now = (await agent().get('/verify-runs')).body;
+  expect(false, `timed out waiting for the condition; /verify-runs now: ${JSON.stringify(now)}`).toBe(true);
 };
 const list = async () => {
   const r = await agent().get('/verify-runs');
@@ -59,27 +60,45 @@ const list = async () => {
 const entryFor = async (itemId: string) => (await list()).find(e => e.itemId === itemId);
 const verifyAsync = (id: string) => agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok', async: true });
 
-/** A card on WORK whose leaving runs its suite (suite-green): a command that prints `lines`, then takes `ms`. */
-async function card(opts: { ms?: number; lines?: string[]; name?: string } = {}) {
+/**
+ * A verify command that prints `lines`, then runs until the test releases it
+ * (30s at most, so a failing spec cannot hang). Where a spec needs two runs to
+ * overlap, a fixed sleep is a race: on a slow box (#208: antivirus watching
+ * every process start) the first run ended before the second began.
+ */
+function heldScript(lines: string[] = ['running']) {
+  const dir = tmp('agenfk-vr-hold-');
+  const gate = path.join(dir, 'release');
+  const script = path.join(dir, 'run.js');
+  fs.writeFileSync(script, `for (const l of ${JSON.stringify(lines)}) console.log(l);\n`
+    + `const fs = require('fs'); const end = Date.now() + 30000;\n`
+    + `const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(gate)}) || Date.now() > end) clearInterval(t); }, 50);\n`);
+  return { script, release: () => fs.writeFileSync(gate, '') };
+}
+
+/** A card on WORK whose leaving runs its suite (suite-green): a command that prints `lines`, then takes `ms`, or runs until `release()` when `held`. */
+async function card(opts: { ms?: number; lines?: string[]; name?: string; held?: boolean } = {}) {
   const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
     s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const repo = tmp('agenfk-vr-repo-');
   git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
-  const script = path.join(tmp('agenfk-vr-tools-'), 'run.js');
-  fs.writeFileSync(script, `for (const l of ${JSON.stringify(opts.lines ?? ['running'])}) console.log(l);\nsetTimeout(() => {}, ${opts.ms ?? 1500});\n`);
+  let script: string;
+  let release = () => {};
+  if (opts.held) ({ script, release } = heldScript(opts.lines));
+  else fs.writeFileSync(script = path.join(tmp('agenfk-vr-tools-'), 'run.js'),`for (const l of ${JSON.stringify(opts.lines ?? ['running'])}) console.log(l);\nsetTimeout(() => {}, ${opts.ms ?? 1500});\n`);
   const p = await agent().post('/projects').send({ name: opts.name ?? `vr-project-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node ${script}` } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `Card ${++seq}`, projectId: p.body.id });
   await storage.updateItem(c.body.id, { status: 'WORK' } as any);
-  return { id: c.body.id as string, pid: p.body.id as string, title: c.body.title as string, projectName: p.body.name as string };
+  return { id: c.body.id as string, pid: p.body.id as string, title: c.body.title as string, projectName: p.body.name as string, release };
 }
 
 describe('GET /verify-runs: every verify running now, in any project', () => {
   it('lists running verifies from two projects with their card, project, step and start, and forgets them when they end', async () => {
-    const a = await card({ name: 'alpha-project' });
-    const b = await card({ name: 'beta-project' });
+    const a = await card({ name: 'alpha-project', held: true });
+    const b = await card({ name: 'beta-project', held: true });
     expect((await verifyAsync(a.id)).status).toBe(202);
     expect((await verifyAsync(b.id)).status).toBe(202);
     await until(async () => (await list()).filter(e => [a.id, b.id].includes(e.itemId)).length === 2);
@@ -88,6 +107,7 @@ describe('GET /verify-runs: every verify running now, in any project', () => {
     expect(typeof ea.runId).toBe('string');
     expect(Number.isNaN(Date.parse(ea.startedAt))).toBe(false);
     expect(await entryFor(b.id)).toMatchObject({ projectName: 'beta-project' });
+    a.release(); b.release();
     await until(async () => !(await entryFor(a.id)) && !(await entryFor(b.id)));
   });
 
@@ -118,13 +138,14 @@ describe('GET /verify-runs: every verify running now, in any project', () => {
   it('a verify waiting for a suite-run slot says so, and how many runs are ahead of it', async () => {
     await agent().put('/settings').send({ maxConcurrentSuiteRuns: 1 });
     try {
-      const a = await card({ ms: 2000 });
+      const a = await card({ held: true });
       const b = await card({ ms: 200 });
       expect((await verifyAsync(a.id)).status).toBe(202);
       await until(async () => (await entryFor(a.id))?.phase?.state === 'running');
       expect((await verifyAsync(b.id)).status).toBe(202);
       await until(async () => (await entryFor(b.id))?.phase?.state === 'queued');
       expect((await entryFor(b.id)).phase).toMatchObject({ state: 'queued', ahead: 1 });
+      a.release();
       await until(async () => !(await entryFor(a.id)) && !(await entryFor(b.id)), 15_000);
     } finally {
       await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
@@ -279,8 +300,7 @@ describe('beae41a0: the list stays true', () => {
     ] });
     const repo = tmp('agenfk-vr-sf-');
     git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
-    const script = path.join(tmp('agenfk-vr-sftools-'), 'run.js');
-    fs.writeFileSync(script, "console.log('running');\nsetTimeout(() => {}, 1500);\n");
+    const { script, release } = heldScript();
     const p = await agent().post('/projects').send({ name: `vr-sf-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node ${script}` } as never);
     const mk = async () => { const c = (await agent().post('/items').send({ type: 'TASK', title: `sf-${++seq}`, projectId: p.body.id })).body; await storage.updateItem(c.id, { status: 'WORK' } as any); return c.id as string; };
@@ -290,6 +310,7 @@ describe('beae41a0: the list stays true', () => {
     expect((await verifyAsync(b)).status).toBe(202);
     await until(async () => (await entryFor(b))?.phase?.state === 'waiting');
     expect((await entryFor(b)).phase).toEqual({ state: 'waiting', on: 'identical-run' });
+    release();
     await until(async () => !(await entryFor(a)) && !(await entryFor(b)));
   });
 
@@ -297,8 +318,7 @@ describe('beae41a0: the list stays true', () => {
     const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
     const repo = tmp('agenfk-vr-sib-');
     git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
-    const script = path.join(tmp('agenfk-vr-sibtools-'), 'run.js');
-    fs.writeFileSync(script, "console.log('running');\nsetTimeout(() => {}, 1500);\n");
+    const { script, release } = heldScript();
     const p = await agent().post('/projects').send({ name: `vr-sib-${++seq}` });
     await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node ${script}` } as never);
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'p', projectId: p.body.id })).body;
@@ -310,6 +330,7 @@ describe('beae41a0: the list stays true', () => {
     await until(async () => (await entryFor(b))?.phase?.state === 'waiting');
     expect((await entryFor(b)).phase).toEqual({ state: 'waiting', on: 'sibling' });
     expect((await entryFor(b)).lastLine).toMatch(/sibling is running the same command/);
+    release();
     await until(async () => !(await entryFor(a)) && !(await entryFor(b)));
   });
 
