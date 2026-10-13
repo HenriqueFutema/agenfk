@@ -269,4 +269,23 @@ describe('agenfk ui --open browser launch', () => {
     expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((u) => !u.includes('?item='))).toBe(true);
   });
+
+  // #208: native Windows (PowerShell, cmd, the desktop app - no MSYSTEM) had no launch
+  // branch at all, and `start "<url>"` takes the quoted URL as the window TITLE and opens nothing.
+  it.skipIf(process.platform !== 'win32')('on native Windows, launches with start and an empty window title', async () => {
+    const saved = { MSYSTEM: process.env.MSYSTEM, MINGW_PREFIX: process.env.MINGW_PREFIX };
+    delete process.env.MSYSTEM;
+    delete process.env.MINGW_PREFIX;
+    realCwd = process.cwd();
+    tmpCwd = makeTmpDir('agenfk-ui-open-cwd-');
+    process.chdir(tmpCwd);
+    try {
+      await program.parseAsync(['node', 'agenfk', 'ui', '--web', '--open', 'item-win']);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    const launches = vi.mocked(execSync).mock.calls.map((c) => String(c[0])).filter((c) => c.includes('?item=item-win'));
+    expect(launches.length).toBeGreaterThan(0);
+    for (const cmd of launches) expect(cmd).toMatch(/^start "" "http:\/\/localhost:\d+\/?\?item=item-win/);
+  });
 });
