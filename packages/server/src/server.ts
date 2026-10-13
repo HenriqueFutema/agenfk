@@ -60,7 +60,7 @@ import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
 import { killProcessTree } from './killTree.js';
-import { readRemoteUrl } from './projectRemote.js';
+import { readRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -231,10 +231,15 @@ async function warmProjectRemote(projectId: string): Promise<void> {
     const root = (proj as any)?.projectRoot;
     if (!root) { projectRemoteCache.set(projectId, ''); return; }
     // Async and bounded (it runs on the request path AND per project in the
-    // flow-sync poller); a lookup that timed out is not remembered, so the next
-    // event asks again (#208 review - see projectRemote.ts).
-    const { url, cacheable } = await readRemoteUrl(root);
-    if (cacheable) projectRemoteCache.set(projectId, url);
+    // flow-sync poller); a lookup that timed out is remembered for a minute
+    // only, then asked again (#208 review - see projectRemote.ts).
+    const answer = await readRemoteUrl(root);
+    projectRemoteCache.set(projectId, answer.url);
+    const lifetime = remoteCacheLifetimeMs(answer);
+    if (lifetime !== undefined) {
+      const forget = setTimeout(() => projectRemoteCache.delete(projectId), lifetime);
+      if (typeof forget.unref === 'function') forget.unref();
+    }
   } catch {
     projectRemoteCache.set(projectId, '');
   }

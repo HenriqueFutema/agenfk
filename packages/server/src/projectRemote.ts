@@ -32,6 +32,15 @@ const defaults: RemoteLookupDeps = {
   }),
 };
 
+/**
+ * How long to remember an answer: a real one (a URL, or git saying there is
+ * none) for good - undefined; a timed-out one for a minute. Forgotten at once,
+ * every event of a slow project waited the full timeout again.
+ */
+export function remoteCacheLifetimeMs(answer: { cacheable: boolean }): number | undefined {
+  return answer.cacheable ? undefined : 60_000;
+}
+
 export async function readRemoteUrl(root: string, deps: RemoteLookupDeps = defaults): Promise<{ url: string; cacheable: boolean }> {
   const { out, timedOut } = await deps.run(root, TIMEOUT_MS);
   return { url: out.trim(), cacheable: !timedOut };

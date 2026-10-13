@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { readRemoteUrl } from '../projectRemote';
+import { readRemoteUrl, remoteCacheLifetimeMs } from '../projectRemote';
 import { removeTempDir } from './helpers/tempDir';
 
 describe('readRemoteUrl()', () => {
@@ -27,6 +27,15 @@ describe('readRemoteUrl()', () => {
 
   it('answers no remote but NOT to be remembered when the lookup timed out: the next event asks again', async () => {
     expect(await readRemoteUrl('/repo', { run: async () => ({ out: '', timedOut: true }) })).toEqual({ url: '', cacheable: false });
+  });
+
+  // Remembered forever, one slow lookup lost the remote for the server's life; asked again
+  // on every event, each event of a slow project waited the full 1.5 s (a test under load
+  // missed its hub event). A timeout is remembered briefly, then asked again.
+  it('keeps a real answer for good, and a timed-out one for a minute', () => {
+    expect(remoteCacheLifetimeMs({ url: 'x', cacheable: true })).toBeUndefined();
+    expect(remoteCacheLifetimeMs({ url: '', cacheable: true })).toBeUndefined();
+    expect(remoteCacheLifetimeMs({ url: '', cacheable: false })).toBe(60_000);
   });
 
   it('reads a real repository with its own git', async () => {

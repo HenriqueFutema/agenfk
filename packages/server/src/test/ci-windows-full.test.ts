@@ -26,6 +26,15 @@ describe('Windows full-suite CI job (#208)', () => {
   const content = fs.readFileSync(CI_YML, 'utf8');
   const job = jobBlock(content, 'windows-full');
 
+  it('names its OS and what it runs, in the "OS · what" form the Linux job uses too', () => {
+    expect(job).toMatch(/^\s+name:\s*Windows · full suite \(\$\{\{\s*matrix\.shard\s*\}\}\/8\)\s*$/m);
+    expect(jobBlock(content, 'build-and-test')).toMatch(/^\s+name:\s*Linux · build \+ full suite\b/m);
+  });
+
+  it('uploads its report with an action on Node 24 (upload-artifact v4 ran on the deprecated Node 20)', () => {
+    expect(job).toMatch(/uses:\s*actions\/upload-artifact@v7\b/);
+  });
+
   it('exists and runs on a Windows runner', () => {
     expect(job).not.toBe('');
     expect(job).toMatch(/runs-on:\s*windows-latest/);
@@ -37,9 +46,11 @@ describe('Windows full-suite CI job (#208)', () => {
     expect(job).not.toContain('test:windows');
   });
 
-  it('splits the suite into four shards, and one red shard does not cancel the others', () => {
-    expect(job).toMatch(/shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]/);
-    expect(job).toMatch(/--shard[= ]\$\{\{\s*matrix\.shard\s*\}\}\/4/);
+  // Eight, not four: four shards took ~20 min against Linux's ~13 (per shard ~2.5 min of
+  // setup plus a quarter of ~57 min of tests, the heaviest shard ~25% over the mean).
+  it('splits the suite into eight shards, and one red shard does not cancel the others', () => {
+    expect(job).toMatch(/shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*,\s*5\s*,\s*6\s*,\s*7\s*,\s*8\s*\]/);
+    expect(job).toMatch(/--shard[= ]\$\{\{\s*matrix\.shard\s*\}\}\/8/);
     expect(job).toMatch(/fail-fast:\s*false/);
   });
 

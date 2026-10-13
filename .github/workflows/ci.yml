@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build & Test
+    name: Linux · build + full suite (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -68,9 +68,10 @@ jobs:
   # Issue #208 — the WHOLE suite on Windows (it replaced the #201 subset run).
   #
   # Independent of `build-and-test` (no `needs:`), so both start together. A
-  # full local run on a managed Windows box takes over an hour; four shards keep
-  # it to minutes here, and fail-fast is off so one red shard still reports the
-  # other three. Each shard uploads its vitest JSON report, read per file.
+  # full local run on a managed Windows box takes over an hour; eight shards keep
+  # it near the Linux job's time (four took ~20 min: ~2.5 min of setup each plus
+  # an eighth of ~57 min of tests, the heaviest shard ~25% over the mean), and
+  # fail-fast is off so one red shard still reports the others. Each shard uploads its vitest JSON report, read per file.
   #
   # Under a HOME sandbox with a space and accents (#201), so the characters that
   # broke real Windows users are hit on every run, and with the home-integrity
@@ -80,7 +81,7 @@ jobs:
   # `npm run test:windows` (vitest.windows.config.ts) stays as a quick local
   # subset; CI runs everything.
   windows-full:
-    name: Windows full suite (${{ matrix.shard }}/4)
+    name: Windows · full suite (${{ matrix.shard }}/8)
     runs-on: windows-latest
     defaults:
       run:
@@ -89,7 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
 
     steps:
       - name: Checkout
@@ -117,11 +118,11 @@ jobs:
       # with; from PowerShell, cmd or the desktop app that has no coreutils, so a spec
       # leaning on them must fail here too, not only for users (#208). git.exe and
       # bash.exe (Git's cmd and bin dirs) stay.
-      - name: Test (shard ${{ matrix.shard }}/4)
+      - name: Test (shard ${{ matrix.shard }}/8)
         shell: pwsh
         run: |
           $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch '\\usr\\bin\\?$' }) -join ';'
-          npx vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json=vitest-windows-${{ matrix.shard }}.json
+          npx vitest run --shard=${{ matrix.shard }}/8 --reporter=default --reporter=json --outputFile.json=vitest-windows-${{ matrix.shard }}.json
         env:
           AGENFK_TEST_UNICODE_HOME: '1'
 
@@ -130,7 +131,7 @@ jobs:
 
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vitest-windows-${{ matrix.shard }}
           path: vitest-windows-${{ matrix.shard }}.json

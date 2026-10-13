@@ -43,8 +43,13 @@ afterAll(async () => {
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
-/** recordHubEvent enqueues without being awaited by the route, so poll. */
-async function outboxFor(itemId: string, settleMs = 1500): Promise<any[]> {
+/**
+ * recordHubEvent enqueues without being awaited by the route, so poll. Up to
+ * 5 s: the first event of a project waits on its git remote lookup (bounded at
+ * 1.5 s), which a loaded Windows box can take in full (#208). Returns as soon as
+ * the closure is there.
+ */
+async function outboxFor(itemId: string, settleMs = 5000): Promise<any[]> {
   const db: any = (storage as any)['database'];
   const deadline = Date.now() + settleMs;
   let events: any[] = [];
