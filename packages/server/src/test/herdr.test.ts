@@ -535,8 +535,8 @@ describe('subscribing', () => {
  */
 import { createServer, type Server } from 'net';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join, sep, isAbsolute } from 'path';
+import { homedir, tmpdir } from 'os';
+import { join, sep, isAbsolute, posix, win32 } from 'path';
 import { afterEach } from 'vitest';
 import { socketTransport, socketStreamTransport, liveHerdrSessions, MAX_RESPONSE_BYTES } from '../herdr';
 
@@ -820,10 +820,17 @@ describe('guards the first review proved were untested', () => {
   it('never derives a RELATIVE config root from a relative socket path or HOME either', () => {
     // `herdr.sock` alone would make discovery scan the server's cwd - and, on
     // Windows, connect to the pipe that bare name gives.
+    // The relative input is refused and the root falls back to the user's home.
+    // Asserted as that fallback, not with `isAbsolute`: for the platform the
+    // host is not, the fallback is the HOST's home, which the other platform's
+    // rules read as relative (`C:\...` on Linux, `/home/...` is fine on win32).
     for (const platform of ['linux', 'win32'] as const) {
-      expect(isAbsolute(herdrConfigRoot({ HERDR_SOCKET_PATH: 'herdr.sock' }, '', platform)), platform).toBe(true);
-      expect(isAbsolute(herdrConfigRoot({}, 'relative/home', platform)), platform).toBe(true);
+      const fallback = (platform === 'win32' ? win32 : posix).join(homedir(), '.config', 'herdr');
+      expect(herdrConfigRoot({ HERDR_SOCKET_PATH: 'herdr.sock' }, '', platform), platform).toBe(fallback);
+      expect(herdrConfigRoot({}, 'relative/home', platform), platform).toBe(fallback);
     }
+    // And on the host's own platform - the only one it runs as - that is absolute.
+    expect(isAbsolute(herdrConfigRoot({ HERDR_SOCKET_PATH: 'herdr.sock' }, ''))).toBe(true);
   });
 
   it('knows all THREE pane-scoped types, not just the one collie uses', async () => {
