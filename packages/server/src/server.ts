@@ -59,6 +59,7 @@ import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane, liveHerdrSessions } from './herdr.js';
 import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
+import { killProcessTree } from './killTree.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -4160,11 +4161,8 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
       const decoder = new StringDecoder('utf8');
       s?.on('data', (d: Buffer) => { const text = decoder.write(d); if (text) onOutput(text); });
     }
-    // A negative pid is a group only on POSIX; on Windows it throws and the shell itself is killed.
-    const killGroup = () => {
-      try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); }
-      catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
-    };
+    // The group off Windows, the whole tree (taskkill /T) on it (#208).
+    const killGroup = () => killProcessTree(child);
     let grace: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     const finish = (code: number | null) => {
@@ -9983,7 +9981,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const killer = setTimeout(() => {
       killed = true;
       capture.note(`\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`);
-      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      // On Windows the whole tree (taskkill /T, #208); elsewhere this command is
+      // no group leader, so it is the shell, as before.
+      killProcessTree(child);
       // SIGKILL reaches the SHELL only. Grandchildren — vitest workers, npm
       // lifecycle scripts — survive it and hold the inherited stdio pipes open,
       // and 'close' waits for those pipes. Resolving only on 'close' meant the
@@ -10399,8 +10399,7 @@ function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: st
   child.stderr?.on('error', () => { /* reported by the run's close */ });
   const killer = setTimeout(() => {
     timedOut = true;
-    try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
-    catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+    killProcessTree(child);
   }, SETUP_TIMEOUT_MS);
   if (typeof killer.unref === 'function') killer.unref();
   let settled = false;

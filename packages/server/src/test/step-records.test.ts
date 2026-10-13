@@ -33,6 +33,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let __server: import('http').Server;
@@ -336,7 +337,8 @@ describe('CGLAB-379: step records', () => {
 
     it('discards the capture when the card moved while the command ran', async () => {
       const { dir } = makeRepo();
-      const cmd = `sleep 1 && ${vitestReportCommand('passed')}`;
+      // The report is written a second in, by node: `sleep` is not a cmd.exe command (#208).
+      const cmd = nodeCommand(`setTimeout(() => require('child_process').execSync(${JSON.stringify(vitestReportCommand('passed'))}, { stdio: 'inherit', windowsHide: true }), 1000);`);
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: cmd, reportPath: 'report.json' } });
       const id = await card(p, 'IN_PROGRESS');
       const pending = agent().post(`/items/${id}/step-records/capture`).set(internal()).then(r => r);
@@ -363,7 +365,14 @@ describe('CGLAB-379: step records', () => {
 
     it('kills the whole process group on a timeout, so no leftover worker writes later', async () => {
       const { dir } = makeRepo();
-      const p = await project({ projectRoot: dir, verifyCommand: `(sleep 2; touch late.txt) & wait` });
+      // A grandchild that writes late, under a parent that waits - in node, so it is the same
+      // shape under cmd.exe (`(sleep 2; touch late.txt) & wait` is not cmd syntax: on Windows
+      // late.txt was never written whatever the kill did, and the spec could not fail).
+      const verifyCommand = nodeCommand(
+        `require('child_process').spawn(process.execPath, ['-e', "setTimeout(() => require('fs').writeFileSync('late.txt', ''), 2000)"], { stdio: 'ignore' });\n`
+        + 'setInterval(() => {}, 1000);\n',
+      );
+      const p = await project({ projectRoot: dir, verifyCommand });
       const id = await card(p, 'IN_PROGRESS');
       const before = process.env.AGENFK_VERIFY_MAX_MS;
       process.env.AGENFK_VERIFY_MAX_MS = '300';

@@ -39,6 +39,10 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 // Import AFTER the env var is set so storage lands in the test DB.
 import { app, initStorage, closeStorage, VERIFY_TOKEN, storage } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { nodeCommand } from './helpers/nodeCommand';
+
+/** Prints `word` after 2s - in node: `sleep` is not a cmd.exe command (#208), and its failure was fast enough to look slow. */
+const slowCommand = (word: string) => nodeCommand(`setTimeout(() => console.log(${JSON.stringify(word)}), 2000);`);
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -116,7 +120,7 @@ describe('POST /items/:id/validate — async runs', () => {
 
   it('returns 202 + runId immediately when a command must run', async () => {
     if (!VERIFY_TOKEN) return;
-    const item = await itemOnFinalStep('AV1', 'sleep 2 && echo slow-ok');
+    const item = await itemOnFinalStep('AV1', slowCommand('slow-ok'));
 
     const t0 = Date.now();
     const res = await agent()
@@ -140,7 +144,7 @@ describe('POST /items/:id/validate — async runs', () => {
 
   it('blocks a SYNC validate while a background run is active (old-client race)', async () => {
     if (!VERIFY_TOKEN) return;
-    const item = await itemOnFinalStep('AV1b', 'sleep 2 && echo guard-ok');
+    const item = await itemOnFinalStep('AV1b', slowCommand('guard-ok'));
 
     const first = await agent()
       .post(`/items/${item.id}/validate`)
@@ -204,7 +208,7 @@ describe('POST /items/:id/validate — async runs', () => {
 
   it('rejects a concurrent run for the same item with 409 + the active runId', async () => {
     if (!VERIFY_TOKEN) return;
-    const item = await itemOnFinalStep('AV4', 'sleep 2 && echo done');
+    const item = await itemOnFinalStep('AV4', slowCommand('done'));
 
     const first = await agent()
       .post(`/items/${item.id}/validate`)

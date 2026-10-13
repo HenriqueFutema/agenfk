@@ -112,8 +112,16 @@ jobs:
       - name: Home-integrity snapshot
         run: node scripts/home-integrity.mjs snapshot
 
+      # Under a NATIVE Windows PATH: Git's usr\bin (MSYS touch, sleep, cat...) removed.
+      # The server runs verify commands through cmd.exe with the PATH it was started
+      # with; from PowerShell, cmd or the desktop app that has no coreutils, so a spec
+      # leaning on them must fail here too, not only for users (#208). git.exe and
+      # bash.exe (Git's cmd and bin dirs) stay.
       - name: Test (shard ${{ matrix.shard }}/4)
-        run: npx vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json=vitest-windows-${{ matrix.shard }}.json
+        shell: pwsh
+        run: |
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch '\\usr\\bin\\?$' }) -join ';'
+          npx vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json=vitest-windows-${{ matrix.shard }}.json
         env:
           AGENFK_TEST_UNICODE_HOME: '1'
 

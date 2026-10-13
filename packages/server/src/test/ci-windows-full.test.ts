@@ -80,6 +80,17 @@ describe('Windows full-suite CI job (#208)', () => {
     });
   });
 
+  // The server runs verify commands through cmd.exe with its own PATH. Under the job's Git
+  // Bash PATH, cmd.exe also found MSYS touch/sleep in Git's usr/bin - a PATH a server started
+  // from PowerShell, cmd or the desktop app does not have - so specs leaning on them were
+  // green in CI and red for users (#208 branch review). The tests run without it.
+  it("runs the suite under a native Windows PATH: Git's usr\\bin coreutils removed", () => {
+    const step = job.slice(job.indexOf('- name: Test'), job.indexOf('- name: Home-integrity verify'));
+    expect(step).toMatch(/shell:\s*pwsh/);
+    expect(step).toMatch(/usr\\\\bin/i);
+    expect(step).toMatch(/\$env:Path\s*=/);
+  });
+
   it('runs under a HOME with a space and accents, as the subset job did (#201)', () => {
     expect(job).toMatch(/AGENFK_TEST_UNICODE_HOME:\s*'1'/);
   });

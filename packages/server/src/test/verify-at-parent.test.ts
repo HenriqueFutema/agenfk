@@ -26,6 +26,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -41,8 +42,13 @@ let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
 const STEPS = [s('TODO', 0, { isAnchor: true }), s('WORK', 1), s('DONE', 2, { isAnchor: true })];
 
-/** A project whose verifyCommand leaves a marker per run, on a flow with `verifyAt`. */
-async function project(verifyAt?: string, { command = true, steps = STEPS, cmd }: { command?: boolean; steps?: unknown[]; cmd?: (marker: string) => string } = {}) {
+/**
+ * A project whose verifyCommand leaves a marker per run (after `delayMs`), on a flow with `verifyAt`.
+ * In node, not `touch "<dir>/run"-$$`: cmd.exe has no touch or sleep (they only resolved
+ * through Git Bash's /usr/bin on PATH) and does not expand `$$`, so on Windows every run
+ * wrote the same file and "ran exactly once" could not fail (#208 branch review).
+ */
+async function project(verifyAt?: string, { command = true, steps = STEPS, delayMs = 0 }: { command?: boolean; steps?: unknown[]; delayMs?: number } = {}) {
   const f = await agent().post('/flows').send({ name: `vap-${++seq}`, steps, ...(verifyAt ? { verifyAt } : {}) });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-vap-'));
@@ -52,8 +58,9 @@ async function project(verifyAt?: string, { command = true, steps = STEPS, cmd }
   dirs.push(runs);
   fs.mkdirSync(runs);
   const p = await agent().post('/projects').send({ name: `vap-${++seq}` });
-  const marker = `${JSON.stringify(path.join(runs, 'run'))}-$$`;
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, ...(command ? { verifyCommand: cmd ? cmd(marker) : `touch ${marker}` } : {}) } as never);
+  const mark = `require('fs').writeFileSync(require('path').join(${JSON.stringify(runs)}, 'run-' + process.pid + '-' + Date.now()), '')`;
+  const verifyCommand = nodeCommand(delayMs ? `setTimeout(() => { ${mark}; }, ${delayMs});` : `${mark};`);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, ...(command ? { verifyCommand } : {}) } as never);
   return { pid: p.body.id as string, runCount: () => fs.readdirSync(runs).length, flowId: f.body.id as string, dir };
 }
 async function card(projectId: string, status = 'WORK', extra: Record<string, unknown> = {}) {
@@ -150,7 +157,7 @@ describe("verifyAt: 'parent'", () => {
   });
 
   it("a child does not defer to a parent whose own verify is running: that run may not see the child's work", async () => {
-    const { pid } = await project('parent', { cmd: marker => `sleep 1 && touch ${marker}` });
+    const { pid } = await project('parent', { delayMs: 1000 });
     const parent = await card(pid);
     // The parent's close starts only with its children finished (8024f6c4), so the child this
     // guards is one that appears while that run is going - and must not lean on it.

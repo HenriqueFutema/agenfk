@@ -29,8 +29,9 @@ const CLOSED_BY_THEIR_TESTS = new Set([
 ]);
 
 /** Closing first is the whole point; a deletion after one in the same hook or test is fine. */
-// An HTTP server's close (`__server.close(...)`, in almost every spec) does not close the database.
-const CLOSES = /\b(closeStorage|\w+\.shutdown|(?!(?:__|http)?[sS]erver\.)\w+\.close)\(/;
+// An HTTP server's close (`__server.close(...)`, in almost every spec) does not close the database;
+// nor does a watcher's or a socket server's: only a database-ish receiver counts (#208 branch review).
+const CLOSES = /\b(closeStorage|removeTestDb|\w+\.shutdown|\w*(?:db|Db|DB|storage|Storage|provider|Provider|sqlite|database)\.close)\(/;
 
 function openDbDeletions(source: string, fileName = 'fixture.ts'): number[] {
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -46,7 +47,12 @@ function openDbDeletions(source: string, fileName = 'fixture.ts'): number[] {
   collect(sf);
   const namesADb = (arg: ts.Expression): boolean => NAMES_A_DB(arg.getText(sf))
     || (ts.isIdentifier(arg) && (initializers.get(arg.text) ?? []).some(NAMES_A_DB));
-  /** `block` is the hook or test call the node sits in, or null at module scope. */
+  /**
+   * `block` is the hook or test call the node sits in, or null at module scope. A module-scope
+   * helper (`cleanup = () => unlinkSync(TEST_DB)`) is not judged here: the hub's ~100 specs call
+   * theirs right after `ctx.db.close()`, and the blocking full-suite Windows CI job fails on the
+   * EBUSY an open database would raise - stronger than reading call sites (#208 branch review).
+   */
   const visit = (n: ts.Node, block: ts.CallExpression | null): void => {
     if (ts.isCallExpression(n)) {
       const callee = n.expression.getText(sf);
@@ -87,7 +93,9 @@ describe('test databases', () => {
       afterAll(() => { for (const s of ['', '-wal']) { const f = TEST_DB + s; if (fs.existsSync(f)) fs.unlinkSync(f); } });
       afterAll(async () => { await new Promise(r => __server.close(() => r())); fs.unlinkSync(TEST_DB); });
       afterAll(async () => { await db.close(); fs.unlinkSync(DB); });
-    `)).toEqual([3, 4, 5, 10, 11]);
+      afterAll(() => { watcher.close(); fs.unlinkSync(TEST_DB); });
+      afterAll(async () => { await ctx.db.close(); fs.unlinkSync(TEST_DB); });
+    `)).toEqual([3, 4, 5, 10, 11, 13]);
   });
 
   it('no spec under packages/*/src deletes a database inside a hook or a test', () => {
