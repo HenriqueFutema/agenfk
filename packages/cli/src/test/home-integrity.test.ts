@@ -138,8 +138,9 @@ describe('vitest HOME pin factory (scripts/vitest-home-pin.mjs)', () => {
     expect(a.HOME).toBeTruthy();
     expect(a.HOME, 'pin must land in a fresh tmpdir sandbox')
       .toBe(path.join(os.tmpdir(), path.basename(a.HOME)));
+    // The prefix this run uses: the accented one under AGENFK_TEST_UNICODE_HOME (#201).
     expect(a.HOME, 'sandbox name must carry the recognizable prefix')
-      .toContain('agenfk-test-home-');
+      .toContain(pin.testHomePrefix());
     expect(a.USERPROFILE, 'Windows parity key').toBe(a.HOME);
     expect(a.AGENFK_REAL_HOME, 'real home must be preserved for assertions').toBeTruthy();
     expect(a.AGENFK_REAL_HOME).not.toBe(a.HOME);

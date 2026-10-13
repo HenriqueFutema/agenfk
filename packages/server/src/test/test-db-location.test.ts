@@ -69,6 +69,15 @@ describe('the per-run sandbox is removed when the run ends', () => {
     expect(fs.existsSync(home)).toBe(false);
   });
 
+  it('deletes the sandbox when the run gave it the accented name (AGENFK_TEST_UNICODE_HOME, #201)', async () => {
+    // The Windows CI job runs under it (#208): matching only `agenfk-test-home-`
+    // left every such sandbox behind.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk Fábio Téixeira ção-'));
+    fs.mkdirSync(path.join(home, 'test-dbs'));
+    (await load())({ config: { env: { HOME: home } } })();
+    expect(fs.existsSync(home)).toBe(false);
+  });
+
   it('is idempotent: every project tears down, and the second finds nothing', async () => {
     const home = sandbox();
     const setup = await load();

@@ -15,15 +15,21 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { testHomePrefix } from './vitest-home-pin.mjs';
 
 // .native: on Windows it also expands 8.3 names, so the long-form sandbox matches an 8.3 TEMP (#208).
 const real = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
 
-/** A sandbox is an `agenfk-test-home-*` directory directly under the tmpdir - nothing else is deleted. */
+// Both names vitest-home-pin gives a sandbox: plain, and the accented one the
+// Windows CI job runs under (AGENFK_TEST_UNICODE_HOME, #201/#208).
+const PREFIXES = [testHomePrefix({}), testHomePrefix({ AGENFK_TEST_UNICODE_HOME: '1' })];
+
+/** A sandbox is a directory named like one, directly under the tmpdir - nothing else is deleted. */
 function isSandbox(home) {
   if (typeof home !== 'string' || !home) return false;
   const abs = path.resolve(home);
-  return path.basename(abs).startsWith('agenfk-test-home-')
+  const name = path.basename(abs);
+  return PREFIXES.some(p => name.startsWith(p))
     && real(path.dirname(abs)) === real(os.tmpdir());
 }
 
