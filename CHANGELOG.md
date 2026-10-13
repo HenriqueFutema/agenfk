@@ -2,6 +2,25 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.41] — 2026-10-12
+
+Pre-release, cut from the `beta` line (PR #229). Cumulative over `2.0.0-beta.40`.
+
+### Flow compliance on the PR overview (CGLAB-617)
+
+- **Compliance on the PR overview**: `/v1/prs/overview` carries an overall judged/compliant/score
+  for the request's window and filters, plus a per-developer verdict on every By-developer row —
+  judged from the stamped `step.transitioned` events under the SAME predicates as `/v1/adherence`,
+  so the surfaces cannot disagree. A rollback within the revision is compliant; unstamped events
+  count on neither side; a null score is an explicit em dash, never 0%.
+- **By developer** gets a sortable compliance column; the **PR Volume timeline** gets one aggregate
+  tile (the grid stays four-wide on hubs whose response predates the field).
+- **By model shows an honest placeholder**: transitions carry no model and there is no session
+  reference to attribute one from, so the column renders an em dash titled "transitions do not
+  carry a model" instead of a fabricated split.
+- **No compliance under a PR search**: `?pr=` supersedes the window, so a number scoped to nothing
+  is omitted rather than silently computed over all time.
+
 ## [2.0.0-beta.40] — 2026-10-12
 
 Pre-release, cut from the `beta` line (PRs #224–#228). Cumulative over `2.0.0-beta.39`.
