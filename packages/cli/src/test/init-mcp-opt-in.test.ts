@@ -98,7 +98,7 @@ describe('agenfk init on a CLI-only install with Claude Code present (BUG 98aab7
 
     await program.parseAsync(['node', 'agenfk', 'init', 'demo']);
 
-    expect(JSON.parse(fs.readFileSync(path.join(dir, '.agenfk', 'project.json'), 'utf8'))).toEqual({ projectId: 'p-123' });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, '.agenfk', 'local.json'), 'utf8'))).toEqual({ projectId: 'p-123' }); // CGLAB-625: the id is this machine's
     expect(claudeCalls().filter(c => c.includes(' mcp '))).toEqual([]);
     expect(fs.existsSync(localSettings())).toBe(false);
   });
@@ -159,7 +159,7 @@ describe('agenfk init on a --with-mcp install with Claude Code present', () => {
     expect(all).toMatch(/MCP setup failed: .*(ENOTDIR|ENOENT)/); // ENOENT on Windows
     expect(all).toMatch(/agenfk configure-ide/);
     // The project itself was initialized before the IDE step ran.
-    expect(fs.existsSync(path.join(dir, '.agenfk', 'project.json'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, '.agenfk', 'local.json'))).toBe(true); // CGLAB-625
   });
 });
 

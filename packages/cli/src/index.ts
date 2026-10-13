@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, readLocalProjectFile, resolveProjectIdentity, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -28,6 +28,7 @@ import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
+import { ensureLocalIgnored, stripLegacyProjectId, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
 
 /**
  * Consecutive delivery failures before the startup banner warns. A halted
@@ -1211,24 +1212,12 @@ program
 
 program
   .command('current-project')
-  .description('Print the current project id (resolved from the nearest .agenfk/project.json)')
+  .description('Print the current project id (resolved from the nearest .agenfk/local.json, else a legacy projectId in .agenfk/project.json)')
   .option('--json', 'Output as JSON (includes server-side project details when reachable)')
   .action(async (options) => {
-    const projFile = findProjectJsonPath(process.cwd());
-    if (!projFile) {
-      console.error(chalk.red('Error: No AgEnFK project found. No .agenfk/project.json exists in this directory or any parent — run agenfk init to initialize one, or cd into an initialized project.'));
-      process.exit(1);
-      return;
-    }
-    let projectId: string | null = null;
-    try {
-      projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null;
-    } catch {}
-    if (!projectId) {
-      console.error(chalk.red(`Error: ${projFile} exists but is malformed or missing a "projectId" key — fix the file (do NOT run agenfk init on an already-initialized project).`));
-      process.exit(1);
-      return;
-    }
+    const here = requireCwdProject();
+    if (!here) return;
+    const { projectId, root } = here;
     if (program.opts().toon || options.json) {
       let details: any = { projectId };
       try {
@@ -1236,7 +1225,7 @@ program
         details = { projectId, name: data.name, description: data.description };
       } catch (error: any) {
         if (error.response?.status === 404) {
-          console.error(chalk.yellow(`Warning: project ${projectId} is not known to the server — ${projFile} may point at a deleted project.`));
+          console.error(chalk.yellow(`Warning: project ${projectId} is not known to the server — ${path.join(root, '.agenfk')} may point at a deleted project.`));
         }
         // Otherwise the server is unreachable — the id alone is still useful offline.
       }
@@ -1437,27 +1426,66 @@ function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'):
 
 program
   .command('init [name]')
-  .description('Initialize a new AgEnFK project (Note: Ensure API server is running)')
+  .description('Link this directory to an AgEnFK project: create one (<name>) or link an existing one (--project <id>). Note: Ensure API server is running')
   .option('-d, --description <desc>', 'Project description', '')
+  .option('--project <id>', 'Link this directory (a fresh clone, say) to an existing project instead of creating one')
+  .addHelpText('after', `
+Project files (CGLAB-625):
+  .agenfk/project.json  the repository's shared settings (verifyCommand, flow, ...): committed
+  .agenfk/local.json    this machine's projectId: git-ignored (init adds .agenfk/local.json to .gitignore if git does not ignore it already)
+
+projectId is a row id in this machine's database, so it never goes in project.json.
+Re-running init in a repository whose project.json still carries a projectId moves it into local.json.`)
   .action(async (name, options) => {
     try {
         const { data: serverInfo } = await axios.get(`${API_URL}/`);
         console.log(chalk.green('Connected to AgEnFK API Server.'));
 
         const rootDir = process.cwd();
-        const agenfkDir = path.join(rootDir, '.agenfk');
-        const projFile = path.join(agenfkDir, 'project.json');
+        const localFile = path.join(rootDir, '.agenfk', 'local.json');
 
-        if (fs.existsSync(projFile)) {
-            const currentProj = JSON.parse(fs.readFileSync(projFile, 'utf8'));
-            console.log(chalk.yellow(`Current directory is already initialized with Project ID: ${currentProj.projectId}`));
+        /** The ignore rule, said out loud when init had to add it. */
+        const ignoreLocal = () => {
+            if (ensureLocalIgnored(rootDir) === 'added') {
+                console.log(chalk.green(`Added ${LOCAL_FILE_REL} to .gitignore: the project id is this machine's. Commit .gitignore.`));
+            }
+        };
+
+        // Already linked here: say so, and drop any stale id the shared file still carries.
+        const linked = existsLocalId(localFile);
+        if (linked) {
+            if (stripLegacyProjectId(rootDir)) console.log(chalk.green('Removed the stale projectId from .agenfk/project.json. Commit that change.'));
+            ignoreLocal();
+            console.log(chalk.yellow(`Current directory is already initialized with Project ID: ${linked}`));
+            return;
+        }
+
+        // From before the split: the id sits in the committed project.json. Move it.
+        const legacy = stripLegacyProjectId(rootDir);
+        if (legacy) {
+            writeLocalProjectId(rootDir, legacy);
+            ignoreLocal();
+            console.log(chalk.green(`Moved projectId ${legacy} from .agenfk/project.json into ${LOCAL_FILE_REL}.`));
+            console.log(chalk.gray('Commit the change to .agenfk/project.json: the id leaves version control, and every other clone links with agenfk init --project <id>.'));
             return;
         }
 
         let projectId: string;
         let projectName: string;
 
-        if (name) {
+        if (options.project) {
+            try {
+                const { data: existing } = await axios.get(`${API_URL}/projects/${encodeURIComponent(options.project)}`);
+                projectId = existing.id;
+                projectName = existing.name;
+            } catch (e: any) {
+                const why = e?.response?.status === 404 ? 'the server has no such project' : (e?.response?.data?.error || e?.message);
+                console.error(chalk.red(`Cannot link to project ${options.project}: ${why}. agenfk list-projects lists the projects this server has.`));
+                process.exit(1);
+                return;
+            }
+            console.log(chalk.green(`Linked to project: ${projectName} (ID: ${projectId})`));
+        } else if (name) {
             console.log(chalk.blue(`Creating new project: ${name}...`));
             const { data: newProj } = await axios.post(`${API_URL}/projects`, {
                 name,
@@ -1476,18 +1504,14 @@ program
             })));
 
             console.log(chalk.yellow('\nTo initialize this directory, use:'));
-            console.log(chalk.white('  agenfk init <project-name>'));
-            console.log(chalk.white('\nOr to link to an existing project, create .agenfk/project.json manually:'));
-            console.log(chalk.white('  { "projectId": "EXISTING_ID" }'));
+            console.log(chalk.white('  agenfk init <project-name>       create a new project'));
+            console.log(chalk.white('  agenfk init --project <id>       link an existing one (a fresh clone, say)'));
             return;
         }
 
-        if (!fs.existsSync(agenfkDir)) {
-            fs.mkdirSync(agenfkDir, { recursive: true });
-        }
-
-        fs.writeFileSync(projFile, JSON.stringify({ projectId }, null, 2), 'utf8');
-        console.log(chalk.green(`\n✨ Initialized project in ${projFile}`));
+        const written = writeLocalProjectId(rootDir, projectId);
+        ignoreLocal();
+        console.log(chalk.green(`\n✨ Initialized project in ${written}`));
         console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
 
         /*
@@ -1516,14 +1540,20 @@ program
     }
   });
 
+/** The id `<file>` (a local.json) names, or null. */
+function existsLocalId(file: string): string | null {
+  try { return readLocalProjectFile(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
 program
   .command('configure-ide')
   .description('Set up the Claude Code MCP integration for an already-initialized project: registers the agenfk MCP server with `claude mcp add` and its permissions in .claude/settings.local.json. Safe to re-run.')
   .action(() => {
     const rootDir = process.cwd();
-    const projFile = path.join(rootDir, '.agenfk', 'project.json');
+    // Initialized HERE: this directory's own .agenfk names a project (CGLAB-625: local.json, or a legacy id).
+    const here = resolveProjectIdentity(rootDir);
 
-    if (!fs.existsSync(projFile)) {
+    if (!here?.projectId || here.root !== path.resolve(rootDir)) {
         console.error(chalk.red('Error: No AgEnFK project found in the current directory.'));
         console.error(chalk.gray('Run "agenfk init" first to initialize a project here.'));
         process.exit(1);
@@ -1722,30 +1752,41 @@ program
   });
 
 /**
- * Find the nearest .agenfk/project.json by searching upwards from startDir.
+ * The project this directory belongs to (CGLAB-625): the id from the
+ * git-ignored .agenfk/local.json, else a legacy projectId still in the shared
+ * .agenfk/project.json - which keeps working, with a warning on stderr (stdout
+ * stays clean for scripts) saying how to move it.
  */
-function findProjectJsonPath(startDir: string): string | null {
-  let currentDir = startDir;
-  while (currentDir !== path.parse(currentDir).root) {
-    const projFile = path.join(currentDir, '.agenfk', 'project.json');
-    if (fs.existsSync(projFile)) return projFile;
-    currentDir = path.dirname(currentDir);
+function cwdProject(startDir: string) {
+  const found = resolveProjectIdentity(startDir);
+  if (found?.source === 'legacy') {
+    console.error(chalk.yellow(`Warning: ${path.join(found.root, '.agenfk', 'project.json')} carries projectId, which is this machine's and belongs in the git-ignored .agenfk/local.json. Run agenfk init in ${found.root} to move it.`));
   }
-  return null;
+  return found;
+}
+
+/** The current project's id, or null. */
+function findProjectId(startDir: string): string | null {
+  return cwdProject(startDir)?.projectId ?? null;
 }
 
 /**
- * Find project ID by searching upwards for .agenfk/project.json
+ * The current project, or null after saying why on stderr and exiting 1: for
+ * commands that cannot run without one.
  */
-function findProjectId(startDir: string): string | null {
-  const projFile = findProjectJsonPath(startDir);
-  if (!projFile) return null;
-  try {
-    const config = JSON.parse(fs.readFileSync(projFile, 'utf8'));
-    return config.projectId || null;
-  } catch {
+function requireCwdProject(): { projectId: string; root: string } | null {
+  const found = cwdProject(process.cwd());
+  if (!found) {
+    console.error(chalk.red('Error: No AgEnFK project found. No .agenfk/local.json or .agenfk/project.json exists in this directory or any parent — run agenfk init to initialize one, or cd into an initialized project.'));
+    process.exit(1);
     return null;
   }
+  if (!found.projectId) {
+    console.error(chalk.red(`Error: ${found.root} is an AgEnFK project not linked on this machine: its .agenfk/local.json is missing or names no projectId. Link it with agenfk init --project <id> (agenfk list-projects lists them), or create a project with agenfk init <name>.`));
+    process.exit(1);
+    return null;
+  }
+  return { projectId: found.projectId, root: found.root };
 }
 
 /**
@@ -4574,20 +4615,10 @@ worktreeCmd
      * confirms — which still answers the real complaint, because what has
      * already accumulated can finally be cleared.
      */
-    // The same resolution `current-project` uses: the nearest .agenfk/project.json.
-    const projFile = findProjectJsonPath(process.cwd());
-    if (!projFile) {
-      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
-      process.exit(1);
-      return;
-    }
-    let projectId: string | null = null;
-    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
-    if (!projectId) {
-      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
-      process.exit(1);
-      return;
-    }
+    // The same resolution `current-project` uses (CGLAB-625: local.json first).
+    const here = requireCwdProject();
+    if (!here) return;
+    const { projectId } = here;
     const { data: items } = await axios.get(`${API_URL}/items`, {
       params: projectId ? { projectId } : undefined,
     });
@@ -4825,19 +4856,9 @@ prCmd
      * cannot be reached by anyone. A second unreachable endpoint would have
      * been the same mistake twice.
      */
-    const projFile = findProjectJsonPath(process.cwd());
-    if (!projFile) {
-      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
-      process.exit(1);
-      return;
-    }
-    let projectId: string | null = null;
-    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
-    if (!projectId) {
-      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
-      process.exit(1);
-      return;
-    }
+    const here = requireCwdProject();
+    if (!here) return;
+    const { projectId } = here;
     try {
       const { data } = await axios.post(`${API_URL}/projects/${projectId}/tasks-from-pr`, { prNumber });
       if (data.reused) {
