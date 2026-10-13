@@ -188,6 +188,30 @@ describe('agenfk init on a repository from before the split', () => {
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 
+  it('says a migration once: Moved, not also Removed', async () => {
+    gitRepo();
+    declare({ projectId: 'p-known', flow: 'TDD Flow' });
+    await run('init');
+    const said = out.join('\n');
+    expect(said.match(/Moved projectId p-known/g)).toHaveLength(1);
+    expect(said).not.toMatch(/Removed projectId/);
+  });
+
+  it('says Moved when --project names the same id project.json carried', async () => {
+    gitRepo();
+    declare({ projectId: 'p-known', flow: 'TDD Flow' });
+    await run('init', '--project', 'p-known');
+    expect(out.join('\n')).toMatch(/Moved projectId p-known/);
+    expect(out.join('\n')).not.toMatch(/Removed projectId/);
+  });
+
+  it('still says Removed when --project drops a different id', async () => {
+    gitRepo();
+    declare({ projectId: 'p-elsewhere', flow: 'TDD Flow' });
+    await run('init', '--project', 'p-known');
+    expect(out.join('\n')).toMatch(/Removed projectId p-elsewhere/);
+  });
+
   it('keeps an emptied project.json, so every other clone keeps its project marker (review #4)', async () => {
     gitRepo();
     declare({ projectId: 'p-known' });

@@ -1461,9 +1461,12 @@ if this machine's server has that project; --project <id> links to the project y
             }
         };
         /** Says what became of an id the shared file carried, and what - if anything - there is to commit. */
-        const reportStripped = (id: string | null) => {
+        const reportStripped = (id: string | null, linkedTo?: string) => {
             if (!id) return;
-            console.log(chalk.green(`Removed projectId ${id} from .agenfk/project.json: the id is this machine's and lives in ${LOCAL_FILE_REL}.`));
+            // The same id going into local.json is ONE event, a move; a different one was dropped.
+            console.log(chalk.green(id === linkedTo
+                ? `Moved projectId ${id} from .agenfk/project.json into ${LOCAL_FILE_REL}: the id is this machine's.`
+                : `Removed projectId ${id} from .agenfk/project.json: the id is this machine's and lives in ${LOCAL_FILE_REL}.`));
             if (projectFileTracked(rootDir)) {
                 console.log(chalk.gray('Commit .agenfk/project.json so the id leaves version control. Other machines link with agenfk init <name>, or agenfk init --project <id> with an id from their own server.'));
             }
@@ -1471,7 +1474,7 @@ if this machine's server has that project; --project <id> links to the project y
         /** Link this directory: local.json FIRST, so a failed write never loses the id; then out of the shared file. */
         const link = (projectId: string): string => {
             const written = writeLocalProjectId(rootDir, projectId);
-            reportStripped(stripLegacyProjectId(rootDir));
+            reportStripped(stripLegacyProjectId(rootDir), projectId);
             ignoreLocal();
             return written;
         };
@@ -1532,7 +1535,6 @@ if this machine's server has that project; --project <id> links to the project y
                 if (status === 'known') {
                     // This directory IS that project: a name must not make a second, empty one.
                     link(legacy);
-                    console.log(chalk.green(`Moved projectId ${legacy} into ${LOCAL_FILE_REL}.`));
                     if (name) console.log(chalk.yellow(`"${name}" was not created: this directory is already project ${legacy}.`));
                     return;
                 }
