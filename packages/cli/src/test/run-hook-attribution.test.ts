@@ -79,6 +79,33 @@ describe('the session project comes from the cwd', () => {
     expect(projectIdFromCwd(tempDir())).toBeNull();
   });
 
+  // CGLAB-625: the id lives in the git-ignored local.json now.
+  it('reads the id from local.json when project.json carries only settings', () => {
+    const root = tempDir();
+    fs.mkdirSync(path.join(root, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: 'npm test' }));
+    fs.writeFileSync(path.join(root, '.agenfk', 'local.json'), JSON.stringify({ projectId: 'p-local' }));
+    expect(projectIdFromCwd(root)).toBe('p-local');
+  });
+
+  it('prefers local.json over an id project.json still carries', () => {
+    const root = tempDir();
+    fs.mkdirSync(path.join(root, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'p-legacy' }));
+    fs.writeFileSync(path.join(root, '.agenfk', 'local.json'), JSON.stringify({ projectId: 'p-local' }));
+    expect(projectIdFromCwd(root)).toBe('p-local');
+  });
+
+  it('answers null for a clone not linked here, rather than borrowing an outer project\'s id', () => {
+    const outer = tempDir();
+    fs.mkdirSync(path.join(outer, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(outer, '.agenfk', 'local.json'), JSON.stringify({ projectId: 'p-outer' }));
+    const inner = path.join(outer, 'clone');
+    fs.mkdirSync(path.join(inner, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(inner, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: 'npm test' }));
+    expect(projectIdFromCwd(inner)).toBeNull();
+  });
+
   it('returns null for a missing or malformed project file', () => {
     const root = tempDir();
     fs.mkdirSync(path.join(root, '.agenfk'), { recursive: true });

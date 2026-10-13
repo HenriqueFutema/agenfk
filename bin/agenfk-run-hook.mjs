@@ -124,23 +124,30 @@ function rememberRun(sessionId, runId) {
 }
 
 /**
- * The project that owns a cwd, from the nearest `.agenfk/project.json`.
+ * The project that owns a cwd: the nearest `.agenfk` holding local.json or
+ * project.json. The id comes from local.json (this machine's, git-ignored -
+ * CGLAB-625), else a legacy projectId still in project.json: the resolution
+ * core's resolveProjectIdentity makes, mirrored because a hook is a
+ * standalone script.
  *
- * The same file the MCP gatekeeper reads. Null when no project owns the
- * directory — a bare worktree, a temp dir — which is NOT the same as "a
- * different project" and must not be treated as one.
+ * Null when no project owns the directory - a bare worktree, a temp dir -
+ * which is NOT the same as "a different project" and must not be treated as
+ * one. A project not linked on this machine is null too, and stops the walk:
+ * an outer project's id is not this one's.
  */
 export function projectIdFromCwd(cwd) {
   let dir = cwd && isAbsolute(cwd) ? cwd : resolve(cwd || '.');
   const root = parse(dir).root;
-  for (;;) {
+  const idIn = (file) => {
     try {
-      const parsed = JSON.parse(readFileSync(join(dir, '.agenfk', 'project.json'), 'utf8'));
-      return parsed && typeof parsed.projectId === 'string' && parsed.projectId ? parsed.projectId : null;
-    } catch { /* no project file here — walk up */ }
-    // A malformed file is caught by the same try as an absent one; both mean
-    // "this directory does not name a project", and neither should block the
-    // walk. The root ends it.
+      const parsed = JSON.parse(readFileSync(file, 'utf8'));
+      return parsed && typeof parsed.projectId === 'string' && parsed.projectId.trim() ? parsed.projectId.trim() : null;
+    } catch { return null; }
+  };
+  for (;;) {
+    const local = join(dir, '.agenfk', 'local.json');
+    const shared = join(dir, '.agenfk', 'project.json');
+    if (existsSync(local) || existsSync(shared)) return idIn(local) ?? idIn(shared);
     if (dir === root) return null;
     dir = dirname(dir);
   }
