@@ -1,8 +1,8 @@
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import { connectMcpClient, listToolNames, type ConnectedMcpClient } from './helpers/mcpClient';
 
 /**
@@ -54,11 +54,11 @@ describe('query_token_events is exposed by the live MCP server', () => {
 describe('GET /token-events REST', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
   beforeEach(async () => { await initStorage(); });
 

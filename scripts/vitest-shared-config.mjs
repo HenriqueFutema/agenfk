@@ -62,8 +62,11 @@ export function sharedTest(
     // run serially: under load, bcrypt/AES-GCM in hub setup hooks and mocked
     // axios calls in upgrade-tier specs would otherwise trip the lower ceiling
     // on different files run-to-run, producing pseudo-random failures.
-    testTimeout: 30000,
-    hookTimeout: 30000,
+    // Doubled on Windows (#208): every git call and child process there costs
+    // several times what it does on POSIX, and the git-heavy server specs run
+    // 20-25s alone - a loaded run pushed them over 30s. A hang still fails.
+    testTimeout: process.platform === 'win32' ? 60000 : 30000,
+    hookTimeout: process.platform === 'win32' ? 60000 : 30000,
     // Repairs `localStorage` for jsdom specs — Node's own undefined global
     // clobbers jsdom's. See vitest.setup.ts.
     setupFiles: ['./vitest.setup.ts'],

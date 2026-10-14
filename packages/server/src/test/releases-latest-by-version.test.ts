@@ -21,8 +21,8 @@ vi.mock('axios', () => {
 });
 
 import axios from 'axios';
-import { app, initStorage, clearReleaseCache } from '../server';
-import { testDbPath } from './helpers/testDb';
+import { app, initStorage, closeStorage, clearReleaseCache } from '../server';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 
 const TEST_DB = testDbPath('releases-latest-by-version-test-db.sqlite');
 let server: import('http').Server;
@@ -31,13 +31,13 @@ const get = vi.mocked((axios as any).get);
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
   server = app.listen(0);
 });
 afterAll(async () => {
   await new Promise<void>(r => server.close(() => r()));
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
 });
 afterEach(() => { get.mockReset(); clearReleaseCache(); });
 

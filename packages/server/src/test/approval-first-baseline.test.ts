@@ -12,7 +12,7 @@
  * commit a close stamps on its test record), that green IS the baseline; the
  * suite runs only otherwise.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -32,25 +32,23 @@ const TEST_DB = testDbPath('approval-first-baseline-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const board = () => ({ 'x-agenfk-ui': '1' });
 const tmp = (prefix: string) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -200,7 +198,7 @@ describe('961f301d review: reuse stays in its own tree, and is judged per test w
     const t = await setup();
     const head = git(t.repo, 'git rev-parse HEAD');
     const other = tmp('agenfk-af-wt-');
-    git(other, `git clone -q ${t.repo} .`);
+    git(other, `git clone -q ${shellQuote(t.repo)} .`);
     await closedGreen(t.pid, t.verifyCommand, head, other);
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
@@ -315,7 +313,7 @@ describe('961f301d review 2: a green belongs to the tree it ran in', () => {
     const t = await setup();
     const head = git(t.repo, 'git rev-parse HEAD');
     const other = tmp('agenfk-af-wt2-');
-    git(other, `git clone -q ${t.repo} .`);
+    git(other, `git clone -q ${shellQuote(t.repo)} .`);
     // Recorded in `other`; the card itself now resolves to the project root (its worktree was removed).
     await closedGreen(t.pid, t.verifyCommand, head, other);
     expect((await approve(t.id)).status).toBe(201);
@@ -397,7 +395,7 @@ describe('961f301d review: a verify that waits on nobody is judged once', () => 
     const repo = tmp('agenfk-af-warn-');
     git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
     const p = await agent().post('/projects').send({ name: `af-warn-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true' } as never);
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `af-warn-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
     expect((await validate(c.body.id)).status).toBe(200);

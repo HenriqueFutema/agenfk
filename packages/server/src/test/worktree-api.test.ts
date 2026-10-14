@@ -6,15 +6,16 @@
  * worktree belongs to an item, that asking twice is safe, and — the one that
  * matters most — that removing a worktree never destroys the work inside it.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { app, initStorage, storage, VERIFY_TOKEN, defaultWorktreeRoot, findProjectRoot, autoGitCommit } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, defaultWorktreeRoot, findProjectRoot, autoGitCommit } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -42,12 +43,12 @@ const git = (cwd: string, ...args: string[]): string =>
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 });
 
-afterAll(() => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
   // Sweep the roots this file created inside the real worktree base.
   try {
     for (const entry of fs.readdirSync(defaultWorktreeRoot())) {
@@ -160,7 +161,9 @@ describe('POST /items/:id/worktree', () => {
     fs.mkdirSync(insideBase, { recursive: true });
     const link = path.join(insideBase, 'escapes');
     try { fs.unlinkSync(link); } catch { /* first run */ }
-    fs.symlinkSync(victim, link, 'dir');
+    // A junction on Windows, where a symlink needs admin - and the link `npm
+    // install` makes there for a workspace package.
+    linkDir(victim, link);
 
     try {
       const item = await makeItem();
@@ -171,7 +174,7 @@ describe('POST /items/:id/worktree', () => {
       expect(fs.readdirSync(victim), 'it wrote outside the base before refusing').toEqual([]);
     } finally {
       try { fs.unlinkSync(link); } catch { /* best effort */ }
-      fs.rmSync(victim, { recursive: true, force: true });
+      fs.rmSync(victim, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -227,7 +230,7 @@ describe('GET /items/:id/worktree', () => {
     // recreate rather than assume it can cd there.
     const item = await makeItem();
     const created = await agent().post(`/items/${item.id}/worktree`).send({ root });
-    fs.rmSync(created.body.path, { recursive: true, force: true });
+    fs.rmSync(created.body.path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
     const res = await agent().get(`/items/${item.id}/worktree`);
     expect(res.body.path).toBe(created.body.path);
@@ -388,7 +391,7 @@ describe('project root must never become the home directory (CGLAB-166 review)',
     try {
       expect(findProjectRoot(realRoot)).toBe(realRoot);
     } finally {
-      fs.rmSync(realRoot, { recursive: true, force: true });
+      fs.rmSync(realRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

@@ -53,7 +53,7 @@ describe('the close commit carries what the author staged', () => {
       expect(git('log -1 --pretty=%s').trim()).toBe('close(bug): demo bug [abc123]');
       expect(tree()).toContain('new.txt');
       expect(git('show HEAD:tracked.txt')).toBe('v2\n');
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('never sweeps in an untracked file the author did not stage', async () => {
@@ -69,7 +69,7 @@ describe('the close commit carries what the author staged', () => {
       expect(r.committed).toBe(true);
       expect(tree()).not.toContain('somebody-elses-wip.test.ts');
       expect(git('status --porcelain')).toContain('?? somebody-elses-wip.test.ts');
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('never sweeps in a TRACKED file the author did not stage either', async () => {
@@ -89,7 +89,7 @@ describe('the close commit carries what the author staged', () => {
       expect(git('show HEAD:other.txt')).toBe('theirs v1\n');
       expect(r.unstaged).toContain('other.txt');
       expect(tree()).toContain('tracked.txt');
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('carries BOTH halves of a rename', async () => {
@@ -115,7 +115,7 @@ describe('the close commit carries what the author staged', () => {
       expect(t).not.toContain('old.ts');
       // The half that matters: index.ts points at a file that EXISTS in HEAD.
       expect(git('show HEAD:index.ts')).toContain('./new.js');
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('never half-commits an UNSTAGED rename', async () => {
@@ -137,7 +137,7 @@ describe('the close commit carries what the author staged', () => {
       // adding new.ts would not build.
       expect(tree()).toContain('old.ts');
       expect(r.unstaged).toEqual(expect.arrayContaining(['old.ts', 'new.ts']));
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('carries a deletion the author staged', async () => {
@@ -147,7 +147,7 @@ describe('the close commit carries what the author staged', () => {
       const r = await close(dir, 'abc127', 'TASK', 'removes a file');
       expect(r.committed).toBe(true);
       expect(tree()).not.toContain('tracked.txt');
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 });
 
@@ -164,7 +164,7 @@ describe('an empty index is not a failure', () => {
       expect(r.success).toBe(true);
       expect(r.committed).toBe(false);
       expect(git('rev-parse HEAD').trim()).toBe(before);
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('names awkward paths as the author would recognise them', async () => {
@@ -179,7 +179,7 @@ describe('an empty index is not a failure', () => {
       const r = await close(dir);
       expect(r.unstaged).toEqual(expect.arrayContaining(['with space.txt', 'café.txt']));
       expect(r.unstaged.some(p => p.includes('\\3') || p.startsWith('"'))).toBe(false);
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('reports a rename as one path, not as a mangled arrow', async () => {
@@ -196,7 +196,7 @@ describe('an empty index is not a failure', () => {
       expect(r.committed).toBe(true);
       expect(r.unstaged).toEqual(['loose.txt']);
       expect(r.unstaged.join(' ')).not.toContain('->');
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('still names what it declined to carry, so nothing is lost silently', async () => {
@@ -209,7 +209,7 @@ describe('an empty index is not a failure', () => {
       const r = await close(dir);
       expect(r.committed).toBe(false);
       expect(r.unstaged).toEqual(expect.arrayContaining(['forgot-to-add.ts', 'tracked.txt']));
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 });
 
@@ -233,7 +233,7 @@ describe('it never claims a commit it did not make', () => {
       expect(r.committed).toBe(false);
       // The staged work is still staged — the agent must be told to deal with it.
       expect(git('diff --cached --name-only')).toContain('tracked.txt');
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('declines a merge in progress instead of stealing it', async () => {
@@ -257,7 +257,7 @@ describe('it never claims a commit it did not make', () => {
       expect(r.detail).toMatch(/merge/i);
       // No commit was made, so the merge is still the author's to finish.
       expect(fs.existsSync(path.join(dir, '.git', 'MERGE_HEAD'))).toBe(true);
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 
   it('reports a directory that is not a git repository', async () => {
@@ -270,6 +270,6 @@ describe('it never claims a commit it did not make', () => {
       expect(r.outcome).toBe('failed');
       expect(r.success).toBe(false);
       expect(r.detail).toMatch(/not a git repository/i);
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
   });
 });

@@ -16,10 +16,10 @@
  * These tests pin the rule and are expected to fail until the server
  * validation is updated (the EPIC -> STORY case currently 400s).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import * as fs from 'fs';
 
 /**
@@ -46,16 +46,16 @@ describe('item type change (CGLAB-86)', () => {
 
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
 
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   beforeEach(async () => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
     const r = await agent().post('/projects').send({ name: 'type-change-test' });
     expect(r.status).toBe(201);

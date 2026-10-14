@@ -9,7 +9,7 @@
  * 2026-09-23): a child passes with its parent, and a parent whose children all
  * carry reviews (an epic over reviewed stories) needs none of its own.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -29,28 +29,27 @@ const TEST_DB = testDbPath('review-record-check-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const cleanup: string[] = [];
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 let home: string;
 beforeAll(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-rcheck-home-'));
   cleanup.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  process.env.HOME = savedHome;
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -59,12 +58,12 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(): { dir: string; base: string; tip: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-rcheck-repo-'));
   cleanup.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const base = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
-  execSync('git add . && git commit -qm two', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm two', { cwd: dir, shell: posixShell() });
   const tip = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   return { dir, base, tip };
 }
@@ -122,7 +121,7 @@ const validate = (id: string) => agent().post(`/items/${id}/validate`).set(inter
 const reviewCheck = (body: any) => (body.checks ?? []).find((c: any) => c.id === 'review-record');
 const commit = (dir: string, msg: string) => {
   fs.writeFileSync(path.join(dir, `f-${++seq}.txt`), msg);
-  execSync(`git add . && git commit -qm "${msg}"`, { cwd: dir, shell: '/bin/sh' });
+  execSync(`git add . && git commit -qm "${msg}"`, { cwd: dir, shell: posixShell() });
   return execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
 };
 

@@ -8,7 +8,7 @@
  * own repository, `none` (the project root, whatever the parents have), or
  * `inherit` (the default: no choice of its own).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -28,24 +28,23 @@ const TEST_DB = testDbPath('card-worktree-choice-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell, shellQuote } from './helpers/posixShell';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (p: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), p))); dirs.push(d); return d; };
-const sh = (cwd: string, cmd: string) => execSync(cmd, { cwd, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const sh = (cwd: string, cmd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -58,13 +57,13 @@ async function setup() {
   sh(root, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
   const wt = path.join(base, 'wt');
   const wt2 = path.join(base, 'wt2');
-  sh(root, `git worktree add -q -b feat/epic ${wt} && git worktree add -q -b feat/other ${wt2}`);
+  sh(root, `git worktree add -q -b feat/epic ${shellQuote(wt)} && git worktree add -q -b feat/other ${shellQuote(wt2)}`);
   const clone = path.join(base, 'clone');
-  sh(base, `git clone -q ${root} ${clone}`);
+  sh(base, `git clone -q ${shellQuote(root)} ${shellQuote(clone)}`);
   const f = await agent().post('/flows').send({ name: `wtc-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const p = await agent().post('/projects').send({ name: `wtc-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'true' } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'exit 0' } as never);
   const epic = await agent().post('/items').send({ type: 'EPIC', title: `wtc-epic-${++seq}`, projectId: p.body.id });
   await storage.updateItem(epic.body.id, { status: 'WORK', worktreePath: wt } as any);
   const child = await agent().post('/items').send({ type: 'TASK', title: `wtc-child-${++seq}`, projectId: p.body.id, parentId: epic.body.id });
@@ -165,7 +164,7 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
   it('a verify of a card whose chosen tree is gone says how to choose another', async () => {
     const t = await setup();
     expect((await put(t.child, { worktree: t.wt2 })).status).toBe(200);
-    fs.rmSync(t.wt2, { recursive: true, force: true });
+    fs.rmSync(t.wt2, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     const res = await verifyFrom(t.child, t.root);
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/--worktree inherit/);
@@ -180,8 +179,14 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
   it('a symlinked spelling is refused: the tree is what git lists, not a link to it', async () => {
     const t = await setup();
     const link = path.join(path.dirname(t.root), 'link-to-wt2');
-    fs.symlinkSync(t.wt2, link);
-    expect((await put(t.child, { worktree: link })).status).toBe(400);
+    // A junction on Windows, where a symlink needs admin: lstat calls it a link too.
+    linkDir(t.wt2, link);
+    // Guard: the tree's own spelling is accepted, so the refusal below is about
+    // the link - not a refusal of every path, which a bare 400 cannot tell apart.
+    expect((await put(t.child, { worktree: t.wt2 })).status).toBe(200);
+    const res = await put(t.child, { worktree: link });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${link} is not a checkout of this project's repository`);
   });
 
   it("'inherit' clears the choice: the card follows its parent again", async () => {

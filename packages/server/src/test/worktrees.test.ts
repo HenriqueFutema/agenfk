@@ -14,6 +14,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createWorktree, listWorktrees, removeWorktree, repoNameFor } from '../worktrees.js';
 import { buildWorktreePath } from '@agenfk/core';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let repo: string;
 let root: string;
@@ -34,7 +35,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const dir of [repo, root]) {
-    if (dir && fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    if (dir && fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -86,7 +87,7 @@ describe('createWorktree', () => {
 
   it('recreates a worktree whose directory was deleted behind git\'s back', () => {
     const first = createWorktree({ repoRoot: repo, root, branchName: 'feature/alpha' });
-    fs.rmSync(first.path, { recursive: true, force: true });
+    fs.rmSync(first.path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
     // git still lists it as "prunable"; a naive `worktree add` fails here.
     const again = createWorktree({ repoRoot: repo, root, branchName: 'feature/alpha' });
@@ -124,7 +125,7 @@ describe('createWorktree', () => {
       expect(() => createWorktree({ repoRoot: notARepo, root, branchName: 'feature/x' }))
         .toThrow(/not a git repository/i);
     } finally {
-      fs.rmSync(notARepo, { recursive: true, force: true });
+      fs.rmSync(notARepo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });
@@ -218,7 +219,7 @@ describe('removeWorktree — bounded destruction', () => {
       removeWorktree(repo, outsider);
       expect(fs.existsSync(path.join(outsider, 'precious.txt'))).toBe(true);
     } finally {
-      fs.rmSync(outsider, { recursive: true, force: true });
+      fs.rmSync(outsider, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -349,13 +350,14 @@ describe('it refuses to build outside the worktree root', () => {
      */
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wt-elsewhere-'));
     fs.mkdirSync(root, { recursive: true });
-    fs.symlinkSync(elsewhere, path.join(root, repoNameFor(repo)), 'dir');
+    // A junction on Windows, where a symlink needs admin: it resolves out the same way.
+    linkDir(elsewhere, path.join(root, repoNameFor(repo)));
 
     try {
       expect(() => createWorktree({ repoRoot: repo, root, branchName: 'feat/linked-out' }))
         .toThrow(/outside|symlink/i);
     } finally {
-      fs.rmSync(elsewhere, { recursive: true, force: true });
+      fs.rmSync(elsewhere, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -408,7 +410,8 @@ describe('a symlink pointing out of the root', () => {
     // A link sitting where the repo segment would go, which is what an
     // install inside a worktree produces.
     fs.mkdirSync(root, { recursive: true });
-    fs.symlinkSync(outside, path.join(root, repoNameFor(repo)), 'dir');
+    // A junction on Windows, where a symlink needs admin (and what npm makes there).
+    linkDir(outside, path.join(root, repoNameFor(repo)));
 
     try {
       expect(() => createWorktree({ repoRoot: repo, root, branchName: 'feat/escapes' }))
@@ -416,7 +419,7 @@ describe('a symlink pointing out of the root', () => {
       // And nothing was created out there on the way to refusing.
       expect(fs.readdirSync(outside), 'it wrote outside the root before refusing').toEqual([]);
     } finally {
-      fs.rmSync(outside, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 

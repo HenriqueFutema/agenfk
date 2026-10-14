@@ -30,8 +30,8 @@ beforeAll(() => {
   fs.writeFileSync(path.join(project, '.agenfk', 'project.json'), '{"projectId":"p"}');
 });
 afterAll(() => {
-  fs.rmSync(home, { recursive: true, force: true });
-  fs.rmSync(project, { recursive: true, force: true });
+  fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(project, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function claude(tool: 'Bash' | 'Read', input: Record<string, string>) {

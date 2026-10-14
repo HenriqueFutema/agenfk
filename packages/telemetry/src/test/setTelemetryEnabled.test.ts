@@ -53,7 +53,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.mocked(os.homedir).mockRestore();
-  fs.rmSync(sandbox, { recursive: true, force: true });
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('writing the telemetry choice', () => {
@@ -115,7 +115,7 @@ describe('writing the telemetry choice', () => {
       // And the first sandbox still holds what it was given.
       expect(JSON.parse(fs.readFileSync(configFile(), 'utf8')).telemetry).toBe(false);
     } finally {
-      fs.rmSync(second, { recursive: true, force: true });
+      fs.rmSync(second, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

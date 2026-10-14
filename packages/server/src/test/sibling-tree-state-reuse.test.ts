@@ -14,7 +14,7 @@
  * - The final verify propagates a sibling's green recorded at the same state.
  * - What differs in content, or changed while the command ran, runs its own.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -34,24 +34,22 @@ const TEST_DB = testDbPath('sibling-tree-state-reuse-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 const counter = (file: string) => () => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0);
 
 let seq = 0;
@@ -71,7 +69,7 @@ setTimeout(() => {
   process.exit(${exitCode});
 }, ${sleepMs});`);
   const p = await agent().post('/projects').send({ name: `ts-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
   const card = async () => {
     const c = await agent().post('/items').send({ type: 'TASK', title: `ts-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'WORK' } as any);
@@ -359,7 +357,7 @@ describe('3ffc9651 review: submodules are part of the state', () => {
   it('a submodule moved to another commit is another state: the next card runs its own', async () => {
     const t = await captureSetup();
     const lib = withSubmodule();
-    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${lib} sub && git commit -qm sub`);
+    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${shellQuote(lib)} sub && git commit -qm sub`);
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);
     git(path.join(t.repo, 'sub'), 'git checkout -q HEAD~1');
@@ -372,7 +370,7 @@ describe('3ffc9651 review: submodules are part of the state', () => {
   it('a submodule with uncommitted work is never shared: its content is not hashed', async () => {
     const t = await captureSetup();
     const lib = withSubmodule();
-    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${lib} sub && git commit -qm sub`);
+    git(t.repo, `git -c protocol.file.allow=always submodule add -q ${shellQuote(lib)} sub && git commit -qm sub`);
     fs.writeFileSync(path.join(t.repo, 'sub', 'f'), 'edited inside\n');
     const a = await t.card();
     expect((await capture(a)).status).toBe(200);

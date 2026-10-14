@@ -103,7 +103,7 @@ describe('withRecordRetention on real storage', () => {
   });
   afterEach(async () => {
     await storage?.shutdown();
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('prunes captures on every stepRecords write, whoever writes', async () => {

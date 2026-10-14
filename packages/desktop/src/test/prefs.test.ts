@@ -36,7 +36,7 @@ let dir: string;
 const file = (): string => path.join(dir, 'prefs.json');
 
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-prefs-')); });
-afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 describe('defaults', () => {
   it('starts with agents asking for permission', () => {
@@ -178,7 +178,8 @@ describe('the custom sound path', () => {
  */
 describe('cloneDirOrDefault', () => {
   it('proposes ~/agenfk when nobody has chosen', () => {
-    expect(cloneDirOrDefault(DEFAULT_PREFS, '/Users/me')).toBe('/Users/me/agenfk');
+    // Joined with the host's separator: `\Users\me\agenfk` on Windows.
+    expect(cloneDirOrDefault(DEFAULT_PREFS, '/Users/me')).toBe(path.join('/Users/me', 'agenfk'));
   });
 
   it('yields to a choice that was actually made', () => {

@@ -10,10 +10,10 @@
  *
  * These tests hold the local server to the same contract.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import * as fs from 'fs';
 
 /**
@@ -38,16 +38,16 @@ const TEST_DB = testDbPath('flow-step-validation-test-db.sqlite');
 describe('local flow step-shape validation', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
 
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   beforeEach(async () => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
 

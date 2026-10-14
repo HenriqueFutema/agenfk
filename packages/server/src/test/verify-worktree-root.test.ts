@@ -17,15 +17,16 @@
  * Branches and worktrees are tracked on top-level items only, so a child card
  * has no worktreePath of its own — its tree is its top-level ancestor's.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { app, initStorage, VERIFY_TOKEN, autoGitCommit, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, autoGitCommit, storage } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -128,10 +129,10 @@ const step = (itemId: string) => validate(itemId, {});
 describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
   });
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
   beforeEach(async () => {
     scratch = [];
@@ -146,7 +147,7 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
     expect(await projectRoot()).toBe(repo);
   });
   afterEach(() => {
-    for (const d of scratch.reverse()) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of scratch.reverse()) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('runs the verify command in the card\'s worktree, not in projectRoot', async () => {
@@ -296,7 +297,7 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
   it('says the worktree is gone instead of failing to spawn a shell (S4)', async () => {
     const task = await newItem('TASK', 'worktree deleted by hand');
     const wt = await cardWorktree(task.id);
-    fs.rmSync(wt, { recursive: true, force: true });
+    fs.rmSync(wt, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     await step(task.id);
     const before = (await agent().get(`/items/${task.id}`)).body.status;
 
@@ -350,7 +351,8 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
     const task = await newItem('TASK', 'caller behind a link');
     const wt = linkedWorktree('feat/behind-link');
     const link = path.join(repo, 'wt-link');
-    fs.symlinkSync(wt, link, 'dir');
+    // A junction on Windows, where a symlink needs admin: it resolves the same way.
+    linkDir(wt, link);
     await step(task.id);
 
     const res = await validate(task.id, { command: MARK, cwd: link });

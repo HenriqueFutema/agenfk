@@ -52,7 +52,7 @@ function fakeInstall(opts: { withBoard: boolean; requestedPort?: string; serverR
 describe('start-services.mjs prints one line', () => {
   let s: ReturnType<typeof fakeInstall>;
   beforeAll(() => { s = fakeInstall({ withBoard: true }); });
-  afterAll(() => rmSync(s.work, { recursive: true, force: true }));
+  afterAll(() => rmSync(s.work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   it('names the board at the port the server bound, and where the logs are', () => {
     expect(s.run.status).toBe(0);
@@ -65,7 +65,7 @@ describe('start-services.mjs prints one line', () => {
 describe('start-services.mjs without a built board', () => {
   let s: ReturnType<typeof fakeInstall>;
   beforeAll(() => { s = fakeInstall({ withBoard: false }); });
-  afterAll(() => rmSync(s.work, { recursive: true, force: true }));
+  afterAll(() => rmSync(s.work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   it('says the API is running and warns that there is no board', () => {
     expect(s.run.status).toBe(0);
@@ -79,7 +79,7 @@ describe('start-services.mjs without a built board', () => {
 describe('start-services.mjs when the requested port was taken', () => {
   let s: ReturnType<typeof fakeInstall>;
   beforeAll(() => { s = fakeInstall({ withBoard: true, requestedPort: '3000' }); });
-  afterAll(() => rmSync(s.work, { recursive: true, force: true }));
+  afterAll(() => rmSync(s.work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   it('names the port the server really took, and warns that it moved', () => {
     const out = nonEmpty(`${s.run.stdout}${s.run.stderr}`);
@@ -92,7 +92,7 @@ describe('start-services.mjs when the requested port was taken', () => {
 describe('start-services.mjs when the server never reports its port', () => {
   let s: ReturnType<typeof fakeInstall>;
   beforeAll(() => { s = fakeInstall({ withBoard: true, serverReports: false }); }, 40_000);
-  afterAll(() => rmSync(s.work, { recursive: true, force: true }));
+  afterAll(() => rmSync(s.work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   it('does not claim it is running - it warns and points at the log', () => {
     const out = nonEmpty(`${s.run.stdout}${s.run.stderr}`);
@@ -121,7 +121,7 @@ describe('the CLI prints no ASCII banner, even at an interactive terminal', () =
       env: { ...process.env, HOME: home, USERPROFILE: home, NODE_ENV: 'production' },
     });
   });
-  afterAll(() => rmSync(home, { recursive: true, force: true }));
+  afterAll(() => rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   it('prints just the version for `agenfk -V`', () => {
     if (!tty) return; // no built CLI here (CI builds before testing)

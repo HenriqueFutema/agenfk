@@ -3,7 +3,7 @@
  * in a DONE sibling's tests made every sibling's final verify answer 500,
  * because sibling propagation read `test.status` on it.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -17,23 +17,24 @@ const TEST_DB = testDbPath('put-item-tests-sanitize-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 let seq = 0;
 async function project() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-tests-sanitize-'));
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `sanitize-${++seq}` });
   await storage.updateProject(p.body.id, { projectRoot: dir, verifyCommand: 'exit 0' } as never);
   return p.body.id as string;

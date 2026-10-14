@@ -5,10 +5,10 @@
  * tested here — the status codes, the shape, and the promise that reading this
  * changes nothing.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage, VERIFY_TOKEN, approvalPageHost } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, approvalPageHost } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -20,7 +20,7 @@ let projectId: string;
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
   server = app.listen(0);
   const created = await request(server).post('/projects').send({ name: 'horizon-ds' });
@@ -28,7 +28,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await new Promise<void>(r => server.close(() => r()));
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 it('answers with a row per setting, each carrying its origin', async () => {
@@ -112,7 +112,7 @@ describe('GET /projects/:id/settings with a project file', () => {
     const verify = res.body.rows.find((r: { key: string }) => r.key === 'verifyCommand');
     expect(verify.value).toBe('npm test');
     expect(verify.origin).toBe('from-file');
-    expect(verify.from).toContain('.agenfk/project.json');
+    expect(verify.from).toContain(path.join('.agenfk', 'project.json')); // the file's own path, native (#208)
   });
 
   it('tells the settings screen that a projectId belongs in local.json (CGLAB-625)', async () => {
@@ -139,7 +139,8 @@ describe('GET /projects/:id/settings with a project file', () => {
     expect(rootRow.value).toBe(root);
   });
 
-  it('will not hang on a project file that never ends or never opens: a regular file only', async () => {
+  // /dev/zero and mkfifo are POSIX's; Windows has neither to stage (#208).
+  it.skipIf(process.platform === 'win32')('will not hang on a project file that never ends or never opens: a regular file only', async () => {
     // The file arrives with a clone, and settings and every verify read it on the request path.
     const zero = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
     fs.mkdirSync(path.join(zero, '.agenfk'));

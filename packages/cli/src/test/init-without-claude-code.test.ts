@@ -52,7 +52,10 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation((...a) => { out.push(strip(a)); });
   vi.spyOn(console, 'error').mockImplementation((...a) => { err.push(strip(a)); });
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as any);
-  // No Claude Code on this machine.
+  // No Claude Code on this machine. On Windows runTool looks for claude.exe/.cmd
+  // on PATH before it spawns anything (BUG ad57c267), so the PATH must hold none:
+  // a dev box with Claude Code installed would otherwise find the real one.
+  if (process.platform === 'win32') vi.stubEnv('PATH', home.dir);
   execSync.mockImplementation((cmd: string) => {
     if (String(cmd).startsWith('claude')) throw Object.assign(new Error('claude: command not found'), { status: 127 });
     return '';
@@ -66,12 +69,13 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   execSync.mockReset();
   spawnSync.mockReset();
   mockedAxios.get.mockReset();
   mockedAxios.post.mockReset();
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.rmSync(home.dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(home.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   home.dir = '';
 });
 

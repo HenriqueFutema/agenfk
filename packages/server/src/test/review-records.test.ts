@@ -13,7 +13,7 @@
  * verify also records WHO advanced the card (the author identity the CLI
  * reports from its harness), which S5-T2's check compares the reviewer with.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -33,29 +33,30 @@ const TEST_DB = testDbPath('review-records-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { posixShell } from './helpers/posixShell';
+import { canSymlink, linkDir } from '../../../cli/src/test/helpers/links';
+import { transcriptRoot } from '../reviewRecords';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const cleanup: string[] = [];
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 let home: string;
 beforeAll(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-review-home-'));
   cleanup.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  process.env.HOME = savedHome;
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -64,12 +65,12 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(): { dir: string; base: string; tip: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-review-repo-'));
   cleanup.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const base = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
-  execSync('git add . && git commit -qm two', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm two', { cwd: dir, shell: posixShell() });
   const tip = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   return { dir, base, tip };
 }
@@ -144,15 +145,46 @@ describe('CGLAB-381: review records', () => {
     expect(res.body.error).toMatch(/session folder|not a transcript/i);
   });
 
-  it('refuses a symlink inside a session folder that points outside it', async () => {
+  // A FILE link: a junction cannot point at a file, and Windows lets only admin
+  // or Developer Mode make a symlink - so this runs wherever one can be made
+  // (Linux and macOS always) and is skipped only where it cannot be built.
+  it.skipIf(!canSymlink())('refuses a symlink inside a session folder that points outside it', async () => {
     const { dir, base, tip } = makeRepo();
     const id = await cardIn(dir);
     const target = path.join(dir, 'outside.jsonl');
     fs.writeFileSync(target, line({ sessionId: 's', timestamp: FUTURE }));
     const link = path.join(home, '.claude', 'projects', '-repo', 'link.jsonl');
     fs.mkdirSync(path.dirname(link), { recursive: true });
+    // Guard: the folder itself is a session folder, so the refusal below is the link's.
+    const beside = path.join(path.dirname(link), 'beside.jsonl');
+    fs.writeFileSync(beside, line({ sessionId: 's', timestamp: FUTURE }));
+    expect(transcriptRoot(beside)).not.toBeNull();
     fs.symlinkSync(target, link);
-    expect((await record(id, { transcript: link, range: `${base}..${tip}`, findings: [] })).status).toBe(400);
+    const res = await record(id, { transcript: link, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${link} is not a transcript in a harness session folder`);
+  });
+
+  // The same escape through a DIRECTORY link, which every OS can make: a junction
+  // on Windows needs no privilege, so this one runs on a default Windows too.
+  it('refuses a transcript reached through a linked folder inside a session folder that points outside it', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const outside = path.join(dir, 'outside-sessions');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'sess-x.jsonl'), line({ sessionId: 'sess-x', timestamp: FUTURE }));
+    const project = path.join(home, '.claude', 'projects', '-repo');
+    fs.mkdirSync(project, { recursive: true });
+    // Guard: the folder itself is a session folder, so the refusal below is the link's.
+    const beside = path.join(project, 'beside.jsonl');
+    fs.writeFileSync(beside, line({ sessionId: 's', timestamp: FUTURE }));
+    expect(transcriptRoot(beside)).not.toBeNull();
+    const linked = path.join(project, 'linked');
+    linkDir(outside, linked);
+    const transcript = path.join(linked, 'sess-x.jsonl');
+    const res = await record(id, { transcript, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(`${transcript} is not a transcript in a harness session folder`);
   });
 
   it('refuses a Claude transcript whose session does not match the folder it sits in', async () => {

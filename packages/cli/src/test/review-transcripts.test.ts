@@ -14,7 +14,7 @@ import * as path from 'path';
 import { subagentTranscripts } from '../reviewTranscripts';
 
 const cleanup: string[] = [];
-afterAll(() => { for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true }); });
+afterAll(() => { for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 const line = (o: Record<string, unknown>) => JSON.stringify(o) + '\n';
 function homeWith(session: string, agents: Array<{ id: string; prompt: unknown; mtime: number }>, project = '-repo'): string {

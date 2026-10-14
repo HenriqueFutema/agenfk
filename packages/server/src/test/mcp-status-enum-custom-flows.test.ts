@@ -13,10 +13,10 @@
  *  2. REST functional tests — verify the underlying GET /items endpoint
  *     accepts custom statuses and returns items regardless of step name.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -111,12 +111,12 @@ describe('MCP tool schemas no longer hardcode default-flow status enum', () => {
 describe('GET /items supports custom-flow statuses', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
 
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   it('returns items parked in custom-flow steps (e.g. DISCOVERY)', async () => {

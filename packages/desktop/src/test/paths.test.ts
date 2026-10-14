@@ -22,7 +22,7 @@ function stagePackages(root: string): void {
 }
 
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-paths-')); });
-afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 describe('resolveDesktopPaths — source checkout', () => {
   it('finds the server entry and ui bundle from dist/main', () => {

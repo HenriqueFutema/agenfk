@@ -6,10 +6,11 @@
  * assertions for the shell-injection sites that only execute once `gh`/`jira`
  * are configured (so the argv/allowlist shape is what we pin down).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
+import { markerAbove } from './helpers/markerAbove';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, VERIFY_TOKEN, findProjectRoot } from '../server';
+import { app, initStorage, closeStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, VERIFY_TOKEN, findProjectRoot } from '../server';
 import { EXPENSIVE_ROUTE_LIMIT } from '@agenfk/core';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -60,15 +61,12 @@ const TEST_DB = testDbPath('security-hardening-test-db.sqlite');
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 });
 
-afterAll(() => {
-  for (const suffix of ['', '-wal', '-shm']) {
-    const f = TEST_DB + suffix;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 // ── bug 55229bae: localhost bind + CORS origin allowlist ──────────────────────
@@ -309,11 +307,12 @@ describe('findProjectRoot terminates', () => {
     try {
       expect(fs.realpathSync(findProjectRoot(deep))).toBe(fs.realpathSync(dir));
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
-  it('says NOT FOUND when it finds nothing, instead of its own start dir', () => {
+  // Needs a temp dir with no project marker above it (see markerAbove, #208).
+  it.skipIf(!!markerAbove(os.tmpdir()))('says NOT FOUND when it finds nothing, instead of its own start dir', () => {
     /*
      * The no-match answer used to be the (resolved) starting directory, which
      * made a failure indistinguishable from an answer: a worktree has no
@@ -327,7 +326,7 @@ describe('findProjectRoot terminates', () => {
     try {
       expect(findProjectRoot(dir)).toBeNull();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

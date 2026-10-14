@@ -9,7 +9,7 @@ import { insideRoot, isTestPath, parseJunitXml, parseVitestJson, surfaceOf } fro
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
-import { suggestTestReport, withTestFiles } from './testReportHint';
+import { suggestTestReport, withTestFiles, quoteArg } from './testReportHint';
 import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
@@ -57,7 +57,10 @@ import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
-import { readPane } from './herdr.js';
+import { readPane, liveHerdrSessions } from './herdr.js';
+import { commandEntryExists, missingCommandOnWindows } from './commandNotFound.js';
+import { killProcessTree } from './killTree.js';
+import { oneInFlight, readRemoteUrl, remoteCacheLifetimeMs } from './projectRemote.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -222,22 +225,23 @@ async function readItemMeta(itemId: string): Promise<{ title: string | null; ext
   }
 }
 
-async function warmProjectRemote(projectId: string): Promise<void> {
+// One lookup per project at a time (#208 review): concurrent events share it.
+const warmProjectRemote = oneInFlight(warmProjectRemoteOnce);
+async function warmProjectRemoteOnce(projectId: string): Promise<void> {
   try {
     const proj = await storage.getProject(projectId);
     const root = (proj as any)?.projectRoot;
     if (!root) { projectRemoteCache.set(projectId, ''); return; }
-    const { execFile } = await import('child_process');
-    // Async execFile (not execSync): this runs on the request path AND per
-    // project in the flow-sync poller loop; a synchronous git hang (network
-    // mount, credential prompt) would block the whole Node event loop. execFile
-    // keeps it off-thread; the 1.5s timeout + closed stdin bound the wait.
-    const out = await new Promise<string>((resolve) => {
-      execFile('git', ['remote', 'get-url', 'origin'], { cwd: root, timeout: 1500, windowsHide: true }, (err, stdout) => {
-        resolve(err ? '' : (stdout || '').toString().trim());
-      });
-    });
-    projectRemoteCache.set(projectId, out || '');
+    // Async and bounded (it runs on the request path AND per project in the
+    // flow-sync poller); a lookup that timed out is remembered for a minute
+    // only, then asked again (#208 review - see projectRemote.ts).
+    const answer = await readRemoteUrl(root);
+    projectRemoteCache.set(projectId, answer.url);
+    const lifetime = remoteCacheLifetimeMs(answer);
+    if (lifetime !== undefined) {
+      const forget = setTimeout(() => projectRemoteCache.delete(projectId), lifetime);
+      if (typeof forget.unref === 'function') forget.unref();
+    }
   } catch {
     projectRemoteCache.set(projectId, '');
   }
@@ -545,6 +549,23 @@ const describeExit = (
     return r.signal ? `killed by signal ${r.signal}, no exit code` : 'terminated without an exit code';
   }
   return `exit code ${r.code}`;
+};
+
+/**
+ * #208: cmd.exe answers a missing command with exit 1, a red suite's code. On
+ * Windows, after a failure, name the first word when cmd.exe could not have
+ * found it - the command itself already ran as written.
+ */
+const notFoundNote = (code: number | null, command: string, cwd: string | undefined): string => {
+  if (process.platform !== 'win32' || code !== 1) return '';
+  const missing = missingCommandOnWindows(command, {
+    pathEnv: process.env.PATH ?? process.env.Path ?? '',
+    pathExt: process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD',
+    // No root: the command ran where the server runs.
+    cwd: cwd || process.cwd(),
+    exists: commandEntryExists,
+  });
+  return missing ? ` - \`${missing}\` was not found (not a cmd.exe command, a file, or on PATH): the command could not be run` : '';
 };
 
 /** Hard cap on a verifyCommand's runtime; see its use in the validate route. */
@@ -1171,7 +1192,7 @@ async function chosenBy(item: any, tree: string): Promise<boolean> {
   const seen = new Set<string>();
   let cur: any = item;
   for (let depth = 0; cur && depth < 32; depth++) {
-    if (cur.worktreeChoice) return cur.worktreeChoice === tree;
+    if (cur.worktreeChoice) return cur.worktreeChoice !== 'root' && path.resolve(cur.worktreeChoice) === path.resolve(tree);
     if (cur.worktreePath) return false;
     if (!cur.parentId || seen.has(cur.parentId) || !storage) return false;
     seen.add(cur.parentId);
@@ -1236,7 +1257,8 @@ async function resolveWorktreeChoice(raw: unknown, item: any): Promise<{ updates
   if (!match || !fs.existsSync(match)) {
     return { error: `${wanted} is not a checkout of this project's repository (git worktree list in ${candidates[0]} does not list it). Use \`agenfk worktree create\` or \`git worktree add\` first.` };
   }
-  return { updates: { worktreeChoice: match } };
+  // path.resolve: git lists `C:/x/y` on Windows, every path it is compared with is `C:\x\y` (#208). Identity on POSIX.
+  return { updates: { worktreeChoice: path.resolve(match) } };
 }
 
 /**
@@ -1469,6 +1491,9 @@ const initStorage = async () => {
     dbPath = remapped;
   }
 
+  // #208: re-entry used to drop the previous provider still open - a leaked
+  // handle on every OS, and on Windows a database nobody could delete.
+  await closeStorage();
   // ec325925: every record write keeps only the captures something still reads.
   storage = withRecordRetention(new SQLiteStorageProvider());
 
@@ -1499,6 +1524,24 @@ const initStorage = async () => {
   }
 
   startHubSubsystems();
+};
+
+/**
+ * Close the database and stop the hub subsystems that hold it (#208). Safe to
+ * call with nothing open, and twice. The storage stays closed - a read after
+ * it fails loudly instead of reaching a file that may be gone - until the
+ * next initStorage().
+ */
+const closeStorage = async (): Promise<void> => {
+  hubFlusher?.stop();
+  hubFlusher = null;
+  flowSyncHandle?.stop();
+  flowSyncHandle = null;
+  upgradeSyncHandle?.stop();
+  upgradeSyncHandle = null;
+  repointSyncHandle?.stop();
+  repointSyncHandle = null;
+  await storage?.shutdown?.();
 };
 
 /**
@@ -2416,9 +2459,22 @@ app.get("/herdr/sessions", limitExpensive, asyncHandler(async (_req: any, res: a
  * a different amount of data and a different decision. This is what "open one"
  * asks for.
  */
+/**
+ * #208 review: a pane route talks only to a socket discovery lists right now.
+ * The board sends one it was handed, but the value is the caller's - and on
+ * Windows a socket path names `\\.\pipe\<path>`, so any string reached a pipe.
+ */
+function liveHerdrSocket(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  const want = path.resolve(raw);
+  return liveHerdrSessions().some(s => path.resolve(s.socketPath) === want) ? want : null;
+}
+const NOT_LIVE = { error: 'socket is not a live herdr session (GET /herdr/sessions lists them)' };
+
 app.get("/herdr/panes/:paneId/content", limitExpensive, asyncHandler(async (req: any, res: any) => {
-  const socketPath = String(req.query.socket ?? '');
-  if (!socketPath) return res.status(400).json({ error: 'socket (query) required' });
+  if (!req.query.socket) return res.status(400).json({ error: 'socket (query) required' });
+  const socketPath = liveHerdrSocket(String(req.query.socket));
+  if (!socketPath) return res.status(400).json(NOT_LIVE);
   const r = await readPane(socketPath, {
     paneId: String(req.params.paneId),
     source: (req.query.source as any) ?? 'recent',
@@ -2442,8 +2498,10 @@ app.post("/herdr/panes/:paneId/text", limitExpensive, asyncHandler(async (req: a
   const { socket, text } = req.body ?? {};
   if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
   if (typeof text !== 'string') return res.status(400).json({ error: 'text (string) required' });
+  const live = liveHerdrSocket(socket);
+  if (!live) return res.status(400).json(NOT_LIVE);
   try {
-    const r = await sendPaneText(socket, String(req.params.paneId), text);
+    const r = await sendPaneText(live, String(req.params.paneId), text);
     return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
   } catch (e: any) {
     // A refusal from our own guards is the caller's mistake, not the server's.
@@ -2455,8 +2513,10 @@ app.post("/herdr/panes/:paneId/keys", limitExpensive, asyncHandler(async (req: a
   const { socket, keys } = req.body ?? {};
   if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
   if (!Array.isArray(keys)) return res.status(400).json({ error: 'keys (array) required' });
+  const live = liveHerdrSocket(socket);
+  if (!live) return res.status(400).json(NOT_LIVE);
   try {
-    const r = await sendPaneKeys(socket, String(req.params.paneId), keys.map(String));
+    const r = await sendPaneKeys(live, String(req.params.paneId), keys.map(String));
     return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
@@ -2762,7 +2822,9 @@ app.post("/decompositions/review", limitExpensive, asyncHandler(async (req: any,
 app.post("/herdr/panes/:paneId/focus", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const { socket } = req.body ?? {};
   if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
-  const r = await focusPane(socket, String(req.params.paneId));
+  const live = liveHerdrSocket(socket);
+  if (!live) return res.status(400).json(NOT_LIVE);
+  const r = await focusPane(live, String(req.params.paneId));
   return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
 }));
 
@@ -4101,11 +4163,8 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
       const decoder = new StringDecoder('utf8');
       s?.on('data', (d: Buffer) => { const text = decoder.write(d); if (text) onOutput(text); });
     }
-    // A negative pid is a group only on POSIX; on Windows it throws and the shell itself is killed.
-    const killGroup = () => {
-      try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); }
-      catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
-    };
+    // The group off Windows, the whole tree (taskkill /T) on it (#208).
+    const killGroup = () => killProcessTree(child);
     let grace: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     const finish = (code: number | null) => {
@@ -4567,8 +4626,6 @@ interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: stri
 const WHOLE_SUITE_FILE = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|tsconfig[^/]*\.json|jsconfig\.json|\.babelrc[^/]*|babel\.config\.[^/]+|[^/]*\.config\.[cm]?[jt]s|vitest\.workspace\.[^/]+|[^/]*setup[^/]*\.[cm]?[jt]sx?|conftest\.py|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?)$/i;
 /** A file a related-tests command follows through imports: JS and TS sources (de5e5a03). */
 const GRAPH_FILE = /\.[cm]?[jt]sx?$/i;
-/** One argument per file, whatever its name holds. */
-const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
  * a36047ea — when a step changed code, not just tests: the project's related-
@@ -4588,7 +4645,10 @@ function relatedPlan(root: string, setting: TestReportSetting, entry: any, chang
   const tests = changed.filter(f => isTestPath(f, surface) && TEST_FILE_NAME.test(f));
   // de5e5a03: a related run follows imports. A snapshot, a fixture read from disk, a template: it traces no test to them.
   if (changed.some(f => !tests.includes(f) && !GRAPH_FILE.test(f))) return null;
-  return { entry, ran: tests, changed, command: template.split('{files}').join(changed.map(shellQuote).join(' ')), related: true };
+  // One argument per file, whatever its name holds, quoted for the shell that runs it (cmd.exe on Windows, #208).
+  const words = changed.map(f => quoteArg(f));
+  if (words.some(w => w === null)) return null;
+  return { entry, ran: tests, changed, command: template.split('{files}').join(words.join(' ')), related: true };
 }
 
 /** a36047ea: the hint a whole run gets when only code changed and the project has no related-tests command. */
@@ -6026,7 +6086,8 @@ app.delete("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, 
   if (!item.worktreePath) return res.json({ removed: false });
   // 686fdbf6: removal is --force; a card that chose this checkout would lose its work.
   const choosers = ((await storage.listItems({ projectId: item.projectId, limit: 1_000_000 } as any)) as any[])
-    .filter(o => o.id !== item.id && o.worktreeChoice === item.worktreePath);
+    .filter(o => o.id !== item.id && typeof o.worktreeChoice === 'string' && o.worktreeChoice !== 'root'
+      && path.resolve(o.worktreeChoice) === path.resolve(item.worktreePath));
   if (choosers.length) {
     return res.status(409).json({
       error: `Refusing to remove ${item.worktreePath}: ${choosers.map(o => `card ${o.id}`).join(', ')} chose to run there. `
@@ -9922,7 +9983,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const killer = setTimeout(() => {
       killed = true;
       capture.note(`\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`);
-      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      // On Windows the whole tree (taskkill /T, #208); elsewhere this command is
+      // no group leader, so it is the shell, as before.
+      killProcessTree(child);
       // SIGKILL reaches the SHELL only. Grandchildren — vitest workers, npm
       // lifecycle scripts — survive it and hold the inherited stdio pipes open,
       // and 'close' waits for those pipes. Resolving only on 'close' meant the
@@ -10115,7 +10178,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${runRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}${staysOn(failureStatus)}`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${runRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}${timedOut || spawnError ? '' : notFoundNote(code, resolvedCommand, runRoot)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}${staysOn(failureStatus)}`,
       output: preview,
     });
   }
@@ -10338,8 +10401,7 @@ function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: st
   child.stderr?.on('error', () => { /* reported by the run's close */ });
   const killer = setTimeout(() => {
     timedOut = true;
-    try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
-    catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+    killProcessTree(child);
   }, SETUP_TIMEOUT_MS);
   if (typeof killer.unref === 'function') killer.unref();
   let settled = false;
@@ -12380,4 +12442,4 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
 
 /* v8 ignore stop */
 
-export { initStorage, storage, performBackup };
+export { initStorage, closeStorage, storage, performBackup };

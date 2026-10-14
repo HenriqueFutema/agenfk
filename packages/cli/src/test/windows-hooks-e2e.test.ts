@@ -7,9 +7,9 @@
  * path there was "command not found", which Claude Code treats as non-blocking,
  * so the guard silently vanished), bash elsewhere.
  *
- * BUG 28a940a7 could only pin the command's SHAPE on POSIX; this runs it. Named
- * windows-*.test.ts, so the windows-compat CI job runs it on windows-latest and
- * the normal run on Linux.
+ * BUG 28a940a7 could only pin the command's SHAPE on POSIX; this runs it. The
+ * windows-full CI job runs it on windows-latest, the normal run on Linux, and
+ * (named windows-*.test.ts) `npm run test:windows` locally.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'child_process';
@@ -67,7 +67,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (api) await new Promise<void>(r => api.close(() => r()));
   if (home) cleanupHome(home);
-  if (project) fs.rmSync(project, { recursive: true, force: true });
+  if (project) fs.rmSync(project, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 /**

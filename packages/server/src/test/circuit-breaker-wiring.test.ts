@@ -14,11 +14,11 @@
  * evidence of a good attempt. The card reaching DONE clears, because that is
  * the one event that means the work landed.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, storage } from '../server';
 
 const TEST_DB = testDbPath('circuit-breaker-wiring-test-db.sqlite');
 
@@ -35,12 +35,12 @@ const agent = () => request(__server);
  */
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   __server = app.listen(0);
   await initStorage();
 });
 afterAll(async () => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await new Promise<void>(r => __server.close(() => r()));
 });
 
@@ -157,7 +157,7 @@ describe('the breaker clears on a flow whose exit is not named DONE', () => {
     });
     await internal(agent().post(`/projects/${projectId}/flow`)).send({ flowId: f.body.id });
     // The exit step runs the PROJECT's command, never the caller's (CGLAB-378).
-    await internal(agent().put(`/projects/${projectId}/verify-command`)).send({ verifyCommand: 'true' });
+    await internal(agent().put(`/projects/${projectId}/verify-command`)).send({ verifyCommand: 'exit 0' });
   });
 
   it('clears when the card lands on its own exit step', async () => {
@@ -170,7 +170,7 @@ describe('the breaker clears on a flow whose exit is not named DONE', () => {
 
     await storage.updateItem(item, { status: 'SPEC' } as any);
     await storage.updateItem(item, { status: 'CODE' } as any);
-    const res = await internal(agent().post(`/items/${item}/validate`)).send({ evidence: 'done', command: 'true' });
+    const res = await internal(agent().post(`/items/${item}/validate`)).send({ evidence: 'done', command: 'exit 0' });
     expect(res.status).toBe(200);
 
     // The storage clear keyed on the literal DONE cannot fire here; only the
@@ -199,7 +199,7 @@ describe('the breaker clears on a flow whose exit is not named DONE', () => {
     });
     await internal(agent().post(`/projects/${proj}/flow`)).send({ flowId: f.body.id });
     // HOLD is a boundary, so it runs the PROJECT's command (CGLAB-378).
-    await internal(agent().put(`/projects/${proj}/verify-command`)).send({ verifyCommand: 'true' });
+    await internal(agent().put(`/projects/${proj}/verify-command`)).send({ verifyCommand: 'exit 0' });
 
     const item = (await internal(agent().post('/items')).send({ type: 'TASK', title: 'parked', projectId: proj })).body.id;
     for (let i = 0; i < 2; i++) {
@@ -210,7 +210,7 @@ describe('the breaker clears on a flow whose exit is not named DONE', () => {
 
     await storage.updateItem(item, { status: 'SPEC' } as any);
     // SPEC -> HOLD is a boundary step, so a command is required and it passes.
-    const res = await internal(agent().post(`/items/${item}/validate`)).send({ evidence: 'parked', command: 'true' });
+    const res = await internal(agent().post(`/items/${item}/validate`)).send({ evidence: 'parked', command: 'exit 0' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('HOLD');
     // Parked is not done: one failure from the breaker must survive.

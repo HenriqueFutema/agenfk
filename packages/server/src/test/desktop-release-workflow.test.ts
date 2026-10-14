@@ -13,6 +13,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { load } from 'js-yaml';
+import { posixBash } from './helpers/posixShell';
 
 const ROOT = path.resolve(__dirname, '../../../..');
 const WORKFLOW = path.join(ROOT, '.github/workflows/desktop-release.yml');
@@ -162,7 +163,8 @@ describe('scripts/attach-release-assets.sh (CGLAB-621)', () => {
 
   const NEVER = 1000;
   const run = (args: string[], fake: Record<string, string | number> = {}) =>
-    spawnSync('bash', [ATTACH_SCRIPT, ...args], {
+    // Git's bash on Windows, not WSL's: that is the one PATH finds first from PowerShell (#208).
+    spawnSync(posixBash(), [ATTACH_SCRIPT, ...args], {
       encoding: 'utf8',
       env: {
         ...process.env,

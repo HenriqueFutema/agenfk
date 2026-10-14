@@ -11,7 +11,7 @@
  * which kept an unreachable PUT branch alive only because deleting it lowered
  * the count. It now drives the real routes and reads hub_outbox.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -30,20 +30,26 @@ const TEST_DB = testDbPath('hub-validate-step-transition-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
-/** recordHubEvent enqueues without being awaited by the route, so poll. */
-async function outboxFor(itemId: string, settleMs = 1500): Promise<any[]> {
+/**
+ * recordHubEvent enqueues without being awaited by the route, so poll. Up to
+ * 5 s: the first event of a project waits on its git remote lookup (bounded at
+ * 1.5 s), which a loaded Windows box can take in full (#208). Returns as soon as
+ * the closure is there.
+ */
+async function outboxFor(itemId: string, settleMs = 5000): Promise<any[]> {
   const db: any = (storage as any)['database'];
   const deadline = Date.now() + settleMs;
   let events: any[] = [];
@@ -60,7 +66,7 @@ let seq = 0;
 async function cardAt(status: string) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-close-'));
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `close-${++seq}` });
   await storage.updateProject(p.body.id, { projectRoot: dir, verifyCommand: 'exit 0' } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `close-${++seq}`, projectId: p.body.id });
@@ -89,7 +95,9 @@ describe('closing a card emits the hub closure events', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toMatch(/verify/);
     expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
-    expect((await outboxFor(id, 300)).some(e => e.type === 'item.closed')).toBe(false);
+    // Long enough to see a wrongly emitted event: this project's first event waits on its git
+    // remote lookup (up to 1.5 s) before it is recorded (#208 review).
+    expect((await outboxFor(id, 2500)).some(e => e.type === 'item.closed')).toBe(false);
   });
 
 });
@@ -100,7 +108,7 @@ async function projectOn(steps: any[]) {
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-close-'));
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `close-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   return { projectId: p.body.id as string, dir };

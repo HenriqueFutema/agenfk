@@ -8,7 +8,7 @@
  * which still counts (this repo's release test reads CHANGELOG.md). Only
  * capture reuse matches on it.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -22,7 +22,8 @@ const TEST_DB = testDbPath('reuse-ignore-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 // Loaded in a hook with the error swallowed: the module is new, and a failing hook would skip the tests.
 const ignoreModule = () => import('../reuseIgnore');
 
@@ -31,9 +32,9 @@ const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('reuseIgnoreMatcher', () => {
@@ -103,7 +104,7 @@ async function setup(reuseIgnore?: string[]) {
   fs.writeFileSync(path.join(repo, 'docs', 'guide.txt'), 'guide\n');
   fs.writeFileSync(path.join(repo, 'a.js'), 'module.exports = 1;\n');
   fs.writeFileSync(path.join(repo, 'release.test.js'), "test('changelog', () => require('fs').readFileSync('CHANGELOG.md'));\n");
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ri-ctl-')));
   dirs.push(outside);
   const runs = path.join(outside, 'runs');
@@ -111,7 +112,7 @@ async function setup(reuseIgnore?: string[]) {
   fs.writeFileSync(runner, `require('fs').appendFileSync(${JSON.stringify(runs)}, 'run\\n');
 require('fs').writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="changelog" file="release.test.js"/></testsuite></testsuites>');`);
   const p = await agent().post('/projects').send({ name: `ri-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml', ...(reuseIgnore ? { reuseIgnore } : {}) } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml', ...(reuseIgnore ? { reuseIgnore } : {}) } } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `ri-${++seq}`, projectId: p.body.id });
   await storage.updateItem(c.body.id, { status: 'WORK' } as any);
   const count = () => fs.readFileSync(runs, 'utf8').split('\n').filter(Boolean).length;

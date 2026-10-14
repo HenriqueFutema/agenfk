@@ -10,13 +10,13 @@
  *      `.message` from it, so serving index.html unconditionally there would
  *      silently break the health check.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { app, initStorage, resolveUiDir, mountStaticUI, API_PATH_PREFIXES } from '../server';
+import { app, initStorage, closeStorage, resolveUiDir, mountStaticUI, API_PATH_PREFIXES } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -44,7 +44,7 @@ let uiDir: string;
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 
   uiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ui-dist-'));
@@ -53,9 +53,9 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(uiDir, 'assets', 'app.js'), APP_JS);
 });
 
-afterAll(() => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-  if (uiDir) fs.rmSync(uiDir, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  if (uiDir) fs.rmSync(uiDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 // ── Ordering note ────────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ describe('resolveUiDir', () => {
     try {
       expect(resolveUiDir(empty)).toBeNull();
     } finally {
-      fs.rmSync(empty, { recursive: true, force: true });
+      fs.rmSync(empty, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -98,7 +98,7 @@ describe('resolveUiDir', () => {
       expect(resolveUiDir(path.join(fakeShipped, 'index.html'))).not.toBe(fakeShipped);
       expect(resolveUiDir(empty)).toBeNull();
     } finally {
-      fs.rmSync(empty, { recursive: true, force: true });
+      fs.rmSync(empty, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       if (staged) fs.rmSync(path.join(fakeShipped, 'index.html'), { force: true });
     }
   });
@@ -114,7 +114,7 @@ describe('resolveUiDir', () => {
       fs.mkdirSync(path.join(srcRoot, 'node_modules'));
       expect(resolveUiDir(srcRoot)).toBeNull();
     } finally {
-      fs.rmSync(srcRoot, { recursive: true, force: true });
+      fs.rmSync(srcRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 

@@ -23,11 +23,11 @@
  * Nothing else in the suite drives `validate_progress` over a flow whose exit
  * step is not literally named `DONE`, which is why both survived three reviews.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, storage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -78,10 +78,10 @@ async function projectOnCliFlow(name: string, verifyCommand?: string): Promise<s
 describe('a CLI-authored flow gets the same COMMAND GATE as the default one', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
+  afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
   beforeEach(async () => { await initStorage(); });
 
   it('refuses to leave the last real step with no command at all', async () => {

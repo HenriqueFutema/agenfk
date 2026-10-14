@@ -8,7 +8,7 @@
  * check and the missing record — never stored with the bad part dropped, which
  * would run a flow its author did not write.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -29,18 +29,15 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import axios from 'axios';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import { reconcileHubFlow } from '../hub/flowSync';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 const tddSteps = () => [
@@ -193,7 +190,7 @@ describe('hub flow sync', () => {
     storage = new SQLiteStorageProvider();
     await storage.init({ path: dbPath });
   });
-  afterAll(() => { if (dbPath && fs.existsSync(dbPath)) fs.unlinkSync(dbPath); });
+  afterAll(async () => { await removeTestDb(dbPath, () => storage.shutdown()); });
 
   const fetchOnce = (flow: any) => vi.fn(async () => ({
     status: 200, ok: true,

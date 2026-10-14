@@ -12,7 +12,7 @@ import { releaseHint } from '../releaseHint';
 describe('releaseHint', () => {
   let root: string;
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-hint-')); });
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   it('says nothing in a repository that has no /agenfk-release command', () => {
     expect(releaseHint(root, 'merged')).toBeNull();

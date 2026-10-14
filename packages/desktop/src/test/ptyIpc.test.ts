@@ -207,7 +207,7 @@ describe('the channels that exist', () => {
   });
 });
 
-afterEach(() => { fs.rmSync(prefsDir, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(prefsDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 describe('prefs over IPC', () => {
   it('refuses a key outside the closed list', async () => {

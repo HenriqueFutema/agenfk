@@ -9,7 +9,7 @@
  * maxConcurrentSuiteRuns: 0 is automatic (half the CPUs, at least 1),
  * anything else is used as given, up to the CPU count.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,7 +23,8 @@ const TEST_DB = testDbPath('suite-slots-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 // Loaded per test: the module is new, and a test file that fails to import has no tests to track.
 const slotsModule = () => import('../suiteSlots');
 
@@ -35,9 +36,9 @@ afterAll(async () => {
   await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
   await new Promise<void>(r => __server.close(() => r()));
 });
-afterAll(() => {
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('suiteRunLimit', () => {
@@ -149,6 +150,9 @@ describe('the setting', () => {
   });
 });
 
+// Long enough for two runs to overlap when they may: on Windows the git work before
+// each run starts takes longer than the 400ms POSIX needs (#208).
+const RUN_MS = process.platform === 'win32' ? 3000 : 400;
 /** Two projects whose suite command logs its start and end (ms) to one file outside both trees. */
 let seq = 0;
 async function twoProjects(kind: 'capture' | 'final') {
@@ -161,18 +165,18 @@ setTimeout(() => {
   fs.writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="ok" file="t.test.js"/></testsuite></testsuites>');
   fs.appendFileSync(${JSON.stringify(log)}, 'end ' + Date.now() + '\\n');
   process.exit(0);
-}, 400);`);
+}, ${RUN_MS});`);
   const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...extra });
   const cards: string[] = [];
   for (let i = 0; i < 2; i++) {
     const f = await agent().post('/flows').send({ name: `slots-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-slots-repo-')));
     dirs.push(repo);
-    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
     const p = await agent().post('/projects').send({ name: `slots-${++seq}` });
     await storage.updateProject(p.body.id, {
       flowId: f.body.id, projectRoot: repo,
-      verifyCommand: kind === 'final' ? `node ${runner}` : 'true',
+      verifyCommand: kind === 'final' ? `node ${runner}` : 'exit 0',
       ...(kind === 'capture' ? { testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } : {}),
     } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `slots-${++seq}`, projectId: p.body.id });

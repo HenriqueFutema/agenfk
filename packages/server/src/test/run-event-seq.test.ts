@@ -16,11 +16,11 @@
  * Only the pi tailer supplies a position of its own; the hook and the CLI both
  * omit it, which is to say the broken path was the common one.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage, VERIFY_TOKEN, io } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, io } from '../server';
 
 // One listening server for the file. Per-call servers produced transport
 // failures that surfaced as confident wrong assertions elsewhere (BUG 9de0c99c).
@@ -39,15 +39,11 @@ beforeAll(async () => {
   // The path is set through the environment, which is what initStorage reads.
   // Passing it as an argument silently left the tests on the real database.
   process.env.AGENFK_DB_PATH = TEST_DB;
-  for (const suffix of ['', '-wal', '-shm']) {
-    if (fs.existsSync(TEST_DB + suffix)) fs.unlinkSync(TEST_DB + suffix);
-  }
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 });
-afterAll(() => {
-  for (const suffix of ['', '-wal', '-shm']) {
-    if (fs.existsSync(TEST_DB + suffix)) fs.unlinkSync(TEST_DB + suffix);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 beforeEach(async () => {

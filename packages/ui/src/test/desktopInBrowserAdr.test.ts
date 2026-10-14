@@ -13,8 +13,11 @@ import { isDesktop, desktopInfo } from '../desktop';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..', '..', '..');
-const adr = readFileSync(join(repo, 'docs', 'adr', '0001-desktop-shell-in-a-browser.md'), 'utf8');
-const preload = readFileSync(join(repo, 'packages', 'desktop', 'src', 'preload', 'index.ts'), 'utf8');
+// Line endings normalised: a Windows checkout (core.autocrlf) has CRLF, and the
+// parsers below anchor on LF.
+const readText = (file: string): string => readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+const adr = readText(join(repo, 'docs', 'adr', '0001-desktop-shell-in-a-browser.md'));
+const preload = readText(join(repo, 'packages', 'desktop', 'src', 'preload', 'index.ts'));
 
 /** The fenced block the ADR marks as the init script. */
 function initScript(): string {

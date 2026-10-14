@@ -83,7 +83,7 @@ beforeEach(() => {
 afterEach(() => {
   process.umask(oldUmask);
   vi.restoreAllMocks();
-  fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe.runIf(posix)('CLI writers of ~/.agenfk/config.json keep it private', () => {

@@ -11,7 +11,7 @@
  * Only a pass is shared - a failure may be a flake - and a run that saw the
  * tree change under it is not shared either.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -31,19 +31,17 @@ const TEST_DB = testDbPath('command-check-sharing-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -59,7 +57,7 @@ const s = (name: string, order: number, extra: Record<string, unknown> = {}) => 
  */
 async function setup({ exitCode = 0, sleepMs = 0, extra = {} as Record<string, string>, writeIntoTree = false } = {}) {
   const repo = tmp('agenfk-ccs-repo-');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   const runs = path.join(tmp('agenfk-ccs-runs-'), 'runs');
   const code = `const fs=require('fs');fs.appendFileSync(${JSON.stringify(runs)},'run\\n');${writeIntoTree ? "fs.writeFileSync('a','changed by the run\\n');" : ''}setTimeout(()=>process.exit(${exitCode}),${sleepMs});`;
   const check = { id: 'command-check', params: { name: 'lint', argv: [process.execPath, '-e', code], ...extra } };

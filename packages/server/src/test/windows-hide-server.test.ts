@@ -10,7 +10,7 @@
  * The per-call-site invariant for everything else is pinned by
  * windows-hide-guard.test.ts.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -50,7 +50,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { execSync } from 'child_process';
-import { app, initStorage, VERIFY_TOKEN, autoGitCommit, storage } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN, autoGitCommit, storage } from '../server';
 import { readGitStatus } from '../gitStatus';
 
 /** ONE listening server for the file - per-call ephemeral servers flake (BUG 9de0c99c). */
@@ -73,14 +73,9 @@ const tmp = (prefix: string) => {
   return d;
 };
 
-afterAll(() => {
-  // Best-effort: on Windows the storage handle stays open until the worker
-  // exits, so unlinking here throws EBUSY; the file is recreated fresh at the
-  // top of the next run anyway.
-  for (const suffix of ['', '-shm', '-wal']) {
-    try { fs.rmSync(`${TEST_DB}${suffix}`, { force: true }); } catch { /* EBUSY on Windows */ }
-  }
-  for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 async function waitForRun(runId: string, timeoutMs = 15000) {

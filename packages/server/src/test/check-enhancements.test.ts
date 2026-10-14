@@ -12,7 +12,7 @@
  *  - several reports are read as one run, and a missing one is named;
  *  - `.gitignore` is content (a suite can read it).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -32,26 +32,29 @@ const TEST_DB = testDbPath('check-enhancements-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN, reportOwned } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, reportOwned } from '../server';
 import { surfaceOf } from '../stepRecords';
 import { formatCheckResults, describeCapture, EVALUATORS } from '../checkEngine';
+import { posixShell, shellQuote } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 beforeAll(async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-enh-home-'));
   dirs.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
-afterAll(() => { process.env.HOME = savedHome; });
+afterAll(() => { process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile; });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) { const f = `${TEST_DB}${suffix}`; if (fs.existsSync(f)) fs.unlinkSync(f); }
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -71,23 +74,34 @@ process.exit(testResults.some(t=>t.status==='failed')?1:0);
 function makeRepo(gitignore = 'report.*\n'): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-enh-'));
   dirs.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.mkdirSync(path.join(dir, 'src'));
   fs.writeFileSync(path.join(dir, 'runner.cjs'), RUNNER);
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'T add_works add=ok\n');
   fs.writeFileSync(path.join(dir, 'src/impl.json'), JSON.stringify({ add: 'ok' }));
   fs.writeFileSync(path.join(dir, '.gitignore'), gitignore);
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 const write = (dir: string, f: string, text: string) => { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), text); };
 
+/**
+ * `node runner.cjs <args>`, then `after` (JS), exiting with the runner's code.
+ * One node script, because the server runs a report command with sh off
+ * Windows and cmd.exe on it, and `e=$?`, `cp` or `[ -f ]` are sh's (#208).
+ */
+function runnerCommand(args: string[] = [], after = '', before = ''): string {
+  return nodeCommand(`${before}const r = require('child_process').spawnSync(process.execPath, ${JSON.stringify(['runner.cjs', ...args])}, { stdio: 'inherit' });`
+    + `try { ${after} } catch {} process.exit(r.status === null ? 1 : r.status);`);
+}
+
 /** A report command that counts its runs in a file outside the tree. */
-function counted(command: string) {
+function counted(args: string[] = [], after = '') {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-enh-runs-')), 'runs');
   dirs.push(path.dirname(file));
-  return { command: `echo x >> ${file}; ${command}`, runs: () => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0) };
+  const command = runnerCommand(args, after, `require('fs').appendFileSync(${JSON.stringify(file)}, 'x\\n');`);
+  return { command, runs: () => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0) };
 }
 
 let seq = 0;
@@ -146,7 +160,7 @@ describe('reportOwned: only a directory that is plainly a report\'s', () => {
 
 describe('an unignored report directory the command writes several files into', () => {
   it('is no change of the card\'s: the baseline is usable and the tests-only step sees only the tests', async () => {
-    const c = counted('node runner.cjs .reports/r.json; e=$?; echo side > .reports/side.txt; exit $e');
+    const c = counted(['.reports/r.json'], "require('fs').writeFileSync('.reports/side.txt', 'side');");
     const t = await setup({ format: 'vitest-json', command: c.command, reportPath: '.reports/r.json' }, 'node_modules\n');
     await advanceTo(t.id, 'SPECS');
     const entry = (await item(t.id)).stepRecords.filter((r: any) => r.kind === 'capture').pop();
@@ -159,7 +173,7 @@ describe('an unignored report directory the command writes several files into', 
 });
 
 describe('CAPTURE_UNUSABLE: a baseline the run could not tie to its tree holds the card', () => {
-  const FIRST_RUN_DIRTIES = 'node runner.cjs; e=$?; [ -f gen/s ] || { mkdir -p gen; date > gen/s; }; exit $e';
+  const FIRST_RUN_DIRTIES = runnerCommand([], "const fs = require('fs'); if (!fs.existsSync('gen/s')) { fs.mkdirSync('gen', { recursive: true }); fs.writeFileSync('gen/s', String(new Date())); }");
 
   it('holds on the step before the one that reads it, naming the cause; the next clean run lets it go', async () => {
     const t = await setup({ format: 'vitest-json', command: FIRST_RUN_DIRTIES, reportPath: 'report.json' }, 'report.*\n');
@@ -192,7 +206,7 @@ describe('CAPTURE_UNUSABLE: a baseline the run could not tie to its tree holds t
   });
 
   it('reads several reports as one run', async () => {
-    const t = await setup({ format: 'vitest-json', command: 'node runner.cjs report.json; e=$?; cp report.json second.json; exit $e', reportPath: ['report.json', 'second.json'] }, 'report.*\nsecond.*\n');
+    const t = await setup({ format: 'vitest-json', command: runnerCommand(['report.json'], "require('fs').copyFileSync('report.json', 'second.json');"), reportPath: ['report.json', 'second.json'] }, 'report.*\nsecond.*\n');
     await advanceTo(t.id, 'SPECS');
     const entry = (await item(t.id)).stepRecords.filter((r: any) => r.kind === 'capture').pop();
     expect(entry).toMatchObject({ available: true, reportPaths: ['report.json', 'second.json'] });
@@ -201,7 +215,7 @@ describe('CAPTURE_UNUSABLE: a baseline the run could not tie to its tree holds t
 
 describe('a rollback: greens kept for reuse, frozen tests not laundered', () => {
   async function atTidy() {
-    const c = counted('node runner.cjs');
+    const c = counted();
     const t = await setup({ format: 'vitest-json', command: c.command, reportPath: 'report.json' });
     await advanceTo(t.id, 'TIDY', HONEST(t.dir));
     return { ...t, runs: c.runs };
@@ -235,10 +249,10 @@ describe('a rollback: greens kept for reuse, frozen tests not laundered', () => 
 
   it('does not count a committed test file the suite never runs as an addition: a no-change rollback goes through', async () => {
     // e2e tests, another package's tests: in the tree all along, outside what the suite runs.
-    const c = counted('node runner.cjs');
+    const c = counted();
     const t = await setup({ format: 'vitest-json', command: c.command, reportPath: 'report.json' });
     write(t.dir, 'e2e/flow.test.js', 'never run by this suite\n');
-    execSync('git add e2e && git commit -qm e2e', { cwd: t.dir, shell: '/bin/sh' });
+    execSync('git add e2e && git commit -qm e2e', { cwd: t.dir, shell: posixShell() });
     await advanceTo(t.id, 'TIDY', HONEST(t.dir));
     const r = await agent().put(`/items/${t.id}`).send({ status: 'BUILD' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
@@ -321,8 +335,8 @@ describe('what verify says', () => {
 
 describe('tests-added-late: test files added after the tests were frozen, flagged without a run (d26832d6 #21)', () => {
   // Real git, not a fake: the paths git prints are the point.
-  const gitIn = (dir: string) => (args: string[]) => execSync(`git ${args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`, { cwd: dir, encoding: 'utf8', shell: '/bin/sh' });
-  const sh = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh', encoding: 'utf8' }).trim();
+  const gitIn = (dir: string) => (args: string[]) => execSync(`git ${args.map(shellQuote).join(' ')}`, { cwd: dir, encoding: 'utf8', shell: posixShell() });
+  const sh = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
   /** A repository whose tests were frozen at HEAD; `root` is the card's tree inside it. */
   function frozenRepo(sub = '') {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-'));
@@ -400,10 +414,10 @@ describe('tests-added-late: test files added after the tests were frozen, flagge
     const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-remote-'));
     dirs.push(remote);
     sh(remote, 'git init -q --bare -b main');
-    sh(repo, `git remote add origin ${remote} && git push -q origin main`);
+    sh(repo, `git remote add origin ${shellQuote(remote)} && git push -q origin main`);
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-other-'));
     dirs.push(other);
-    sh(other, `git clone -q ${remote} . && git config user.email o@o && git config user.name o`);
+    sh(other, `git clone -q ${shellQuote(remote)} . && git config user.email o@o && git config user.name o`);
     return { pushMainTest: (f: string) => { write(other, f, 'm'); sh(other, `git add -A && git commit -qm main-work && git push -q origin main`); sh(repo, 'git fetch -q origin'); } };
   }
 

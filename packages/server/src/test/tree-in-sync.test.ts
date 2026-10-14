@@ -8,7 +8,7 @@
  * work), no remote is fine, and an unreachable remote only warns: offline
  * work is never stranded.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -28,24 +28,22 @@ const TEST_DB = testDbPath('tree-in-sync-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell, shellQuote } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (p: string) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), p)); dirs.push(d); return d; };
-const sh = (cwd: string, cmd: string) => execSync(cmd, { cwd, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const sh = (cwd: string, cmd: string) => execSync(cmd, { cwd, shell: posixShell(), encoding: 'utf8' }).trim();
 const id = 'git config user.email t@t && git config user.name t';
 
 /** A bare origin, the card's clone of it, and a colleague's clone that can push ahead of it. */
@@ -53,9 +51,9 @@ function remoteSetup() {
   const origin = tmp('agenfk-sync-origin-');
   sh(origin, 'git init -q --bare -b main');
   const work = tmp('agenfk-sync-work-');
-  sh(work, `git clone -q ${origin} . && ${id} && echo a > a && git add . && git commit -qm one && git push -q -u origin main`);
+  sh(work, `git clone -q ${shellQuote(origin)} . && ${id} && echo a > a && git add . && git commit -qm one && git push -q -u origin main`);
   const other = tmp('agenfk-sync-other-');
-  sh(other, `git clone -q ${origin} . && ${id}`);
+  sh(other, `git clone -q ${shellQuote(origin)} . && ${id}`);
   const pushFromOther = (f: string) => sh(other, `git pull -q --ff-only && echo ${f} > ${f} && git add ${f} && git commit -qm ${f} && git push -q`);
   const commitHere = (f: string) => sh(work, `echo ${f} > ${f} && git add ${f} && git commit -qm ${f}`);
   return { origin, work, pushFromOther, commitHere };
@@ -67,7 +65,7 @@ async function card(root: string, todo: Record<string, unknown> = { role: 'backl
   const f = await agent().post('/flows').send({ name: `sync-${++seq}`, steps: [s('TODO', 0, { isAnchor: true, ...todo }), s('WORK', 1), s('DONE', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const p = await agent().post('/projects').send({ name: `sync-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'true' } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: root, verifyCommand: 'exit 0' } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `sync-${++seq}`, projectId: p.body.id });
   return c.body.id as string;
 }

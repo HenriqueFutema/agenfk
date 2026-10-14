@@ -3,11 +3,11 @@
  * Focuses on: simple info routes, db/backup, bulk updates, verify edge cases,
  * jira status/disconnect/projects, releases/latest, and error branches.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { makeProject, makeItem } from './helpers/fixtures';
-import { app, initStorage, oauthStateStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests, storage } from '../server';
+import { app, initStorage, closeStorage, oauthStateStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests, storage } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
@@ -100,16 +100,16 @@ beforeAll(async () => {
     globalSavedToken = fs.readFileSync(GLOBAL_TOKEN_PATH, 'utf8');
   }
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 
 });
 
-afterAll(() => {
+afterAll(async () => {
   // Restore ambient state: process.env is process-global and vitest reuses
   // workers, so leaving the override set would redirect a sibling file.
   setVerifyLogRootForTests(null);
-  if (fs.existsSync(VERIFY_LOG_ROOT)) fs.rmSync(VERIFY_LOG_ROOT, { recursive: true, force: true });
+  if (fs.existsSync(VERIFY_LOG_ROOT)) fs.rmSync(VERIFY_LOG_ROOT, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   // Restore the original jira token state (sandbox-scoped since item 9c297075)
   if (globalSavedToken) {
     fs.writeFileSync(GLOBAL_TOKEN_PATH, globalSavedToken);
@@ -117,14 +117,14 @@ afterAll(() => {
     fs.unlinkSync(GLOBAL_TOKEN_PATH);
   }
   // Clean up test DB
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   vi.mocked(os.homedir).mockRestore();
-  try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
 });
 
 
-afterEach(() => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+afterEach(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 // ── mapJiraTypeToAgEnFK unit tests ───────────────────────────────────────────
@@ -1975,7 +1975,7 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
   };
   const roots: string[] = [];
   const makeRoot = (): string => { const d = realRoot(); roots.push(d); return d; };
-  afterEach(() => { for (const d of roots.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+  afterEach(() => { for (const d of roots.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
   it('persists cwd on the project when validate is called with cwd in body', async () => {
     if (!VERIFY_TOKEN) return;
@@ -2173,7 +2173,7 @@ describe('PUT /items/:id — comment with step field', () => {
 
 describe('POST /items/:id/validate — full-output log persistence', () => {
   const LOGS_DIR = VERIFY_LOG_ROOT;
-  const rmLogs = () => { if (fs.existsSync(LOGS_DIR)) fs.rmSync(LOGS_DIR, { recursive: true, force: true }); };
+  const rmLogs = () => { if (fs.existsSync(LOGS_DIR)) fs.rmSync(LOGS_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); };
 
   beforeEach(async () => { await initStorage(); rmLogs(); });
   afterEach(() => { rmLogs(); });

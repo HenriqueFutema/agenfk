@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { v4 as uuidv4 } from 'uuid';
 
 vi.mock('axios', () => {
@@ -24,27 +24,28 @@ const TEST_DB = testDbPath('flow-contract-warnings-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
+import { removeTempDir } from './helpers/tempDir';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const cleanup: string[] = [];
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 beforeAll(async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fcw-home-'));
   cleanup.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  process.env.HOME = savedHome;
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
+  await removeTestDb(TEST_DB, closeStorage);
+  // The repos' hub-event git lookups can outlive the routes that started them (#208).
+  for (const d of cleanup) removeTempDir(d);
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -60,7 +61,7 @@ const UNCHECKED = () => [
 function repo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fcw-repo-'));
   cleanup.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && git commit -q --allow-empty -m one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && git commit -q --allow-empty -m one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 async function cardOnWork(flowId: string) {

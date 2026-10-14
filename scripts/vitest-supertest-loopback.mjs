@@ -12,9 +12,9 @@ const require = createRequire(import.meta.url);
  * dev machine permanently) or another app's 404/400/401. Dialling [::1] for a
  * `::` bind reaches our own socket; an IPv4-only listener cannot sit there.
  *
- * - `::` on macOS -> [::1]. Only macOS allows the colliding bind, and only
- *   there is ::1 guaranteed; a Linux container may have IPv6 sockets but no
- *   loopback ::1, where dialling it would break every request.
+ * - `::` on macOS and Windows -> [::1]. Both allow the colliding bind (Windows:
+ *   GitHub #208), and both always have ::1; a Linux container may have IPv6
+ *   sockets but no loopback ::1, where dialling it would break every request.
  * - `::1` (bound explicitly) -> [::1] everywhere: it exists, or bind failed.
  * - anything IPv4 -> unchanged.
  *
@@ -25,7 +25,7 @@ const require = createRequire(import.meta.url);
  */
 export function loopbackUrl(url, addr, platform = process.platform) {
   if (!addr || typeof addr !== 'object') return url;
-  const v6 = addr.address === '::1' || (addr.address === '::' && platform === 'darwin');
+  const v6 = addr.address === '::1' || (addr.address === '::' && (platform === 'darwin' || platform === 'win32'));
   return v6 ? url.replace('://127.0.0.1:', '://[::1]:') : url;
 }
 

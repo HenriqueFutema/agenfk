@@ -232,34 +232,38 @@ describe('transcript persistence', () => {
 });
 
 describe('merging a login shell PATH', () => {
+  // A Unix PATH, so the Unix delimiter, named rather than taken from the host:
+  // the default is the running platform's, and Windows' ';' has its own block below.
+  const UNIX = ':';
+
   it('puts the recovered entries first', () => {
     // They are the ones the inherited PATH is missing.
-    expect(mergePath('/opt/homebrew/bin:/usr/bin', '/usr/bin:/bin'))
+    expect(mergePath('/opt/homebrew/bin:/usr/bin', '/usr/bin:/bin', UNIX))
       .toBe('/opt/homebrew/bin:/usr/bin:/bin');
   });
 
   it('keeps inherited entries that the login shell did not have', () => {
     // Merge, not replace. Something the app was launched with may genuinely be
     // needed, and dropping it trades one missing-binary bug for another.
-    expect(mergePath('/opt/homebrew/bin', '/usr/bin:/special/tool'))
+    expect(mergePath('/opt/homebrew/bin', '/usr/bin:/special/tool', UNIX))
       .toBe('/opt/homebrew/bin:/usr/bin:/special/tool');
   });
 
   it('does not duplicate an entry present in both', () => {
-    expect(mergePath('/usr/bin:/bin', '/bin:/usr/bin').split(':').filter(p => p === '/bin'))
+    expect(mergePath('/usr/bin:/bin', '/bin:/usr/bin', UNIX).split(':').filter(p => p === '/bin'))
       .toHaveLength(1);
   });
 
   it('drops empty segments rather than producing "::"', () => {
     // An empty PATH segment means "the current directory" to some shells,
     // which is a real hazard in a directory an agent is writing to.
-    expect(mergePath('/usr/bin::', ':/bin:').split(':').filter(p => p === '')).toHaveLength(0);
+    expect(mergePath('/usr/bin::', ':/bin:', UNIX).split(':').filter(p => p === '')).toHaveLength(0);
   });
 
   it('survives either side being empty or missing', () => {
-    expect(mergePath('', '/usr/bin')).toBe('/usr/bin');
-    expect(mergePath('/usr/bin', '')).toBe('/usr/bin');
-    expect(mergePath(null, null)).toBe('');
+    expect(mergePath('', '/usr/bin', UNIX)).toBe('/usr/bin');
+    expect(mergePath('/usr/bin', '', UNIX)).toBe('/usr/bin');
+    expect(mergePath(null, null, UNIX)).toBe('');
   });
 });
 

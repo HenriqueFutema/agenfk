@@ -3,7 +3,7 @@
  * the restart after `agenfk upgrade` is what runs it. Every card keeps what its
  * next check reads, a closed one too (it can be reopened).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
@@ -48,7 +48,8 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   vi.restoreAllMocks();
-  for (const suffix of ['', '-shm', '-wal']) if (fs.existsSync(`${TEST_DB}${suffix}`)) fs.unlinkSync(`${TEST_DB}${suffix}`);
+  const { closeStorage } = await import('../server');
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 describe('server start after the upgrade', () => {

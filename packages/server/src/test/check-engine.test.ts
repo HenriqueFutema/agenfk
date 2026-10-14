@@ -12,7 +12,7 @@
  * Every flow here is written with step names the server has never seen: the
  * engine must work from roles and records alone.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -32,20 +32,19 @@ const TEST_DB = testDbPath('check-engine-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const repos: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -53,17 +52,25 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(branch = 'main'): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-'));
   repos.push(dir);
-  execSync(`git init -q -b ${branch} && git config user.email t@t && git config user.name t`, { cwd: dir, shell: '/bin/sh' });
+  execSync(`git init -q -b ${branch} && git config user.email t@t && git config user.name t`, { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 
-/** A JUnit report with `n` passing tests in tests/a.test.js. */
-const junitCommand = (n: number) =>
-  `printf '<testsuite>${Array.from({ length: n }, (_, i) => `<testcase file="tests/a.test.js" name="t${i}"/>`).join('')}</testsuite>' > report.xml`;
+/**
+ * A JUnit report with `n` passing tests in tests/a.test.js. Node, not printf:
+ * the server runs it with sh off Windows and cmd.exe on it (#208). One command
+ * per `n`, so asking twice names the same command, as the old string did.
+ */
+const junitCommands = new Map<number, string>();
+const junitCommand = (n: number) => {
+  const xml = `<testsuite>${Array.from({ length: n }, (_, i) => `<testcase file="tests/a.test.js" name="t${i}"/>`).join('')}</testsuite>`;
+  if (!junitCommands.has(n)) junitCommands.set(n, nodeCommand(`require('fs').writeFileSync('report.xml', ${JSON.stringify(xml)});`));
+  return junitCommands.get(n)!;
+};
 
 let seq = 0;
 async function flow(steps: any[]): Promise<string> {
@@ -209,7 +216,7 @@ describe('CGLAB-380: the check engine in verify', () => {
 
     it('suite-green reads the per-test report: a failing test blocks even when the command exits 0', async () => {
       const dir = makeRepo();
-      const failing = `printf '<testsuite><testcase file="tests/a.test.js" name="ok"/><testcase file="tests/a.test.js" name="broken"><failure message="nope"/></testcase></testsuite>' > report.xml`;
+      const failing = nodeCommand(`require('fs').writeFileSync('report.xml', '<testsuite><testcase file="tests/a.test.js" name="ok"/><testcase file="tests/a.test.js" name="broken"><failure message="nope"/></testcase></testsuite>');`);
       const pid = await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: failing, reportPath: 'report.xml' } });
       const id = await card(pid, 'MAKE');
       const res = await validate(id);
@@ -221,7 +228,7 @@ describe('CGLAB-380: the check engine in verify', () => {
     it('a step whose checks need no test results runs no suite', async () => {
       const dir = makeRepo();
       const marker = path.join(dir, 'ran');
-      const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning' }), s('END', 2, { isAnchor: true })]), { projectRoot: dir, verifyCommand: `touch ${marker}` });
+      const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning' }), s('END', 2, { isAnchor: true })]), { projectRoot: dir, verifyCommand: nodeCommand(`require('fs').writeFileSync(${JSON.stringify(marker)}, '');`) });
       const id = await card(pid, 'START');
       expect((await validate(id)).status).toBe(200);
       expect(fs.existsSync(marker)).toBe(false);
@@ -278,11 +285,15 @@ describe('CGLAB-380: the check engine in verify', () => {
 
     it('async verify answers 202 at once and runs the checks in the background run', async () => {
       const dir = makeRepo();
-      const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: 'sleep 1; exit 4' }), 'MAKE');
+      // The answer must come before the command can have finished. Windows pays
+      // several times POSIX's cost for the git calls made before answering (#208),
+      // so there the command runs longer - the bound stays just under it.
+      const runMs = process.platform === 'win32' ? 5000 : 1000;
+      const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: nodeCommand(`setTimeout(() => process.exit(4), ${runMs});`) }), 'MAKE');
       const started = Date.now();
       const res = await validate(id, { async: true });
       expect(res.status).toBe(202);
-      expect(Date.now() - started).toBeLessThan(900);
+      expect(Date.now() - started).toBeLessThan(runMs - 100);
       let run: any;
       for (let i = 0; i < 100; i++) {
         run = (await agent().get(`/items/validate-runs/${res.body.runId}`).set(internal())).body;
@@ -314,7 +325,7 @@ describe('CGLAB-380: the check engine in verify', () => {
   it('after a slow gate, the final command still streams its output into the run', async () => {
     const dir = makeRepo();
     const steps = [s('START', 0, { isAnchor: true }), s('MAKE', 1, { role: 'coding' }), s('END', 2, { isAnchor: true, role: 'closing' })];
-    const pid = await project(await flow(steps), { projectRoot: dir, verifyCommand: 'echo hello-stream; sleep 2; exit 0', testReport: { format: 'junit-xml', command: junitCommand(1), reportPath: 'report.xml' } });
+    const pid = await project(await flow(steps), { projectRoot: dir, verifyCommand: nodeCommand("console.log('hello-stream'); setTimeout(() => process.exit(0), 2000);"), testReport: { format: 'junit-xml', command: junitCommand(1), reportPath: 'report.xml' } });
     const id = await card(pid, 'MAKE');
     const res = await validate(id, { async: true });
     expect(res.status).toBe(202);

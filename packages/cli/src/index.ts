@@ -29,6 +29,7 @@ import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
 import { ensureLocalIgnored, stripLegacyProjectId, readLegacyProjectId, projectFileTracked, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
+import { upgradeExtractCommand, tarVersionText } from './tarFlags.js';
 
 /**
  * Consecutive delivery failures before the startup banner warns. A halted
@@ -883,8 +884,9 @@ program
         downloadReleaseAsset(REPO, resolvedTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
         // --exclude: published releases up to v1.1.16-beta.4 were ~half macOS
         // AppleDouble (`._*`) entries; never let them into the install dir
-        // (CGLAB-94 / issue #163).
-        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+        // (CGLAB-94 / issue #163). The flags and paths follow the tar on PATH
+        // (GitHub #208, see tarFlags.ts).
+        execSync(upgradeExtractCommand(process.platform, tarVersionText(), path.join(tempDir, 'agenfk-dist.tar.gz'), rootDir), { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         // `tar -xzf` deletes nothing, so the install dir keeps files this
         // version dropped — and its own commands/ cannot be asked what is
         // current, because it IS the stale thing. Hand install.mjs the archive
@@ -1175,8 +1177,13 @@ program
         try {
           execSync(`cygstart "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
         } catch {
-          execSync(`start "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
+          // `start`'s first quoted argument is the window TITLE: without the empty one it opened nothing.
+          execSync(`start "" "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
         }
+      } else if (process.platform === 'win32') {
+        // PowerShell, cmd, the desktop app: native Windows had no branch, so the
+        // browser never opened outside Git Bash (#208 - CI under a native PATH).
+        execSync(`start "" "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       } else if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
         execSync(`cmd.exe /c start "${uiUrl}"`, { stdio: 'ignore', windowsHide: true });
       } else if (process.platform === 'linux') {
@@ -3577,6 +3584,21 @@ function removeAgenfkTomlFromDir(dir: string): void {
   }
 }
 
+/**
+ * Add `name: <skillName>` to a command's frontmatter when it has none, in the
+ * file's own line ending: a Windows checkout (core.autocrlf) opens with
+ * `---\r\n`, and matching only `---\n` skipped the injection there (#208).
+ * Mirrored from scripts/install-helpers.mjs `withSkillName` (this package's
+ * build cannot import from scripts/); skill-name-frontmatter.test.ts holds the
+ * two copies to the same answers.
+ */
+export function withSkillName(content: string, skillName: string): string {
+  const open = /^---(\r?\n)/.exec(content);
+  if (!open || /^name:\s/m.test(content)) return content;
+  const eol = open[1];
+  return `---${eol}name: ${skillName}${eol}${content.slice(open[0].length)}`;
+}
+
 /** Install commands from system commands dir to a platform's destination */
 function syncCommandsToDir(
   srcDir: string,
@@ -3598,12 +3620,8 @@ function syncCommandsToDir(
     const relDest = transform ? transform(file) : file;
     const dest = path.join(destDir, relDest);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    // Read content and inject 'name' frontmatter field if missing (required by OpenCode, Codex, Cursor, Gemini)
-    let content = fs.readFileSync(src, 'utf8');
-    if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
-      const skillName = file.replace(/\.md$/, '');
-      content = content.replace('---\n', `---\nname: ${skillName}\n`);
-    }
+    // Inject the 'name' frontmatter field if missing (required by OpenCode, Codex, Cursor, Gemini)
+    const content = withSkillName(fs.readFileSync(src, 'utf8'), file.replace(/\.md$/, ''));
     fs.writeFileSync(dest, content);
     installed.push(dest);
   }

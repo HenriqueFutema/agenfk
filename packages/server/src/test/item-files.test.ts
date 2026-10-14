@@ -14,13 +14,14 @@
  * symlink, which git worktrees and node_modules are full of, and by an
  * absolute path, which contains no `..` at all.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN } from '../server';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -48,13 +49,13 @@ let worktree: string;
 describe('GET /items/:id/files', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-    fs.rmSync(repo, { recursive: true, force: true });
-    fs.rmSync(outside, { recursive: true, force: true });
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
+    fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   beforeEach(async () => {
@@ -117,7 +118,7 @@ describe('GET /items/:id/files', () => {
     // and the resolved path is not. git worktrees and node_modules are full
     // of symlinks, so this is ordinary rather than contrived.
     const link = path.join(worktree, 'escape');
-    fs.symlinkSync(outside, link);
+    linkDir(outside, link); // a junction on Windows, where a symlink needs admin (#208)
     const res = await agent().get(`/items/${itemId}/files`).query({ path: link });
     expect([403, 409]).toContain(res.status);
     expect(JSON.stringify(res.body)).not.toContain('secret.txt');

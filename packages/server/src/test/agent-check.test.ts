@@ -2,7 +2,7 @@
  * efcacdeb (C3) - an agent-run check: the step's instruction, carried out by
  * the coding agent and reported with verify; labelled agent-reported.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -25,20 +25,18 @@ const STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-agentcheck-pk-')
 const STORE = path.join(STORE_DIR, 'passkeys.json');
 process.env.AGENFK_PASSKEY_STORE = STORE;
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { SoftAuthenticator } from './softAuthenticator';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const repos: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 beforeEach(() => { fs.rmSync(STORE, { force: true }); });
 
@@ -58,7 +56,7 @@ async function onWork(checks: unknown[], { root = true, origin }: { root?: boole
   if (origin) await storage.updateFlow(f.body.id, { origin } as never);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-cmd-repo-'));
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > marker && git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > marker && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `cmd-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, ...(root ? { projectRoot: dir } : {}) } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `cmd-${++seq}`, projectId: p.body.id });

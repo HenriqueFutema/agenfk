@@ -59,7 +59,7 @@ export function makeHome(label = 'agenfk-test'): string {
 }
 
 export function cleanupHome(home: string): void {
-  rmSync(home, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
 /** Run scripts/install.mjs into a throwaway HOME (created if not supplied). */

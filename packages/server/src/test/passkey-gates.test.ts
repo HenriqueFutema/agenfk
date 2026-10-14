@@ -13,7 +13,7 @@
  * The first passkey is trust-on-first-use; adding or removing one needs an
  * assertion from a passkey already enrolled.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -36,20 +36,18 @@ const STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-passkeys-'));
 const STORE = path.join(STORE_DIR, 'passkeys.json');
 process.env.AGENFK_PASSKEY_STORE = STORE;
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { SoftAuthenticator } from './softAuthenticator';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const repos: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const r of [...repos, STORE_DIR]) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 beforeEach(() => { fs.rmSync(STORE, { force: true }); });
 
@@ -73,7 +71,7 @@ async function card(status: string, signed = true) {
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-pk-repo-'));
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const p = await agent().post('/projects').send({ name: `pk-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `pk-${++seq}`, projectId: p.body.id });
@@ -113,7 +111,8 @@ describe('CGLAB-383: enrolling a passkey', () => {
 
   it('keeps the store readable by the user only, and never serves the public keys over status', async () => {
     await enroll();
-    expect(fs.statSync(STORE).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX mode bits (#208): the owner-only check is a POSIX one.
+    if (process.platform !== 'win32') expect(fs.statSync(STORE).mode & 0o777).toBe(0o600);
     const st = (await agent().get('/webauthn/status')).body;
     expect(JSON.stringify(st)).not.toMatch(/publicKey/);
   });

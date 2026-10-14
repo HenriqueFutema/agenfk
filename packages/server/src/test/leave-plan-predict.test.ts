@@ -9,7 +9,7 @@
  * prediction is checked against the verify that follows it, with a runner that
  * logs which files each run was given, and the dry run itself changes nothing.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -29,24 +29,22 @@ const TEST_DB = testDbPath('leave-plan-predict-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 const tmp = (prefix: string) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; };
-const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh', encoding: 'utf8' }).trim();
+const git = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: posixShell(), encoding: 'utf8' }).trim();
 
 let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
@@ -85,7 +83,7 @@ async function setup() {
   const runner = path.join(tools, 'vitest.js');
   fs.writeFileSync(runner, RUNNER(log));
   const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner} run`, reportPath: 'report.xml' } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner} run`, reportPath: 'report.xml' } } as never);
   const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id });
   await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
   const runs = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
@@ -272,7 +270,7 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
   it('a card with no tree and a test report: answers (never a 500) when the capture is only a non-blocking entry', async () => {
     const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TESTS', 2, { checks: [{ id: 'existing-tests-still-green', severity: 'warn' }] }), s('END', 3, { isAnchor: true })] });
     const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
-    await storage.updateProject(p.body.id, { flowId: f.body.id, verifyCommand: 'true', testReport: { format: 'junit-xml', command: 'true', reportPath: 'report.xml' } } as never);
+    await storage.updateProject(p.body.id, { flowId: f.body.id, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: 'exit 0', reportPath: 'report.xml' } } as never);
     const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
     const res = await agent().get(`/items/${c.body.id}/leave-plan?predict=1`);

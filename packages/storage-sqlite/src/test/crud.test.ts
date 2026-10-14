@@ -78,7 +78,7 @@ describe('SQLiteStorageProvider — init / shutdown / database guard', () => {
     } finally {
       await storage.shutdown();
       cleanup(dbPath);
-      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
     }
   });
 
@@ -95,7 +95,7 @@ describe('SQLiteStorageProvider — init / shutdown / database guard', () => {
     } finally {
       await storage.shutdown();
       process.chdir(cwd);
-      try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
     }
   });
 

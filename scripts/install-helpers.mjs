@@ -281,6 +281,17 @@ export function isInstallableMarkdown(name) {
   return typeof name === 'string' && name.endsWith('.md') && !isMacMetadata(name);
 }
 
+// A command file installed as a skill needs a `name:` in its frontmatter
+// (Claude Code, Codex, OpenCode, Cursor, Gemini). Injected right after the
+// opening `---` when missing, in the file's own line ending: a Windows checkout
+// (core.autocrlf) has CRLF, and matching only `---\n` skipped the injection there.
+export function withSkillName(content, skillName) {
+  const open = /^---(\r?\n)/.exec(content);
+  if (!open || /^name:\s/m.test(content)) return content;
+  const eol = open[1];
+  return `---${eol}name: ${skillName}${eol}${content.slice(open[0].length)}`;
+}
+
 // Commands that cut releases of the AgEnFK framework itself. They live in the
 // repo's own .claude/commands/ and must NEVER reach a user's global config.
 const REPO_PRIVATE_NAMES = ['agenfk-release', 'agenfk-release-beta', 'agenfk-release-hub'];

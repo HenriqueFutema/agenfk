@@ -54,7 +54,7 @@ describe('a note only authorizes its own project', () => {
 describe('the session project comes from the cwd', () => {
   const made: string[] = [];
   afterEach(() => {
-    for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   const tempDir = (): string => {
@@ -121,7 +121,7 @@ describe('the session project comes from the cwd', () => {
  */
 describe('the model a Claude Code run records', () => {
   const made: string[] = [];
-  afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const transcript = (lines: unknown[]): string => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-model-'));
     made.push(dir);

@@ -73,7 +73,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const s of spies) s.mockRestore();
   process.chdir(cwd);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   mockedAxios.get.mockReset();
 });
 

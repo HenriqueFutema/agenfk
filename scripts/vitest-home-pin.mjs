@@ -30,6 +30,18 @@ import * as path from 'path';
 
 const REAL_HOME = process.env.HOME || os.homedir();
 
+/**
+ * The temp dir spelled in full (#208). Windows hands out TEMP in 8.3 form
+ * (`C:\Users\FABIOT~1\...`, `RUNNER~1` on CI) while git lists checkouts and
+ * realpath.native resolves them by their long name, so a spec comparing a
+ * temp path it built with one git or the server handed back sees two
+ * spellings of one directory. Identity on POSIX.
+ */
+function longTmpdir() {
+  try { return fs.realpathSync.native(os.tmpdir()); } catch { return os.tmpdir(); }
+}
+const TMP = longTmpdir();
+
 let cached = null;
 
 /**
@@ -47,7 +59,7 @@ export function testHomePrefix(env = process.env) {
 
 export function testHomeEnv() {
   if (!cached) {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), testHomePrefix()));
+    const home = fs.mkdtempSync(path.join(TMP, testHomePrefix()));
     // Pre-seed the framework dir so code that reads verify-token / server-port
     // sees "absent", not a hostile foreign home.
     fs.mkdirSync(path.join(home, '.agenfk'), { recursive: true });
@@ -87,6 +99,8 @@ export function testHomeEnv() {
     cached = {
       HOME: home,
       USERPROFILE: home, // Windows parity; harmless on POSIX
+      // os.tmpdir() reads these on Windows; on POSIX TMPDIR stays as it was.
+      ...(process.platform === 'win32' ? { TEMP: TMP, TMP } : {}),
       AGENFK_REAL_HOME: REAL_HOME,
       AGENFK_TEST_DB_DIR: dbDir,
     };

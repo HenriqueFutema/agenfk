@@ -14,6 +14,8 @@ import * as path from 'path';
 
 const ROOT = path.resolve(__dirname, '../../../..');
 
+// vitest names files with forward slashes on every OS (C:/Users/... on Windows),
+// so the filters below accept either separator rather than path.sep.
 function listed(args: string[] = []): Array<{ file: string; projectName: string }> {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'node_modules/vitest/vitest.mjs'), 'list', '--filesOnly', '--json', ...args], { cwd: ROOT, encoding: 'utf8', timeout: 60_000 });
   expect(r.status, r.stderr).toBe(0);
@@ -22,13 +24,13 @@ function listed(args: string[] = []): Array<{ file: string; projectName: string 
 
 describe('the root vitest run', () => {
   it("runs the board's specs (packages/ui/src/test)", () => {
-    const ui = listed().filter(f => f.file.includes(`${path.sep}packages${path.sep}ui${path.sep}src${path.sep}test${path.sep}`));
+    const ui = listed().filter(f => /[\\/]packages[\\/]ui[\\/]src[\\/]test[\\/]/.test(f.file));
     expect(ui.length).toBeGreaterThan(0);
     expect(ui.map(f => f.file)).toEqual(expect.arrayContaining([expect.stringMatching(/appSettingsDto\.test\.ts$/)]));
   });
 
   it("runs them under the board's own settings (its project), not the node environment", () => {
-    const ui = listed().filter(f => f.file.includes(`${path.sep}packages${path.sep}ui${path.sep}`));
+    const ui = listed().filter(f => /[\\/]packages[\\/]ui[\\/]/.test(f.file));
     expect(new Set(ui.map(f => f.projectName))).toEqual(new Set(['ui']));
   });
 

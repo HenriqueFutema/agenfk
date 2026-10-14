@@ -74,27 +74,42 @@ function suggestOne(cmd: string, scripts: Record<string, string>): SuggestedRepo
 }
 
 /**
+ * #208 — one argument for the shell a `shell: true` spawn runs: sh off
+ * Windows, cmd.exe on it. Single quotes mean nothing to cmd.exe, and it has no
+ * escape inside double quotes: a `"` cannot be carried and a `%` expands even
+ * there, so those are null - the caller runs the whole suite instead.
+ */
+export function quoteArg(value: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'win32') return `'${value.replace(/'/g, `'\\''`)}'`;
+  return /["%\r\n]/.test(value) ? null : `"${value}"`;
+}
+
+/**
  * acceaa54 — `command` made to run only `files`, or null when that is not
  * certain. Only the runners whose file arguments are known (vitest, pytest,
  * `node --test`), as the command's last `&&` part or as an npm script that is
  * the runner alone. A runner may treat a name as a filter and run a little
  * more; the caller keeps only the results for the files it asked for.
  */
-export function withTestFiles(command: string, scripts: Record<string, string>, files: readonly string[]): string | null {
+export function withTestFiles(command: string, scripts: Record<string, string>, files: readonly string[], platform: NodeJS.Platform = process.platform): string | null {
   if (!files.length) return null;
-  // The files are single-quoted for a POSIX shell; cmd.exe would read the quotes as part of the name.
-  if (process.platform === 'win32') return null;
-  if (/[|;`&\n\r'"\\]|\$\(/.test(command.replace(/&&/g, ''))) return null;
+  // What could send the files to another command or change them on the way: sh's
+  // operators and quoting off Windows; on it, cmd.exe's operators, caret and `%`
+  // (a backslash there is only a path separator).
+  const unsafe = platform === 'win32' ? /[|&<>^%\n\r"]/ : /[|;`&\n\r'"\\]|\$\(/;
+  if (unsafe.test(command.replace(/&&/g, ''))) return null;
   const parts = command.split('&&').map(p => p.trim());
   if (parts.some(p => /^cd\s/.test(p))) return null;
   const last = parts[parts.length - 1];
-  const quoted = files.map(f => `'${f.replace(/'/g, `'\\''`)}'`).join(' ');
+  const words = files.map(f => quoteArg(f, platform));
+  if (words.some(w => w === null)) return null;
+  const quoted = words.join(' ');
   if (/^(npm|pnpm|yarn|bun)\b/.test(last)) {
     if (/(^|\s)(-w|--workspace|--prefix|-C)(\s|=|$)/.test(last)) return null;
     const pm = /^npm\s+(?:run\s+)?([\w:.-]+)(\s|$)/.exec(last) ?? /^npm\s+test(\s|$)/.exec(last);
     if (!pm) return null;
     const script = scripts[pm[1] ?? 'test'];
-    if (typeof script !== 'string' || /&&|\|\||[|;`&\n'"\\]|\$\(/.test(script) || !runnerWithoutTargets(script)) return null;
+    if (typeof script !== 'string' || /&&|\|\|/.test(script) || unsafe.test(script) || !runnerWithoutTargets(script)) return null;
     // Flags the command adds after `--` must not name targets either.
     const passed = /(^|\s)--(\s|$)/.exec(last);
     if (passed && last.slice(passed.index + passed[0].length).split(/\s+/).some(t => t && !t.startsWith('-'))) return null;
@@ -114,9 +129,9 @@ export function withTestFiles(command: string, scripts: Record<string, string>, 
  */
 function runnerWithoutTargets(cmd: string): boolean {
   const tokens = cmd.trim().split(/\s+/);
-  const at = tokens.findIndex(t => /(^|\/)vitest(\.[cm]?js)?$/.test(t) || /(^|\/)pytest$/.test(t) || t === '--test');
+  const at = tokens.findIndex(t => /(^|[\\/])vitest(\.[cm]?js)?$/.test(t) || /(^|[\\/])pytest(\.exe)?$/.test(t) || t === '--test');
   if (at < 0) return false;
-  if (tokens[at] === '--test' && !/(^|\/)node$/.test(tokens[at - 1] ?? '')) return false;
+  if (tokens[at] === '--test' && !/(^|[\\/])node(\.exe)?$/.test(tokens[at - 1] ?? '')) return false;
   // A run already narrowed by git state or a shard is not the whole suite's run of those files.
   if (tokens.some(t => /^--(changed|shard|related|onlyChanged|lf|last-failed)(=|$)/.test(t))) return false;
   return tokens.slice(at + 1).every((t, i) => t.startsWith('-') || (i === 0 && t === 'run' && /vitest/.test(tokens[at])));

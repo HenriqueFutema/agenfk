@@ -12,7 +12,7 @@
  * failed test and no test file that failed to load. A red one is never
  * reused, never shared with a card waiting on it, never called green.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -26,17 +26,18 @@ const TEST_DB = testDbPath('capture-green-means-green-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { capturedGreen, describeCapture } from '../checkEngine';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const dirs: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -56,7 +57,7 @@ async function setup(opts: { commit?: boolean } = {}) {
   const f = await agent().post('/flows').send({ name: `cg-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const repo = tmp('agenfk-cg-repo-');
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
   if (!opts.commit) fs.writeFileSync(path.join(repo, 'notes.txt'), 'mid-edit\n');
   const outside = tmp('agenfk-cg-ctl-');
   const mode = path.join(outside, 'mode');
@@ -68,7 +69,7 @@ fs.appendFileSync(${JSON.stringify(runs)}, 'run\\n');
 fs.writeFileSync('report.xml', fs.readFileSync(${JSON.stringify(mode)}, 'utf8').trim() === 'pass' ? ${JSON.stringify(PASS)} : ${JSON.stringify(FAIL)});
 process.exit(0);`);
   const p = await agent().post('/projects').send({ name: `cg-${++seq}` });
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
   const card = async () => {
     const c = await agent().post('/items').send({ type: 'TASK', title: `cg-${++seq}`, projectId: p.body.id });
     await storage.updateItem(c.body.id, { status: 'WORK' } as any);

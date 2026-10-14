@@ -9,7 +9,7 @@
  * logged the same way. Unset, capture falls back to the exit code alone — per
  * test results are then UNAVAILABLE, never "passed".
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -30,20 +30,20 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
+import { linkDir } from '../../../cli/src/test/helpers/links';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const repos: string[] = [];
 beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -52,11 +52,11 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(): { dir: string; sha: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-steprec-'));
   repos.push(dir);
-  execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return { dir, sha: execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim() };
 }
 
@@ -232,7 +232,7 @@ describe('CGLAB-379: step records', () => {
 
     it('records the report as unavailable - never passed - when it cannot be read', async () => {
       const { dir } = makeRepo();
-      const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'true', reportPath: 'report.json' } });
+      const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'exit 0', reportPath: 'report.json' } });
       const id = await card(p, 'IN_PROGRESS');
       const res = await agent().post(`/items/${id}/step-records/capture`).set(internal());
       expect(res.status).toBe(200);
@@ -255,7 +255,7 @@ describe('CGLAB-379: step records', () => {
       const { dir } = makeRepo();
       fs.mkdirSync(path.join(dir, 'tests/helpers'));
       fs.writeFileSync(path.join(dir, 'tests/helpers/fixture.js'), 'f');
-      execSync('git add . && git commit -qm helpers', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add . && git commit -qm helpers', { cwd: dir, shell: posixShell() });
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: vitestReportCommand('passed'), reportPath: 'report.json', surface: ['tests/helpers'] } });
       const res = await agent().post(`/items/${await card(p, 'IN_PROGRESS')}/step-records/capture`).set(internal());
       expect(Object.keys(res.body.surface.files)).toContain('tests/helpers/fixture.js');
@@ -295,7 +295,7 @@ describe('CGLAB-379: step records', () => {
     it('still detects an edit during the run under a large uncommitted diff', async () => {
       const { dir } = makeRepo();
       fs.writeFileSync(path.join(dir, 'big.txt'), 'x');
-      execSync('git add big.txt && git commit -qm big', { cwd: dir, shell: '/bin/sh' });
+      execSync('git add big.txt && git commit -qm big', { cwd: dir, shell: posixShell() });
       fs.writeFileSync(path.join(dir, 'big.txt'), 'y'.repeat(2 * 1024 * 1024));
       const cmd = `node -e "require('fs').writeFileSync('tests/a.test.js','weakened')" && ${vitestReportCommand('passed')}`;
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: cmd, reportPath: 'report.json' } });
@@ -337,7 +337,8 @@ describe('CGLAB-379: step records', () => {
 
     it('discards the capture when the card moved while the command ran', async () => {
       const { dir } = makeRepo();
-      const cmd = `sleep 1 && ${vitestReportCommand('passed')}`;
+      // The report is written a second in, by node: `sleep` is not a cmd.exe command (#208).
+      const cmd = nodeCommand(`setTimeout(() => require('child_process').execSync(${JSON.stringify(vitestReportCommand('passed'))}, { stdio: 'inherit', windowsHide: true }), 1000);`);
       const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: cmd, reportPath: 'report.json' } });
       const id = await card(p, 'IN_PROGRESS');
       const pending = agent().post(`/items/${id}/step-records/capture`).set(internal()).then(r => r);
@@ -353,8 +354,9 @@ describe('CGLAB-379: step records', () => {
       const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-outside-'));
       repos.push(outside);
       fs.writeFileSync(path.join(outside, 'report.json'), 'sentinel');
-      fs.symlinkSync(outside, path.join(dir, 'out'));
-      const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'true', reportPath: 'out/report.json' } });
+      // A junction on Windows (a symlink needs admin there): lstat calls it a link all the same.
+      linkDir(outside, path.join(dir, 'out'));
+      const p = await project({ projectRoot: dir, testReport: { format: 'vitest-json', command: 'exit 0', reportPath: 'out/report.json' } });
       const res = await agent().post(`/items/${await card(p, 'IN_PROGRESS')}/step-records/capture`).set(internal());
       expect(res.body.available).toBe(false);
       expect(fs.existsSync(path.join(outside, 'report.json')), 'the capture deleted a file outside the tree').toBe(true);
@@ -363,7 +365,14 @@ describe('CGLAB-379: step records', () => {
 
     it('kills the whole process group on a timeout, so no leftover worker writes later', async () => {
       const { dir } = makeRepo();
-      const p = await project({ projectRoot: dir, verifyCommand: `(sleep 2; touch late.txt) & wait` });
+      // A grandchild that writes late, under a parent that waits - in node, so it is the same
+      // shape under cmd.exe (`(sleep 2; touch late.txt) & wait` is not cmd syntax: on Windows
+      // late.txt was never written whatever the kill did, and the spec could not fail).
+      const verifyCommand = nodeCommand(
+        `require('child_process').spawn(process.execPath, ['-e', "setTimeout(() => require('fs').writeFileSync('late.txt', ''), 2000)"], { stdio: 'ignore' });\n`
+        + 'setInterval(() => {}, 1000);\n',
+      );
+      const p = await project({ projectRoot: dir, verifyCommand });
       const id = await card(p, 'IN_PROGRESS');
       const before = process.env.AGENFK_VERIFY_MAX_MS;
       process.env.AGENFK_VERIFY_MAX_MS = '300';
@@ -385,7 +394,7 @@ describe('CGLAB-379: step records', () => {
     });
 
     it('refuses when the card has no tree to run in', async () => {
-      const id = await card(await project({ verifyCommand: 'true' }), 'IN_PROGRESS');
+      const id = await card(await project({ verifyCommand: 'exit 0' }), 'IN_PROGRESS');
       const res = await agent().post(`/items/${id}/step-records/capture`).set(internal());
       expect(res.status).toBe(400);
     });

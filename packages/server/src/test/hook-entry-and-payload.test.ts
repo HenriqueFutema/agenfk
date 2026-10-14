@@ -66,7 +66,7 @@ describe('hook entry detection runs main() however the script path is spelled', 
   let linkDir: string;
 
   beforeAll(() => { linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hook-entry-')); });
-  afterAll(() => { try { fs.rmSync(linkDir, { recursive: true, force: true }); } catch { /* ignore */ } });
+  afterAll(() => { try { fs.rmSync(linkDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ } });
 
   it('runs when invoked by absolute path', () => {
     const res = run(PR_HOOK, openPayload);

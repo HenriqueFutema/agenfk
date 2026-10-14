@@ -98,7 +98,7 @@ jobs:
       - name: Upload installers
         # BEFORE the attach: a failed attach still leaves the files on the run
         # to put on the release by hand.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agenfk-desktop-${{ matrix.os }}
           path: |

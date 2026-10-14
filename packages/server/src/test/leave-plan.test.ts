@@ -10,7 +10,7 @@
  * on, and every case here is checked against the verify that follows it: the
  * plan and the run must not disagree.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -30,19 +30,18 @@ const TEST_DB = testDbPath('leave-plan-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN, ownCaptureGreenOf } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, ownCaptureGreenOf } from '../server';
+import { posixShell } from './helpers/posixShell';
+import { nodeCommand } from './helpers/nodeCommand';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const repos: string[] = [];
 beforeAll(async () => { await initStorage(); __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const r of repos) fs.rmSync(r, { recursive: true, force: true });
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const r of repos) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -50,16 +49,18 @@ const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
 function makeRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-leaveplan-'));
   repos.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
 
 /** A command writing a JUnit report of two passing tests, and the project settings that read it. */
-const JUNIT = `printf '<testsuite><testcase file="tests/a.test.js" name="t0"/><testcase file="tests/a.test.js" name="t1"/></testsuite>' > report.xml`;
+// Node, not printf: the server runs it with sh off Windows and cmd.exe on it (#208).
+const JUNIT_JS = `require('fs').writeFileSync('report.xml', '<testsuite><testcase file="tests/a.test.js" name="t0"/><testcase file="tests/a.test.js" name="t1"/></testsuite>');`;
+const JUNIT = nodeCommand(JUNIT_JS);
 const withReport = (dir: string) => ({ projectRoot: dir, verifyCommand: JUNIT, testReport: { format: 'junit-xml', reportPath: 'report.xml' } });
 
 let seq = 0;
@@ -182,15 +183,17 @@ describe('GET /items/:id/leave-plan', () => {
   });
 
   /** A log outside the tree (a write inside it would move the tree under the run), and a command that counts its runs in it. */
-  const counted = (tag: string, then = '') => {
+  const counted = (tag: string, then: { junit?: boolean; exit?: number } = {}) => {
     const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-leaveplan-log-')), 'runs');
     repos.push(path.dirname(log));
-    return { log, command: `echo ${tag} >> '${log}'${then ? `; ${then}` : ''}`, runs: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) };
+    const source = `require('fs').appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${tag}\n`)});`
+      + (then.junit ? JUNIT_JS : '') + (then.exit ? `process.exit(${then.exit});` : '');
+    return { log, command: nodeCommand(source), runs: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) };
   };
 
   it('the final step with a test report whose command IS the verify command: the suite runs once, and its green closes the card (36c5ca25)', async () => {
     const dir = makeRepo();
-    const suite = counted('suite', JUNIT);
+    const suite = counted('suite', { junit: true });
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true, role: 'closing' })]),
       { projectRoot: dir, verifyCommand: suite.command, testReport: { format: 'junit-xml', reportPath: 'report.xml' } });
     const id = await card(pid, 'TEST');
@@ -209,7 +212,7 @@ describe('GET /items/:id/leave-plan', () => {
 
   it('the final step with a test report whose command differs from the verify command: both run - the plan says both, and verify does both', async () => {
     const dir = makeRepo();
-    const suite = counted('suite', JUNIT);
+    const suite = counted('suite', { junit: true });
     const gate = counted('gate');
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true, role: 'closing' })]),
       { projectRoot: dir, verifyCommand: gate.command, testReport: { format: 'junit-xml', reportPath: 'report.xml', command: suite.command } });
@@ -225,7 +228,7 @@ describe('GET /items/:id/leave-plan', () => {
 
   it('a mid-flow boundary next, with the same command: the plan keeps the command after the capture, as verify runs it (36c5ca25 review)', async () => {
     const dir = makeRepo();
-    const suite = counted('suite', JUNIT);
+    const suite = counted('suite', { junit: true });
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('A', 1, { role: 'testing' }), s('HOLD', 2, { isSpecial: true }), s('B', 3), s('END', 4, { isAnchor: true, role: 'closing' })]),
       { projectRoot: dir, verifyCommand: suite.command, testReport: { format: 'junit-xml', reportPath: 'report.xml' } });
     const id = await card(pid, 'A');
@@ -239,7 +242,7 @@ describe('GET /items/:id/leave-plan', () => {
 
   it('with no report to fence the capture, the plan keeps the command after it: the capture cannot close the card (36c5ca25 review)', async () => {
     const dir = makeRepo();
-    const suite = counted('suite', JUNIT);
+    const suite = counted('suite', { junit: true });
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true, role: 'closing' })]),
       { projectRoot: dir, verifyCommand: suite.command, testReport: { format: 'junit-xml' } });
     const id = await card(pid, 'TEST');
@@ -253,7 +256,7 @@ describe('GET /items/:id/leave-plan', () => {
 
   it('a command check on the step: it runs after the capture, so the verify command runs after it too - the plan says so (36c5ca25 review)', async () => {
     const dir = makeRepo();
-    const suite = counted('suite', JUNIT);
+    const suite = counted('suite', { junit: true });
     const lint = { id: 'command-check', params: { name: 'lint', argv: [process.execPath, '-e', 'process.exit(0)'] } };
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing', checks: [lint] }), s('END', 3, { isAnchor: true, role: 'closing' })]),
       { projectRoot: dir, verifyCommand: suite.command, testReport: { format: 'junit-xml', reportPath: 'report.xml' } });
@@ -321,7 +324,7 @@ describe('GET /items/:id/leave-plan', () => {
 
   it('the final step: a capture red on the same command never closes the card, and the command is not run over it', async () => {
     const dir = makeRepo();
-    const suite = counted('suite', `${JUNIT}; exit 1`);
+    const suite = counted('suite', { junit: true, exit: 1 });
     const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true, role: 'closing' })]),
       { projectRoot: dir, verifyCommand: suite.command, testReport: { format: 'junit-xml', reportPath: 'report.xml' } });
     const id = await card(pid, 'TEST');

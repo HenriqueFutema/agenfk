@@ -7,8 +7,9 @@ import crypto from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
+import { forceLocalFlag, tarPath } from '../bin/tar-flags.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, withSkillName, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand, serverProcessAlive } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -38,15 +39,6 @@ function getCursorMcpPath() {
 function toWindowsPath(p) {
     if (isMinGW && /^\/[a-zA-Z]\//.test(p)) {
         return p[1].toUpperCase() + ':' + p.slice(2).replace(/\//g, '\\');
-    }
-    return p;
-}
-
-// Converts a Win32 drive path (C:\Users\...) to an MSYS2 POSIX path (/c/Users/...)
-// so that MSYS2 tar never sees a bare "C:" that it might interpret as a remote hostname.
-function toPosixPath(p) {
-    if (isMinGW && /^[a-zA-Z]:/.test(p)) {
-        return '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/');
     }
     return p;
 }
@@ -324,11 +316,12 @@ async function run() {
                 if (existsSync(ghFile)) renameSync(ghFile, tmpFile);
                 else return false;
             }
-            // On Windows, BSD tar treats "C:" as a remote hostname — --force-local disables that.
-            // On MinGW (Git for Windows) we also convert paths to POSIX form (/c/Users/...)
-            // so MSYS2 tar never sees a bare "C:" regardless of --force-local support.
+            // On Windows, GNU tar (Git Bash's) treats "C:" as a remote hostname — --force-local
+            // disables that; the bsdtar Windows ships rejects the flag, so only GNU tar gets
+            // it (GitHub #208). GNU tar also unescapes backslashes, so it gets C:/... paths
+            // from any shell (tarPath); bsdtar keeps the native path.
             const tarArgs = os.platform() === 'win32'
-                ? ['--force-local', '-xzf', toPosixPath(tmpFile), '-C', toPosixPath(rootDir)]
+                ? [...(forceLocalFlag() ? ['--force-local'] : []), '-xzf', tarPath(tmpFile), '-C', tarPath(rootDir)]
                 : ['-xzf', tmpFile, '-C', rootDir];
             const tarResult = spawnSync('tar', tarArgs, { stdio: childStdio, encoding: 'utf8', maxBuffer: childMaxBuffer, windowsHide: true });
             if (tarResult.status !== 0) { if (childOutput(tarResult)) console.error(childOutput(tarResult)); return false; }
@@ -469,12 +462,13 @@ async function run() {
             try {
                 const { pruneInstallDirAgainstManifest } = await import(
                     pathToFileURL(path.join(rootDir, 'bin', 'sync-install-dir.mjs')).href);
-                // Same Windows handling autoHealRedownload uses below: BSD tar
-                // reads a bare `C:` as a remote hostname, and MSYS2 tar wants a
-                // POSIX path. Without these the prune silently degrades to a
+                // Same Windows handling autoHealRedownload uses below: GNU tar
+                // reads a bare `C:` as a remote hostname (bsdtar does not, and
+                // rejects --force-local), and GNU tar wants forward slashes
+                // (tarPath). Without these the prune silently degrades to a
                 // "Skipped:" line on Windows and the leak stays open there.
-                const listFlags = process.platform === 'win32' ? '--force-local -tzf' : '-tzf';
-                const listing = execSync(`tar ${listFlags} "${toPosixPath(tarball)}"`, { encoding: 'utf8', windowsHide: true })
+                const listFlags = process.platform === 'win32' ? `${forceLocalFlag()}-tzf` : '-tzf';
+                const listing = execSync(`tar ${listFlags} "${tarPath(tarball)}"`, { encoding: 'utf8', windowsHide: true })
                     .split('\n').filter(Boolean);
                 const { removed, failed } = pruneInstallDirAgainstManifest(rootDir, listing);
                 for (const rel of removed) detail(`  Pruned (no longer shipped): ${rel}`);
@@ -514,14 +508,21 @@ async function run() {
         } else {
             detail(`${GREEN}[1b/14] Refreshing production dependencies (npm ci --omit=dev)...${NC}`);
         }
-        const npmCiResult = spawnSync(npmCiCmd, ['ci', '--omit=dev', '--ignore-scripts'], {
+        const npmCiArgs = ['ci', '--omit=dev', '--ignore-scripts'];
+        const npmCiOpts = {
             cwd: rootDir,
             stdio: childStdio,
             encoding: 'utf8',
             maxBuffer: childMaxBuffer,
-            shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
             windowsHide: true,
-        });
+        };
+        // .cmd scripts need a shell on Windows (MinGW + native). There the line
+        // goes as ONE string: args beside shell:true make Node 24 print a
+        // DEP0190 deprecation warning on every install and upgrade. The args are
+        // fixed literals, so joining them escapes nothing.
+        const npmCiResult = os.platform() === 'win32'
+            ? spawnSync([npmCiCmd, ...npmCiArgs].join(' '), { ...npmCiOpts, shell: true, windowsHide: true })
+            : spawnSync(npmCiCmd, npmCiArgs, { ...npmCiOpts, windowsHide: true });
         if (npmCiResult.status !== 0) {
             if (childOutput(npmCiResult)) console.log(childOutput(npmCiResult));
             warn(`npm ci failed (${npmCiResult.error ? npmCiResult.error.message : `exit ${npmCiResult.status}`}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.`);
@@ -978,9 +979,7 @@ async function run() {
                 }
 
                 // Inject 'name' field if missing
-                if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
-                    content = content.replace('---\n', `---\nname: ${skillName}\n`);
-                }
+                content = withSkillName(content, skillName);
                 const dest = path.join(skillDir, 'SKILL.md');
                 await fs.writeFile(dest, content, 'utf8');
                 detail(`  Installed Claude Skill: ${dest}`);
@@ -1057,9 +1056,7 @@ async function run() {
                 await fs.mkdir(skillDir, { recursive: true });
                 let content = readFileSync(path.join(commandsDir, file), 'utf8');
                 // Inject 'name' field if missing (required by Codex, OpenCode, Cursor, Gemini)
-                if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
-                    content = content.replace('---\n', `---\nname: ${skillName}\n`);
-                }
+                content = withSkillName(content, skillName);
                 const dest = path.join(skillDir, 'SKILL.md');
                 writeFileSync(dest, content, 'utf8');
                 detail(`  Installed: ${dest}`);

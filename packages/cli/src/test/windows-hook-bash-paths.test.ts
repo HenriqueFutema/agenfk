@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, writeFileSync, chmodSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import {
@@ -64,21 +64,35 @@ describe('buildPosixWrapper', () => {
   });
 });
 
-describe('the generated command actually resolves under bash', () => {
-  const bash = spawnSync('bash', ['-c', 'echo ok'], { encoding: 'utf8' });
-  const hasBash = bash.status === 0;
+/**
+ * The bash Claude Code runs hooks with. On Windows that is Git Bash, found from
+ * `git --exec-path` like posixShell() finds sh.exe - not whatever `bash` PATH
+ * names first: from PowerShell that is WSL's System32\bash.exe, which ran the
+ * hook in Linux and printed nothing (#208 branch review). Elsewhere, `bash`.
+ */
+function hookBash(): string | null {
+  if (process.platform !== 'win32') return spawnSync('bash', ['-c', 'echo ok'], { encoding: 'utf8' }).status === 0 ? 'bash' : null;
+  const execPath = spawnSync('git', ['--exec-path'], { encoding: 'utf8', windowsHide: true }).stdout?.trim();
+  const gitBash = execPath ? path.win32.resolve(execPath, '..', '..', '..', 'bin', 'bash.exe') : '';
+  return gitBash && existsSync(gitBash) ? gitBash : null;
+}
 
-  it.skipIf(!hasBash)('runs a wrapper whose dir contains a space', () => {
+describe('the generated command actually resolves under bash', () => {
+  const bash = hookBash();
+
+  // Never skipped on Windows, the platform this pins: Git Bash is a hard requirement there.
+  it.skipIf(process.platform !== 'win32' && !bash)('runs a wrapper whose dir contains a space', () => {
+    expect(bash, 'Git Bash (bin\\bash.exe beside git) - what Claude Code runs hooks with').toBeTruthy();
     const dir = mkdtempSync(path.join(os.tmpdir(), 'agenfk hook '));
     try {
       const wrapper = path.join(dir, 'agenfk-fake-hook');
       writeFileSync(wrapper, '#!/bin/sh\necho "hook-ran $*"\n', 'utf8');
       chmodSync(wrapper, 0o755);
       const cmd = buildClaudeHookCommand(wrapper, { platform: 'win32', args: '--client claude-code' });
-      const r = spawnSync('bash', ['-c', cmd], { encoding: 'utf8' });
+      const r = spawnSync(bash!, ['-c', cmd], { encoding: 'utf8' });
       expect(r.stdout.trim()).toBe('hook-ran --client claude-code');
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

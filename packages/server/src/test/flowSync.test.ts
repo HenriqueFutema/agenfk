@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
+import { removeTestDb } from './helpers/testDb';
 import { reconcileHubFlow } from '../hub/flowSync';
 
 const baseSteps = [
@@ -51,8 +52,8 @@ describe('flowSync.reconcileHubFlow', () => {
     emit = vi.fn();
   });
 
-  afterEach(() => {
-    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+  afterEach(async () => {
+    await removeTestDb(dbPath, () => storage.shutdown());
   });
 
   it('200 with new hub flow → upserts local row with source=hub and emits flow:updated', async () => {

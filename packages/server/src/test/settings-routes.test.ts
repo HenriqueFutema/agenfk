@@ -18,11 +18,11 @@
  * What is exercised is the guard in front of it, which is the part with a
  * security claim attached.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import { isTelemetryEnabled } from '@agenfk/telemetry';
 
 let __server: import('http').Server;
@@ -35,7 +35,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>(r => __server.close(() => r()));
   const db = testDbPath('settings-routes-test-db.sqlite');
-  if (fs.existsSync(db)) fs.unlinkSync(db);
+  await removeTestDb(db, closeStorage);
 });
 
 describe('GET /github/account', () => {

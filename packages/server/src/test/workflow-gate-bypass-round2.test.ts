@@ -3,11 +3,11 @@
  * first pass introduced. Same principle: an item only moves forward through
  * validate_progress, and a flow is untrusted input.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage, buildAllowedTransitions } from '../server';
+import { app, initStorage, closeStorage, buildAllowedTransitions } from '../server';
 import type { Server } from 'http';
 
 const TEST_DB = testDbPath('workflow-gate-round2-test-db.sqlite');
@@ -35,13 +35,13 @@ describe('routes that still reached DONE (CGLAB-81 round 2)', () => {
 
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
     server = app.listen(0);
   });
   afterAll(async () => {
     await new Promise<void>(r => server.close(() => r()));
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
   });
   beforeEach(async () => {
     await initStorage();

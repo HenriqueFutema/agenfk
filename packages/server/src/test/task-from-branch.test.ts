@@ -12,13 +12,13 @@
  * is what compositions usually get wrong: what happens when step three fails
  * after steps one and two already succeeded.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, VERIFY_TOKEN } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -57,12 +57,12 @@ const makeRepo = (): string => {
 describe('POST /projects/:id/tasks-from-branch', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-    fs.rmSync(repo, { recursive: true, force: true });
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
+    fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   beforeEach(async () => {
     await initStorage();

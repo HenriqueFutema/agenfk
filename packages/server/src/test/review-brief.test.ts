@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -34,38 +34,37 @@ const TEST_DB = testDbPath('review-brief-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 const cleanup: string[] = [];
 const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
 beforeAll(async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-brief-home-'));
   cleanup.push(home);
-  process.env.HOME = home;
+  process.env.HOME = process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   await initStorage();
   __server = app.listen(0);
 });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  process.env.HOME = savedHome;
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
-  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true });
+afterAll(async () => {
+  process.env.HOME = savedHome; process.env.USERPROFILE = savedUserProfile;
+  await removeTestDb(TEST_DB, closeStorage);
+  for (const d of cleanup) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function makeRepo(): { dir: string; base: string; tip: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-brief-repo-'));
   cleanup.push(dir);
-  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: '/bin/sh' });
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
-  execSync('git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   const base = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(dir, 'b.txt'), 'b\n');
-  execSync('git add . && git commit -qm two', { cwd: dir, shell: '/bin/sh' });
+  execSync('git add . && git commit -qm two', { cwd: dir, shell: posixShell() });
   const tip = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   return { dir, base, tip };
 }
@@ -122,7 +121,7 @@ describe('CGLAB-457: GET /items/:id/review-brief', () => {
     fs.mkdirSync(sub, { recursive: true });
     // The tree is `sub`: the report is named relative to it, git prints paths from the repository root, so the
     // prefix has to line the two up or the report reads as the card's own change.
-    await storage.updateProject(pid, { projectRoot: sub, testReport: { format: 'junit-xml', command: 'true', reportPath: '.reports/report.xml' } } as never);
+    await storage.updateProject(pid, { projectRoot: sub, testReport: { format: 'junit-xml', command: 'exit 0', reportPath: '.reports/report.xml' } } as never);
     const id = await cardAt(pid, base);
     fs.mkdirSync(path.join(sub, '.reports'), { recursive: true });
     fs.writeFileSync(path.join(sub, '.reports', 'report.xml'), '<tests/>');

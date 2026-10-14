@@ -56,6 +56,7 @@ vi.mock('inquirer', () => ({
 
 import { program } from '../index';
 import axios from 'axios';
+import * as path from 'path';
 
 const mockedAxios = vi.mocked(axios, true);
 const API = 'http://localhost:3000';
@@ -202,7 +203,8 @@ describe('agenfk update-project <id>', () => {
 
     expect(mockedAxios.put).toHaveBeenCalledWith(
       `${API}/projects/proj-1/project-root`,
-      { projectRoot: '/tmp/some-repo' },
+      // Resolved as the CLI resolves it: C:\tmp\some-repo on Windows.
+      { projectRoot: path.resolve('/tmp/some-repo') },
       { headers: { 'x-agenfk-internal': 'test-verify-token' } },
     );
     // Nothing went to the open route: there was nothing else to send.
@@ -221,7 +223,8 @@ describe('agenfk update-project <id>', () => {
     ]);
 
     const sent = mockedAxios.put.mock.calls.find(c => String(c[0]).endsWith('/project-root'))?.[1] as { projectRoot: string };
-    expect(sent.projectRoot.startsWith('/')).toBe(true);
+    expect(path.isAbsolute(sent.projectRoot)).toBe(true);
+    expect(sent.projectRoot).toBe(path.resolve(process.cwd(), 'here'));
     expect(sent.projectRoot).not.toBe('./here');
   });
 });

@@ -133,11 +133,22 @@ export type SnapshotResult =
  * prefix before `/sessions/`; anything else is the default session's own
  * directory.
  */
-export function deriveConfigRoot(socketPath: string): string {
-  const dir = path.dirname(socketPath);
-  const parent = path.dirname(dir);
-  if (path.basename(parent) === SESSIONS_DIR) return path.dirname(parent);
+export function deriveConfigRoot(socketPath: string, platform: NodeJS.Platform = process.platform): string {
+  const p = pathFor(platform);
+  const dir = p.dirname(socketPath);
+  const parent = p.dirname(dir);
+  if (p.basename(parent) === SESSIONS_DIR) return p.dirname(parent);
   return dir;
+}
+
+/**
+ * The path flavour of a platform, rather than of the host. The config root is
+ * computed from strings in the environment, and a test asserting a POSIX root
+ * on a Windows host - or a Windows root on Linux CI - must get that platform's
+ * separators and that platform's idea of "absolute", not the runner's.
+ */
+function pathFor(platform: NodeJS.Platform): path.PlatformPath {
+  return platform === 'win32' ? path.win32 : path.posix;
 }
 
 
@@ -153,8 +164,23 @@ export function deriveConfigRoot(socketPath: string): string {
  * a shell profile is set-but-empty, and `dirname('')` is `'.'`, which would
  * point discovery at the server's working directory.
  */
-export function herdrConfigRoot(env: NodeJS.ProcessEnv, home: string): string {
-  const declared = env.HERDR_SOCKET_PATH?.trim();
+export function herdrConfigRoot(
+  env: NodeJS.ProcessEnv,
+  home: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const p = pathFor(platform);
+  /*
+   * Every input must be ABSOLUTE to count. Empty or relative, `join`/`dirname`
+   * would hand back a relative root and discovery would scan the server's cwd -
+   * inside the user's repository; the XDG spec calls a relative value invalid
+   * for the same reason.
+   */
+  const usable = (v: string | undefined): string | undefined => {
+    const t = v?.trim();
+    return t && p.isAbsolute(t) ? t : undefined;
+  };
+  const declared = usable(env.HERDR_SOCKET_PATH);
   /*
    * `dirname` IS NOT THE ROOT when we are inside a NAMED session. herdr injects
    * HERDR_SOCKET_PATH into every process it launches, and for a named session
@@ -167,7 +193,22 @@ export function herdrConfigRoot(env: NodeJS.ProcessEnv, home: string): string {
    * `deriveConfigRoot` is the function that knows this, and for a while it was
    * exported, tested, and called by nobody.
    */
-  if (declared) return deriveConfigRoot(declared);
+  if (declared) return deriveConfigRoot(declared, platform);
+  /*
+   * herdr's OWN ORDER, read from its source: `$XDG_CONFIG_HOME/herdr` first on
+   * every platform, then on Windows `%APPDATA%\herdr`, then
+   * `%USERPROFILE%\AppData\Roaming\herdr`, and only then `$HOME/.config/herdr`.
+   * Looking anywhere else scans a directory the running herdr never wrote to,
+   * and a live herdr reads as absent.
+   */
+  const xdg = usable(env.XDG_CONFIG_HOME);
+  if (xdg) return p.join(xdg, 'herdr');
+  if (platform === 'win32') {
+    const appData = usable(env.APPDATA);
+    if (appData) return p.join(appData, 'herdr');
+    const profile = usable(env.USERPROFILE);
+    if (profile) return p.join(profile, 'AppData', 'Roaming', 'herdr');
+  }
   /*
    * The same trap this function guards for HERDR_SOCKET_PATH, one line down:
    * an empty HOME makes `join('', '.config', 'herdr')` the RELATIVE path
@@ -175,8 +216,8 @@ export function herdrConfigRoot(env: NodeJS.ProcessEnv, home: string): string {
    * inside the user's repository. A daemon launched by launchd or systemd
    * without HOME in its environment is exactly that case.
    */
-  const base = home.trim() || homedir();
-  return path.join(base, '.config', 'herdr');
+  const base = usable(home) || homedir();
+  return p.join(base, '.config', 'herdr');
 }
 
 /**
@@ -237,7 +278,8 @@ export function discoverSessionSockets(
 export function liveHerdrSessions(
   env: NodeJS.ProcessEnv = process.env,
   // Reads the env it was HANDED, not the process's. The two disagreeing is part
-  // of why this function had no test worth the name.
+  // of why this function had no test worth the name. (Windows needs no
+  // USERPROFILE here: herdrConfigRoot reads it, and homedir() falls back to it.)
   home: string = env.HOME ?? '',
 ): HerdrSession[] {
   return discoverSessionSockets(
@@ -248,6 +290,22 @@ export function liveHerdrSessions(
 }
 
 /* ── the wire ──────────────────────────────────────────────────────────── */
+
+/** The namespace Windows named pipes live in. */
+const WINDOWS_PIPE_PREFIX = '\\\\.\\pipe\\';
+
+/**
+ * What to connect to for a socket path. Pure.
+ *
+ * ON WINDOWS herdr BINDS A NAMED PIPE, not a unix socket: the pipe is the socket
+ * path verbatim under `\\.\pipe\`, and herdr also writes a marker FILE at the
+ * socket path itself. So the path stays what discovery finds and what callers
+ * hold - the file is still the liveness signal - and only the connect target
+ * differs. Connecting to the marker file connects to nothing.
+ */
+export function herdrEndpoint(socketPath: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? `${WINDOWS_PIPE_PREFIX}${socketPath}` : socketPath;
+}
 
 /** A request id that is unique per call without needing a clock or randomness. */
 let requestCounter = 0;
@@ -335,7 +393,7 @@ export type HerdrTransport = (
 
 export const socketTransport: HerdrTransport = (socketPath, line, signal) =>
   new Promise<string>((resolve, reject) => {
-    const socket = createConnection(socketPath);
+    const socket = createConnection(herdrEndpoint(socketPath));
     /*
      * DECODE ACROSS CHUNKS, NOT PER CHUNK. `chunk.toString('utf8')` on a buffer
      * that ends mid-character yields U+FFFD and the next chunk starts mid-
@@ -589,7 +647,7 @@ export type HerdrStreamTransport = (
 
 export const socketStreamTransport: HerdrStreamTransport = (socketPath, line, onLine, onClose) =>
   new Promise((resolve, reject) => {
-    const socket = createConnection(socketPath);
+    const socket = createConnection(herdrEndpoint(socketPath));
     // Same cross-chunk decoding as the one-shot transport, for the same reason.
     socket.setEncoding('utf8');
     let buffer = '';

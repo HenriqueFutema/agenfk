@@ -75,6 +75,9 @@ describe('which loopback a server is dialled at', () => {
   it('dials [::1] for a wildcard bind on macOS, where the hijack happens', () => {
     expect(loopbackUrl(U, { address: '::', family: 'IPv6', port: 4321 }, 'darwin')).toBe('http://[::1]:4321/p');
   });
+  it('dials [::1] for a wildcard bind on Windows, which allows the same colliding bind (#208)', () => {
+    expect(loopbackUrl(U, { address: '::', family: 'IPv6', port: 4321 }, 'win32')).toBe('http://[::1]:4321/p');
+  });
   it('leaves a wildcard bind alone elsewhere: ::1 may not exist (loopback IPv6 disabled in a container)', () => {
     expect(loopbackUrl(U, { address: '::', family: 'IPv6', port: 4321 }, 'linux')).toBe(U);
   });

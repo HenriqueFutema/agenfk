@@ -6,7 +6,7 @@
  * GET /internal/hub/status — which must expose them even when the hub is NOT
  * configured (a stale-org install is exactly when carry-over is needed).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -45,13 +45,13 @@ const TEST_DB = testDbPath('hub-org-summaries-test-db.sqlite');
 describe('hub outbox org summaries', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, mod.closeStorage);
     await mod.initStorage();
   });
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, mod.closeStorage);
     vi.mocked(os.homedir).mockRestore();
-    try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
   });
   beforeEach(async () => {
     (mod.storage as any).database.prepare('DELETE FROM hub_outbox').run();

@@ -62,8 +62,24 @@ export function findDuplicateProjectRoots<T extends ProjectRootInfo>(
  * Refused rather than corrected: there is no defensible guess at what the user
  * meant, and recording "somewhere plausible" is how this happened.
  */
-export function isPersistableProjectRoot(root: string | null | undefined, homeDir: string): boolean {
+export function isPersistableProjectRoot(
+  root: string | null | undefined,
+  homeDir: string,
+  platform: string = typeof process !== 'undefined' ? process.platform : '',
+): boolean {
   if (typeof root !== 'string' || !root.trim()) return false;
+  if (platform === 'win32') {
+    // #208: `\` or `/`, any case, and a drive root as well as `/`. Comparing
+    // `${home}/.agenfk` against `C:\Users\x\.agenfk` refused nothing there.
+    const win = (p: string): string => {
+      const collapsed = p.trim().replace(/[\\/]+/g, '\\').replace(/\\\.(?=\\|$)/g, '').toLowerCase();
+      return /^[a-z]:\\?$/.test(collapsed) || collapsed === '\\' ? collapsed.replace(/\\?$/, '\\') : collapsed.replace(/\\$/, '');
+    };
+    const candidate = win(root);
+    const home = win(homeDir);
+    if (/^([a-z]:)?\\$/.test(candidate) || candidate === '') return false;
+    return candidate !== home && candidate !== `${home}\\.agenfk`;
+  }
   // Normalised so a trailing slash or a `.` segment cannot walk around the
   // comparison: they name the same directory, and a guard that can be missed
   // by accident is not a guard.

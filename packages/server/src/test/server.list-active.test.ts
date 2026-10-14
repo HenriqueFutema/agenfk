@@ -8,10 +8,10 @@
  * INACTIVE_STATUSES (BLOCKED/PAUSED/TRASHED/ARCHIVED/IDEAS). Flow-aware: the
  * server resolves each item's project flow, so custom flows work too.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage } from '../server';
+import { app, initStorage, closeStorage, storage } from '../server';
 import * as fs from 'fs';
 
 /**
@@ -50,11 +50,11 @@ async function makeItem(projectId: string, title: string, status: string): Promi
 describe('GET /items?active=true', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    for (const s of ['', '-wal', '-shm']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => {
-    for (const s of ['', '-wal', '-shm']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   it('default flow: returns only working-step items (IN_PROGRESS/REVIEW/TEST)', async () => {

@@ -22,7 +22,7 @@
  *    skips a required command on a mid-flow boundary, and it accepts only a
  *    green the server wrote — PUT /items cannot mint one (review round 1).
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -43,18 +43,16 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
+import { posixShell } from './helpers/posixShell';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
 beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
-afterAll(() => {
-  for (const suffix of ['', '-shm', '-wal']) {
-    const f = `${TEST_DB}${suffix}`;
-    if (fs.existsSync(f)) fs.unlinkSync(f);
-  }
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 const internal = () => ({ 'x-agenfk-internal': VERIFY_TOKEN! });
@@ -107,16 +105,16 @@ describe('CGLAB-378: the server owns the verify command on command-required step
 
   it('runs the project command, not the caller\'s: a red suite stays red whatever the caller passes', async () => {
     const id = await card(await project('exit 1'), 'TEST');
-    const res = await validate(id, { command: 'true' });
+    const res = await validate(id, { command: 'exit 0' });
     expect(res.status).toBe(422);
     expect(await statusOf(id)).toBe('TEST');
     expect(res.body.warning).toMatch(/ignored/i);
     expect(res.body.message).toMatch(/ignored/i);
-    expect(res.body.message).toContain('`true`');
+    expect(res.body.message).toContain('`exit 0`');
   });
 
   it('opens the gate when the project command is green, even if the caller passed a failing one', async () => {
-    const id = await card(await project('true'), 'TEST');
+    const id = await card(await project('exit 0'), 'TEST');
     const res = await validate(id, { command: 'exit 1' });
     expect(res.status).toBe(200);
     expect(await statusOf(id)).toBe('DONE');
@@ -134,12 +132,12 @@ describe('CGLAB-378: the server owns the verify command on command-required step
   });
 
   it('does not warn when the caller passes the project command itself, or nothing', async () => {
-    const same = await card(await project('true'), 'TEST');
-    const a = await validate(same, { command: 'true' });
+    const same = await card(await project('exit 0'), 'TEST');
+    const a = await validate(same, { command: 'exit 0' });
     expect(a.status).toBe(200);
     expect(a.body.warning).toBeUndefined();
 
-    const none = await card(await project('true'), 'TEST');
+    const none = await card(await project('exit 0'), 'TEST');
     const b = await validate(none, {});
     expect(b.status).toBe(200);
     expect(b.body.warning).toBeUndefined();
@@ -147,7 +145,7 @@ describe('CGLAB-378: the server owns the verify command on command-required step
 
   it('does not let a caller command stand in for a missing project command', async () => {
     const id = await card(await project(), 'TEST');
-    const res = await validate(id, { command: 'true' });
+    const res = await validate(id, { command: 'exit 0' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('NO_VERIFY_COMMAND');
     expect(await statusOf(id)).toBe('TEST');
@@ -161,26 +159,26 @@ describe('CGLAB-378: the server owns the verify command on command-required step
       { name: 'CODE', label: 'Code', order: 3 },
       { name: 'SHIPPED', label: 'Shipped', order: 4, isAnchor: true },
     ]), 'SPEC');
-    const res = await validate(id, { command: 'true' });
+    const res = await validate(id, { command: 'exit 0' });
     expect(res.status).toBe(422);
     expect(await statusOf(id)).toBe('SPEC');
   });
 
   it('leaves intermediate steps alone: a caller command there is optional and still runs', async () => {
-    const red = await card(await project('true'), 'IN_PROGRESS');
+    const red = await card(await project('exit 0'), 'IN_PROGRESS');
     const refused = await validate(red, { command: 'exit 1' });
     expect(refused.status).toBe(422);
     expect(await statusOf(red)).toBe('IN_PROGRESS');
     expect(refused.body.warning).toBeUndefined();
 
-    const green = await card(await project('true'), 'IN_PROGRESS');
-    expect((await validate(green, { command: 'true' })).status).toBe(200);
+    const green = await card(await project('exit 0'), 'IN_PROGRESS');
+    expect((await validate(green, { command: 'exit 0' })).status).toBe(200);
     expect(await statusOf(green)).toBe('REVIEW');
   });
 
   it('carries the warning on the async path', async () => {
     const id = await card(await project('exit 1'), 'TEST');
-    const res = await validate(id, { command: 'true', async: true });
+    const res = await validate(id, { command: 'exit 0', async: true });
     expect(res.status).toBe(202);
     // Said once, on the outcome — not also on the 202 (the CLI prints both).
     expect(res.body.warning).toBeUndefined();
@@ -192,7 +190,7 @@ describe('CGLAB-378: the server owns the verify command on command-required step
 
   it('ignores the command on the deprecated review route too', async () => {
     const id = await card(await project('exit 1'), 'TEST');
-    const res = await agent().post(`/items/${id}/review`).set(internal()).send({ command: 'true' });
+    const res = await agent().post(`/items/${id}/review`).set(internal()).send({ command: 'exit 0' });
     expect(res.status).toBe(422);
     expect(await statusOf(id)).toBe('TEST');
   });
@@ -211,7 +209,7 @@ describe('CGLAB-378: the server owns the verify command on command-required step
 
     it('carries the warning on NO_VERIFY_COMMAND', async () => {
       const id = await card(await project(), 'TEST');
-      const res = await validate(id, { command: 'true' });
+      const res = await validate(id, { command: 'exit 0' });
       expect(res.body.error).toBe('NO_VERIFY_COMMAND');
       expect(res.body.warning).toMatch(/ignored/i);
     });
@@ -239,16 +237,16 @@ describe('CGLAB-378: the server owns the verify command on command-required step
     });
 
     it('does not let PUT /items mint a green: a caller-supplied commit is dropped', async () => {
-      const id = await card(await project('true'), 'IN_PROGRESS');
-      await agent().put(`/items/${id}`).send({ tests: [{ id: 'forged', command: 'true', status: 'PASSED', output: 'x', commit: 'abc123', executedAt: new Date() }] });
+      const id = await card(await project('exit 0'), 'IN_PROGRESS');
+      await agent().put(`/items/${id}`).send({ tests: [{ id: 'forged', command: 'exit 0', status: 'PASSED', output: 'x', commit: 'abc123', executedAt: new Date() }] });
       const stored = (await agent().get(`/items/${id}`)).body.tests;
       expect(stored).toHaveLength(1);
       expect(stored[0].commit).toBeUndefined();
     });
 
     it('keeps a green the server wrote when a caller echoes the list back (log-test)', async () => {
-      const id = await card(await project('true'), 'IN_PROGRESS');
-      await storage.updateItem(id, { tests: [{ id: 'server-green', command: 'true', status: 'PASSED', output: 'ok', commit: 'abc123', executedAt: new Date() }] } as any);
+      const id = await card(await project('exit 0'), 'IN_PROGRESS');
+      await storage.updateItem(id, { tests: [{ id: 'server-green', command: 'exit 0', status: 'PASSED', output: 'ok', commit: 'abc123', executedAt: new Date() }] } as any);
       const before = (await agent().get(`/items/${id}`)).body.tests;
       await agent().put(`/items/${id}`).send({ tests: [...before, { id: 'logged', command: 'npm test', status: 'PASSED', output: 'x', executedAt: new Date() }] });
       const after = (await agent().get(`/items/${id}`)).body.tests;
@@ -257,7 +255,7 @@ describe('CGLAB-378: the server owns the verify command on command-required step
     });
 
     it('does not let a caller rewrite a stored green by reusing its id', async () => {
-      const id = await card(await project('true'), 'IN_PROGRESS');
+      const id = await card(await project('exit 0'), 'IN_PROGRESS');
       await storage.updateItem(id, { tests: [{ id: 'server-green', command: 'npm test', status: 'FAILED', output: 'red', commit: 'abc123', executedAt: new Date() }] } as any);
       await agent().put(`/items/${id}`).send({ tests: [{ id: 'server-green', command: 'npm test', status: 'PASSED', output: 'forged', commit: 'abc123', executedAt: new Date() }] });
       const after = (await agent().get(`/items/${id}`)).body.tests;
@@ -267,9 +265,9 @@ describe('CGLAB-378: the server owns the verify command on command-required step
     it('refuses a forged sibling green end to end: a red project command stays red', async () => {
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sovc-'));
       try {
-        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: '/bin/sh' });
+        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: posixShell() });
         fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
-        execSync('git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+        execSync('git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
         const sha = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf8' }).trim();
         const p = (await agent().post('/projects').send({ name: `sovc-forge-${++seq}` })).body.id;
         await storage.updateProject(p, { projectRoot: repo, verifyCommand: 'exit 1' } as never);
@@ -286,18 +284,18 @@ describe('CGLAB-378: the server owns the verify command on command-required step
         expect(res.status).toBe(422);
         expect(await statusOf(target)).toBe('TEST');
       } finally {
-        fs.rmSync(repo, { recursive: true, force: true });
+        fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
 
     it('names the command in the propagation comment', async () => {
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sovc-'));
       try {
-        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: '/bin/sh' });
+        execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: repo, shell: posixShell() });
         fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
-        execSync('git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+        execSync('git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
         const p = (await agent().post('/projects').send({ name: `sovc-prop-${++seq}` })).body.id;
-        await storage.updateProject(p, { projectRoot: repo, verifyCommand: 'true' } as never);
+        await storage.updateProject(p, { projectRoot: repo, verifyCommand: 'exit 0' } as never);
         const parent = (await agent().post('/items').send({ type: 'STORY', title: 'p', projectId: p })).body.id;
         const first = await card(p, 'TEST');
         const second = await card(p, 'TEST');
@@ -308,9 +306,9 @@ describe('CGLAB-378: the server owns the verify command on command-required step
         expect(res.body.output).toBe('Sibling propagation');
         const prop = (await commentsOf(second)).filter(c => /sibling propagation/i.test(c.content));
         expect(prop.length).toBeGreaterThan(0);
-        expect(prop[prop.length - 1].content).toContain('`true`');
+        expect(prop[prop.length - 1].content).toContain('`exit 0`');
       } finally {
-        fs.rmSync(repo, { recursive: true, force: true });
+        fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
   });
@@ -320,12 +318,12 @@ describe('CGLAB-378: the server owns the verify command on command-required step
       const projectId = await project('npm test');
       const working = await card(projectId, 'IN_PROGRESS');
       const waiting = await card(projectId, 'TODO');
-      const res = await agent().put(`/projects/${projectId}/verify-command`).set(internal()).send({ verifyCommand: 'true' });
+      const res = await agent().put(`/projects/${projectId}/verify-command`).set(internal()).send({ verifyCommand: 'exit 0' });
       expect(res.status).toBe(200);
       const notes = (await commentsOf(working)).filter(c => /verify command/i.test(c.content));
       expect(notes).toHaveLength(1);
       expect(notes[0].content).toContain('`npm test`');
-      expect(notes[0].content).toContain('`true`');
+      expect(notes[0].content).toContain('`exit 0`');
       expect((await commentsOf(waiting)).filter(c => /verify command/i.test(c.content))).toHaveLength(0);
     });
 
@@ -333,7 +331,7 @@ describe('CGLAB-378: the server owns the verify command on command-required step
       const projectId = await project('npm test');
       const paused = await card(projectId, 'PAUSED');
       const blocked = await card(projectId, 'BLOCKED');
-      await agent().put(`/projects/${projectId}/verify-command`).set(internal()).send({ verifyCommand: 'true' });
+      await agent().put(`/projects/${projectId}/verify-command`).set(internal()).send({ verifyCommand: 'exit 0' });
       for (const id of [paused, blocked]) {
         expect((await commentsOf(id)).filter(c => /verify command/i.test(c.content))).toHaveLength(1);
       }
@@ -341,7 +339,7 @@ describe('CGLAB-378: the server owns the verify command on command-required step
       // The first entry is the project's initial command (none -> npm test).
       expect(proj.verifyCommandChanges).toHaveLength(2);
       expect(proj.verifyCommandChanges[0]).toMatchObject({ from: null, to: 'npm test' });
-      expect(proj.verifyCommandChanges[1]).toMatchObject({ from: 'npm test', to: 'true' });
+      expect(proj.verifyCommandChanges[1]).toMatchObject({ from: 'npm test', to: 'exit 0' });
       expect(proj.verifyCommandChanges[1].at).toBeTruthy();
     });
 

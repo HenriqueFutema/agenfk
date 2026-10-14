@@ -20,7 +20,7 @@ import { spawnSync } from 'child_process';
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
 const CLEAN = path.join(REPO_ROOT, 'scripts', 'clean-dist.mjs');
 const dirs: string[] = [];
-afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 function tmp(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-clean-dist-'));

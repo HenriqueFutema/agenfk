@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { forceLocalFlag, tarPath } from './tar-flags.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -20,17 +21,10 @@ const isNpxCache = !fs.existsSync(path.join(REPO_ROOT, '.git'));
 const shouldRebuild = process.argv.includes('--rebuild');
 const isBeta = process.argv.includes('--beta');
 
-const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX ||
-  (process.platform === 'win32' && process.env.SHELL?.includes('bash')));
-
-function toPosixPath(p) {
-  if (isMinGW && /^[a-zA-Z]:/.test(p)) {
-    return '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/');
-  }
-  return p;
-}
-
-const tarFlags = process.platform === 'win32' ? '--force-local -xzf' : '-xzf';
+// --force-local and forward-slash paths (tarPath) are for GNU tar (Git Bash's)
+// on Windows only: the bsdtar Windows ships takes C:\ paths as they are and
+// rejects the flag (GitHub #208, see tar-flags.mjs).
+const tarFlags = process.platform === 'win32' ? `${forceLocalFlag()}-xzf` : '-xzf';
 
 // HTTP helper — uses Node's built-in fetch (Node ≥18, required by engines).
 // Falls back to curl, then gh CLI, so installs still work on systems missing
@@ -216,7 +210,7 @@ async function ensureDistribution({ installDir, repo, beta }) {
   try {
     const tag = await fetchLatestTagAsync(repo, beta);
     await downloadAsset(repo, tag, 'agenfk-dist.tar.gz', path.join(installDir, 'agenfk-dist.tar.gz'));
-    execSync(`tar ${tarFlags} "${toPosixPath(path.join(installDir, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(installDir)}"`, { stdio: 'inherit', windowsHide: true });
+    execSync(`tar ${tarFlags} "${tarPath(path.join(installDir, 'agenfk-dist.tar.gz'))}" -C "${tarPath(installDir)}"`, { stdio: 'inherit', windowsHide: true });
     fs.unlinkSync(path.join(installDir, 'agenfk-dist.tar.gz'));
     if (!fs.existsSync(path.join(installDir, 'packages/hub/dist/bin.js'))) {
       throw new Error(

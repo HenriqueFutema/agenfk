@@ -11,7 +11,7 @@
  * mirroring flowSync.test.ts), plus the route behaviour when the hub is not
  * configured (the common case) to prove `?refresh=true` never breaks a read.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -62,8 +62,8 @@ describe('refreshProjectFlowFromHub', () => {
     etagCache = new Map();
   });
 
-  afterEach(() => {
-    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+  afterEach(async () => {
+    await removeTestDb(dbPath, () => storage.shutdown());
   });
 
   it('is a no-op when the hub is disabled (never calls fetch)', async () => {
@@ -174,13 +174,13 @@ describe('refreshProjectFlowFromHub', () => {
 describe('GET /projects/:id/flow?refresh=true (route wiring)', () => {
   const TEST_DB = testDbPath('flow-refresh-route-test-db.sqlite');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let app: any, initStorage: any;
+  let app: any, initStorage: any, closeStorage: any;
   let __server: any;
   const agent = () => request(__server);
 
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB); // the server is not loaded yet: nothing is open
 
         /*
      * The server is created right after the dynamic import, in the same hook
@@ -191,17 +191,17 @@ describe('GET /projects/:id/flow?refresh=true (route wiring)', () => {
      * Expected HTTP/`, a transport failure that surfaces as a confident wrong
      * assertion in whichever test was running.
      */
-    ({ app, initStorage } = await import('../server'));
+    ({ app, initStorage, closeStorage } = await import('../server'));
     __server = app.listen(0);
     await initStorage();
   });
 
-  afterAll(() => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  afterAll(async () => {
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   beforeEach(async () => {
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
     // Whether or not the corp Hub is configured on this machine, keep the route
     // hermetic: stub fetch so a refresh never makes a live network call. The

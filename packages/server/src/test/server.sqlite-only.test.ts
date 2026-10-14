@@ -3,10 +3,10 @@
  * These tests should FAIL before the JSONStorageProvider is removed and
  * initStorage() is simplified to always use SQLite.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -54,16 +54,16 @@ describe('SQLite-only storage enforcement', () => {
   describe('when AGENFK_DB_PATH points to a .json path', () => {
     beforeAll(async () => {
       // Clean up any leftover test files
-      if (fs.existsSync(TEST_DB_JSON_PATH)) fs.unlinkSync(TEST_DB_JSON_PATH);
-      if (fs.existsSync(TEST_DB_SQLITE_PATH)) fs.unlinkSync(TEST_DB_SQLITE_PATH);
+      await removeTestDb(TEST_DB_JSON_PATH, closeStorage);
+      await removeTestDb(TEST_DB_SQLITE_PATH, closeStorage);
 
       process.env.AGENFK_DB_PATH = TEST_DB_JSON_PATH;
       await initStorage();
     });
 
-    afterAll(() => {
-      if (fs.existsSync(TEST_DB_JSON_PATH)) fs.unlinkSync(TEST_DB_JSON_PATH);
-      if (fs.existsSync(TEST_DB_SQLITE_PATH)) fs.unlinkSync(TEST_DB_SQLITE_PATH);
+    afterAll(async () => {
+      await removeTestDb(TEST_DB_JSON_PATH, closeStorage);
+      await removeTestDb(TEST_DB_SQLITE_PATH, closeStorage);
     });
 
     it('GET /db/status should always report dbType=sqlite', async () => {
@@ -94,13 +94,13 @@ describe('SQLite-only storage enforcement', () => {
     const SQLITE_TEST_DB = testDbPath('server-sqlite-explicit-test-db.sqlite');
 
     beforeAll(async () => {
-      if (fs.existsSync(SQLITE_TEST_DB)) fs.unlinkSync(SQLITE_TEST_DB);
+      await removeTestDb(SQLITE_TEST_DB, closeStorage);
       process.env.AGENFK_DB_PATH = SQLITE_TEST_DB;
       await initStorage();
     });
 
-    afterAll(() => {
-      if (fs.existsSync(SQLITE_TEST_DB)) fs.unlinkSync(SQLITE_TEST_DB);
+    afterAll(async () => {
+      await removeTestDb(SQLITE_TEST_DB, closeStorage);
     });
 
     it('GET /db/status should report dbType=sqlite', async () => {
@@ -131,7 +131,7 @@ describe('SQLite-only storage enforcement', () => {
         existingMigrationContent = fs.readFileSync(migrationPath, 'utf8');
       }
 
-      if (fs.existsSync(MIGRATION_DB)) fs.unlinkSync(MIGRATION_DB);
+      await removeTestDb(MIGRATION_DB, closeStorage);
 
       // Stage a migration.json with a known project
       const agenfkHome = path.join(os.homedir(), '.agenfk');
@@ -148,14 +148,14 @@ describe('SQLite-only storage enforcement', () => {
       await initStorage();
     });
 
-    afterAll(() => {
+    afterAll(async () => {
       // Restore original migration.json state
       if (hadExistingMigration && existingMigrationContent) {
         fs.writeFileSync(migrationPath, existingMigrationContent);
       } else if (fs.existsSync(migrationPath)) {
         fs.unlinkSync(migrationPath);
       }
-      if (fs.existsSync(MIGRATION_DB)) fs.unlinkSync(MIGRATION_DB);
+      await removeTestDb(MIGRATION_DB, closeStorage);
     });
 
     it('should import projects from migration.json into SQLite on startup', async () => {
@@ -175,5 +175,5 @@ describe('SQLite-only storage enforcement', () => {
 
 afterAll(() => {
   vi.mocked(os.homedir).mockRestore();
-  try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(sandboxHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
 });

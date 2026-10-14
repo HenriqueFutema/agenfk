@@ -18,7 +18,7 @@
  * captures config at import time) and env is restored afterwards, following
  * the convention in flow-org-available-hub-on.test.ts.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -31,7 +31,7 @@ const ENV_KEYS = [
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let app: any, initStorage: any;
+let app: any, initStorage: any, closeStorage: any;
 let __server: any;
 const agent = () => request(__server);
 
@@ -80,7 +80,7 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
     process.env.AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS = '3600000';
     process.env.AGENFK_DB_PATH = TEST_DB;
     stubHubFetch(); // stub before import so any startup fetch is intercepted
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB); // the server is not loaded yet: nothing is open
 
         /*
      * The server is created right after the dynamic import, in the same hook
@@ -91,21 +91,18 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
      * Expected HTTP/`, a transport failure that surfaces as a confident wrong
      * assertion in whichever test was running.
      */
-    ({ app, initStorage } = await import('../server'));
+    ({ app, initStorage, closeStorage } = await import('../server'));
     __server = app.listen(0);
     await initStorage();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     vi.unstubAllGlobals();
     for (const k of ENV_KEYS) {
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k]!;
     }
-    for (const suffix of ['', '-wal', '-shm']) {
-      const f = TEST_DB + suffix;
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
+    await removeTestDb(TEST_DB, closeStorage);
   });
 
   beforeEach(() => {

@@ -22,11 +22,11 @@
  *  - **Unknown keys are refused.** A store that accepts anything becomes a
  *    junk drawer, and a typo silently writes a setting nothing will ever read.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -50,10 +50,10 @@ const TEST_DB = testDbPath('app-settings-test-db.sqlite');
 describe('installation-wide settings', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
+  afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
   beforeEach(async () => { await initStorage(); });
 
   it('answers with documented defaults before anything has been set', async () => {
@@ -143,7 +143,7 @@ describe('every notification setting survives the round trip', () => {
     // A fresh database, so this is the documented default and not a leftover
     // from another test in this file.
     const fresh = testDbPath('app-settings-notify-defaults.sqlite');
-    if (fs.existsSync(fresh)) fs.unlinkSync(fresh);
+    await removeTestDb(fresh);
     const previous = process.env.AGENFK_DB_PATH;
     process.env.AGENFK_DB_PATH = fresh;
     try {
@@ -155,9 +155,9 @@ describe('every notification setting survives the round trip', () => {
         osNotifications: true,
       });
     } finally {
+      await removeTestDb(fresh, closeStorage);
       process.env.AGENFK_DB_PATH = previous;
       await initStorage();
-      if (fs.existsSync(fresh)) fs.unlinkSync(fresh);
     }
   });
 

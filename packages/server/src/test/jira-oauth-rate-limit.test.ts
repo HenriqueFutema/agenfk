@@ -5,7 +5,7 @@
  * every call, and /jira/oauth/callback exchanges a code with Atlassian. Nothing
  * bounded either, so a loop in a local client could spin them without limit.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,14 +23,14 @@ const TEST_DB = testDbPath('jira-oauth-rate-limit-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage } from '../server';
+import { app, initStorage, closeStorage } from '../server';
 
 let server: import('http').Server;
 const agent = () => request(server);
 beforeAll(async () => { await initStorage(); server = app.listen(0); });
 afterAll(async () => {
   await new Promise<void>(r => server.close(() => r()));
-  for (const s of ['', '-shm', '-wal']) if (fs.existsSync(TEST_DB + s)) fs.unlinkSync(TEST_DB + s);
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 describe('JIRA OAuth routes are rate limited', () => {

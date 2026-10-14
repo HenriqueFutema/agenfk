@@ -6,11 +6,11 @@
  * criteria. Four routes defeated that. These drive the real Express app so they
  * fail if the guarantee regresses, rather than asserting on source text.
  */
-import { testDbPath } from './helpers/testDb';
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import { app, initStorage, buildAllowedTransitions, storage } from '../server';
+import { app, initStorage, closeStorage, buildAllowedTransitions, storage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -74,10 +74,10 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
 
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
-    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await removeTestDb(TEST_DB, closeStorage);
     await initStorage();
   });
-  afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
+  afterAll(async () => { await removeTestDb(TEST_DB, closeStorage); });
   beforeEach(async () => {
     await initStorage();
     const p = await agent().post('/projects').send({ name: 'gate-test' });

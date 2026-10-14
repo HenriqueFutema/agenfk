@@ -68,7 +68,7 @@ beforeEach(() => {
     },
   );
 });
-afterEach(() => { fs.rmSync(userData, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(userData, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 describe('choosing a custom sound', () => {
   it('stores what the picker returned, not what the renderer asked for', () => {

@@ -55,11 +55,13 @@ describe('home isolation (item 9c297075)', () => {
     // Probe the libuv linkage directly: re-point the JS-level HOME and check
     // whether os.homedir() follows.
     const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-probe-'));
-    const prev = process.env.HOME!;
-    process.env.HOME = probeDir;
+    // libuv reads USERPROFILE on Windows (the pin sets both), HOME elsewhere.
+    const key = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+    const prev = process.env[key]!;
+    process.env[key] = probeDir;
     let follows = false;
-    try { follows = os.homedir() === probeDir; } finally { process.env.HOME = prev; }
-    fs.rmSync(probeDir, { recursive: true, force: true });
+    try { follows = os.homedir() === probeDir; } finally { process.env[key] = prev; }
+    fs.rmSync(probeDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     if (follows) return; // forks pool (normal runs, CI): libuv linkage holds.
     // Frozen C environ (Stryker threads pool): HOME can only reach
     // os.homedir() if it was baked in at SPAWN time — require the guard's
@@ -78,7 +80,7 @@ describe('home isolation (item 9c297075)', () => {
       expect(hubConfigPath()).toBe(path.join(sandbox, '.agenfk', 'hub.json'));
     } finally {
       vi.mocked(os.homedir).mockRestore();
-      fs.rmSync(sandbox, { recursive: true, force: true });
+      fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -89,7 +91,7 @@ describe('home isolation (item 9c297075)', () => {
       expect(defaultDeadletterPath()).toBe(path.join(sandbox, '.agenfk', 'hub-deadletter.jsonl'));
     } finally {
       vi.mocked(os.homedir).mockRestore();
-      fs.rmSync(sandbox, { recursive: true, force: true });
+      fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -100,7 +102,7 @@ describe('home isolation (item 9c297075)', () => {
       expect(agenfkDir()).toBe(path.join(sandbox, '.agenfk'));
     } finally {
       vi.mocked(os.homedir).mockRestore();
-      fs.rmSync(sandbox, { recursive: true, force: true });
+      fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -110,14 +112,16 @@ describe('home isolation (item 9c297075)', () => {
     try {
       const p = hubConfigPath();
       expect(p.startsWith(sandbox)).toBe(true);
-      expect(p.startsWith(REAL_HOME!), 'path must not point into the real home').toBe(false);
+      // The real home's framework dir, not the real home as a whole: on Windows
+      // the temp dir - and so the sandbox - sits inside the user profile (#208).
+      expect(p.startsWith(path.join(REAL_HOME!, '.agenfk')), 'path must not point into the real home').toBe(false);
       fs.mkdirSync(path.dirname(p), { recursive: true });
       fs.writeFileSync(p, JSON.stringify({ url: 'https://sandbox.example', token: 'test-token', orgId: 'test-org' }));
       expect(JSON.parse(fs.readFileSync(p, 'utf8')).token).toBe('test-token');
       fs.rmSync(p, { force: true });
     } finally {
       vi.mocked(os.homedir).mockRestore();
-      fs.rmSync(sandbox, { recursive: true, force: true });
+      fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });
@@ -146,5 +150,13 @@ describe('home isolation (item 9c297075)', () => {
 describe('the launching environment', () => {
   it('does not let AGENFK_SERVE_UI through', () => {
     expect(process.env.AGENFK_SERVE_UI || '').toBe('');
+  });
+
+  it('spells the temp dir and the sandbox HOME in full, as git and realpath report them (#208)', () => {
+    // Windows hands out TEMP in 8.3 form (C:\Users\FABIOT~1\..., RUNNER~1 on
+    // CI) while git lists and realpath.native returns the long name: specs then
+    // compare two spellings of one directory. Identity everywhere else.
+    expect(os.tmpdir()).toBe(fs.realpathSync.native(os.tmpdir()));
+    expect(process.env.HOME).toBe(fs.realpathSync.native(process.env.HOME!));
   });
 });
