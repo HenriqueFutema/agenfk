@@ -13,8 +13,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
-import { posixShell, shellQuote } from './helpers/posixShell';
+import { execFileSync, execSync } from 'child_process';
+import { posixBash, posixShell, shellQuote } from './helpers/posixShell';
 
 describe('posixShell()', () => {
   it('is /bin/sh off Windows, without asking git', () => {
@@ -74,6 +74,40 @@ describe('posixShell()', () => {
       execSync(`git clone -q ${shellQuote(src)} ${shellQuote(path.join(dir, 'clone'))}`, { cwd: dir, shell: posixShell(), windowsHide: true });
       expect(fs.existsSync(path.join(dir, 'clone', '.git'))).toBe(true);
     });
+  });
+});
+
+describe('posixBash()', () => {
+  it('is bash off Windows, without asking git', () => {
+    const gitExecPath = () => { throw new Error('must not be called'); };
+    expect(posixBash({ platform: 'linux', gitExecPath, exists: () => false })).toBe('bash');
+  });
+
+  it("is Git for Windows' bin/bash.exe on win32 - not the bash.exe PATH finds first (WSL's)", () => {
+    const bash = posixBash({
+      platform: 'win32',
+      gitExecPath: () => 'C:/Program Files/Git/ucrt64/libexec/git-core\n',
+      exists: (p) => p === path.win32.join('C:/Program Files/Git', 'bin', 'bash.exe'),
+    });
+    expect(bash).toBe(path.win32.join('C:/Program Files/Git', 'bin', 'bash.exe'));
+  });
+
+  it('falls back to usr/bin/bash.exe, and says what is missing when there is neither', () => {
+    const gitExecPath = () => 'D:\\tools\\Git\\mingw64\\libexec\\git-core';
+    expect(posixBash({ platform: 'win32', gitExecPath, exists: (p) => p === path.win32.join('D:\\tools\\Git', 'usr', 'bin', 'bash.exe') }))
+      .toBe(path.win32.join('D:\\tools\\Git', 'usr', 'bin', 'bash.exe'));
+    expect(() => posixBash({ platform: 'win32', gitExecPath, exists: () => false })).toThrow(/No bash\.exe found in Git for Windows/);
+  });
+
+  it.skipIf(process.platform !== 'win32')('on this machine, runs a script given by its Windows path', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-posix-bash-'));
+    try {
+      const script = path.join(dir, 'x.sh');
+      fs.writeFileSync(script, 'echo "ran $1"\n');
+      expect(execFileSync(posixBash(), [script, 'ok'], { encoding: 'utf8', windowsHide: true }).trim()).toBe('ran ok');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
   });
 });
 

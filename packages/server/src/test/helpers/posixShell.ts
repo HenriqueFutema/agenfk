@@ -40,6 +40,29 @@ export function posixShell(deps?: PosixShellDeps): string {
   return found;
 }
 
+let cachedBash: string | undefined;
+
+/**
+ * The bash a spec runs a repository script with (`bash scripts/x.sh`), found
+ * like posixShell() finds sh.exe: Git for Windows' own bash.exe on win32, and
+ * `bash` everywhere else. Not whatever `bash` PATH names first - from PowerShell
+ * or cmd that is WSL's System32\bash.exe, which reads `C:\Users\...` as
+ * `C:Users...` and runs nothing (#208).
+ */
+export function posixBash(deps?: PosixShellDeps): string {
+  if (!deps && cachedBash) return cachedBash;
+  const { platform, gitExecPath, exists } = deps ?? defaults;
+  if (platform !== 'win32') return 'bash';
+  const gitRoot = path.win32.resolve(gitExecPath().trim(), '..', '..', '..');
+  const candidates = [path.win32.join(gitRoot, 'bin', 'bash.exe'), path.win32.join(gitRoot, 'usr', 'bin', 'bash.exe')];
+  const found = candidates.find(exists);
+  if (!found) {
+    throw new Error(`No bash.exe found in Git for Windows (looked at ${candidates.join(', ')}); this spec needs its bash`);
+  }
+  if (!deps) cachedBash = found;
+  return found;
+}
+
 /**
  * One value as a single POSIX shell word. A path interpolated bare into a
  * fixture string loses its backslashes to the shell on Windows
