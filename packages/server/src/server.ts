@@ -12356,6 +12356,9 @@ export const API_PATH_PREFIXES = [
   // `/herdr`: without the prefix the desktop answers it with index.html and a
   // 200, so the caller's `r.ok` is true and the JSON parse is what fails.
   '/decompositions',
+  // `/hub/refusals` feeds the board's refusal indicator (#223). The board has
+  // no page under /hub, so nothing of the SPA is shadowed by claiming it.
+  '/hub',
 ];
 
 /**
