@@ -2,6 +2,33 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.46] — 2026-10-16
+
+Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.45` (#241).
+
+### The PR reminder names the branch the push actually ran in (#241)
+
+- `agenfk-pr-hook` resolved the pushed branch in the HOOK's own cwd, so
+  `cd <other-repo> && git push -u origin HEAD` was reported as the session repo's branch —
+  typically `main` while the push went to a feature branch in another repo or worktree.
+  `git -C <repo> push` was not matched at all. The classifier now carries the directory from
+  `cd`/`git -C` (a chained relative target joins onto the previous one), resolves `HEAD` in
+  that tree, takes the destination of a `src:dst` refspec, and stays silent when the target
+  cannot be resolved rather than guessing the hook's cwd. A scan of local sessions found 841
+  of 2181 "just pushed to" messages naming a branch absent from the command.
+- An independent adversarial review was recorded with the change (2 HIGH and 1 MEDIUM finding
+  fixed; 3 LOW rejected with reasons).
+
+### Test suite
+
+- Three pre-existing whole-suite failures fixed so the beta line is green: the missing
+  `2.0.0-beta.45` changelog entry (added above), and two macOS `/var` → `/private/var`
+  temp-path assertions, corrected without weakening the Windows 8.3 intent.
+
+### Dependencies
+
+- `js-yaml` (+ `argparse`) declared in the root lockfile, completing the dependabot regeneration.
+
 ## [2.0.0-beta.45] — 2026-10-14
 
 Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.44` (#238, #235, #234).
