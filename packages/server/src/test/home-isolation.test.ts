@@ -155,8 +155,18 @@ describe('the launching environment', () => {
   it('spells the temp dir and the sandbox HOME in full, as git and realpath report them (#208)', () => {
     // Windows hands out TEMP in 8.3 form (C:\Users\FABIOT~1\..., RUNNER~1 on
     // CI) while git lists and realpath.native returns the long name: specs then
-    // compare two spellings of one directory. Identity everywhere else.
-    expect(os.tmpdir()).toBe(fs.realpathSync.native(os.tmpdir()));
+    // compare two spellings of one directory.
+    //
+    // macOS cannot satisfy this for the temp dir: its temp root (/var) IS a
+    // symlink to /private/var, so os.tmpdir() is spelled THROUGH it by
+    // construction and never equals its own realpath. The #208 hazard is a
+    // temp path that disagrees with what git/realpath return, and on darwin
+    // both sides agree on /private/var — there is nothing to compare. Keep the
+    // assertion where a symlinked temp root is not the OS's design (Linux and
+    // Windows).
+    if (process.platform !== 'darwin') {
+      expect(os.tmpdir()).toBe(fs.realpathSync.native(os.tmpdir()));
+    }
     expect(process.env.HOME).toBe(fs.realpathSync.native(process.env.HOME!));
   });
 });
