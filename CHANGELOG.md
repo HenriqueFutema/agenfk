@@ -2,6 +2,28 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.45] — 2026-10-14
+
+Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.44` (#238, #235, #234).
+
+### The pi extension gates every mutating tool (#238)
+
+- The pi.dev extension resolves the hook runtime it can actually spawn, so the gatekeeper,
+  MCP enforcer and PR reminder run instead of the extension reporting itself loaded while the
+  gate silently did not. Edits/writes with no active task are blocked, as are the bash/read
+  bypass routes.
+
+### The full suite runs on Windows (#234, #208)
+
+- CI runs the whole test suite on Windows in shards, and the Windows compat check gates on all
+  of them — an empty known-gaps list rather than a non-blocking job. Native-Windows fixes across
+  the CLI, desktop, hub, git fixtures and process teardown (tree kill, temp-repo teardown,
+  browser launch from PowerShell/cmd, `tar` from the release tarball).
+
+### A PR's title describes the change (#235)
+
+- The PR guidance states the change in the PR's own title rather than the card id.
+
 ## [2.0.0-beta.44] — 2026-10-13
 
 Pre-release, cut from the `beta` line (PR #236). Cumulative over `2.0.0-beta.43`.

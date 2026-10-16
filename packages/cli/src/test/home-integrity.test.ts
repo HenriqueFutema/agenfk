@@ -136,8 +136,12 @@ describe('vitest HOME pin factory (scripts/vitest-home-pin.mjs)', () => {
     const b = pin.testHomeEnv();
     expect(b, 'second call must return the SAME memoized env').toBe(a);
     expect(a.HOME).toBeTruthy();
-    expect(a.HOME, 'pin must land in a fresh tmpdir sandbox')
-      .toBe(path.join(os.tmpdir(), path.basename(a.HOME)));
+    // Compare the REALPATH of both sides: the factory builds the sandbox under
+    // the long (resolved) temp dir, while os.tmpdir() can be the platform's
+    // symlinked spelling (macOS /var -> /private/var) or 8.3 form (Windows).
+    // Identity is what the pin guarantees, not one spelling of it.
+    expect(fs.realpathSync.native(path.dirname(a.HOME)), 'pin must land in a fresh tmpdir sandbox')
+      .toBe(fs.realpathSync.native(os.tmpdir()));
     // The prefix this run uses: the accented one under AGENFK_TEST_UNICODE_HOME (#201).
     expect(a.HOME, 'sandbox name must carry the recognizable prefix')
       .toContain(pin.testHomePrefix());
