@@ -19,7 +19,7 @@
     "commander": "^12.0.0",
     "figlet": "^1.12.0",
     "inquirer": "^9.2.14",
-    "uuid": "^14.0.2"
+    "uuid": "^14.0.3"
   },
   "devDependencies": {
     "@types/figlet": "^1.5.8",
