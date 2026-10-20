@@ -13,18 +13,29 @@
  * Behaviour-based: runs the real installer / bootstrap against a throwaway HOME.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { chmodSync, mkdirSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import os from 'os';
 import path from 'path';
+import { fakeBin } from './helpers/fakeBin';
 import { runInstall, runBootstrap, makeHome, cleanupHome, REPO_ROOT, type RunResult } from './helpers/runInstaller';
 
 // eslint-disable-next-line no-control-regex
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const lines = (r: RunResult) => strip(`${r.stdout}${r.stderr}`).split('\n').map((l) => l.trim()).filter(Boolean);
-/** Warnings always print; the sandbox (no npm on PATH) produces some. They are not the noise under test. */
+/** Warnings always print. They are not the noise under test. */
 const isWarning = (l: string) => l.startsWith('⚠');
 const nonWarnings = (r: RunResult) => lines(r).filter((l) => !isWarning(l));
 
 const STEP_HEADER = /\[\d+[a-z]?(-\d+)?\/14\]/;
+
+/*
+ * A warning to look at. The sandbox used to have no npm on PATH, so `npm ci`
+ * always failed and these specs leaned on that; the harness now provides a
+ * working npm (#232), so a spec that needs a warning makes npm fail on purpose.
+ */
+const failingNpmEnv = () => fakeBin(mkdtempSync(path.join(os.tmpdir(), 'agenfk-bad-npm-')), {
+  stubs: { npm: 'process.exit(1);' },
+}).env() as Record<string, string>;
 
 describe('install.mjs - a first install is short', () => {
   let r: RunResult;
@@ -51,8 +62,12 @@ describe('install.mjs - a first install is short', () => {
   });
 
   it('prefixes every warning it does print with ⚠, so a reader can tell them apart', () => {
-    // The sandbox has no npm on PATH, so the npm ci warning must appear, and as a warning.
-    const npm = lines(r).filter((l) => /npm ci/.test(l));
+    // npm fails on purpose here, so the npm ci warning must appear, and as a warning.
+    const failed = runInstall(['--rules-scope=global'], makeHome('agenfk-warn'), undefined, failingNpmEnv());
+    cleanupHome(failed.home);
+    // The closing ✗ line also names the npm ci failure; it is the install's
+    // error verdict (#232), with its own marker, not a warning.
+    const npm = lines(failed).filter((l) => /npm ci failed/.test(l) && !l.startsWith('✗'));
     expect(npm.length).toBeGreaterThan(0);
     for (const l of npm) expect(l.startsWith('⚠')).toBe(true);
   });
@@ -96,8 +111,12 @@ describe('install.mjs --quiet (what `agenfk upgrade` runs) prints only warnings'
     expect(nonWarnings(quiet)).toEqual([]);
   });
 
-  it('still prints the warnings (the sandbox has no npm)', () => {
-    expect(lines(quiet).some((l) => /^⚠ npm ci failed/.test(l))).toBe(true);
+  it('still prints the warnings when something goes wrong', () => {
+    const home = makeHome('agenfk-quiet-warn');
+    runInstall(['--rules-scope=global'], home);
+    const failed = runInstall(['--rules-scope=global', '--quiet'], home, undefined, failingNpmEnv());
+    cleanupHome(home);
+    expect(lines(failed).some((l) => /^⚠ npm ci failed/.test(l))).toBe(true);
   });
 });
 

@@ -14,6 +14,7 @@ import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegist
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
 const YELLOW = '\x1b[33m';
+const RED = '\x1b[31m';
 const NC = '\x1b[0m';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -500,7 +501,10 @@ async function run() {
     }
 
     // 1b. Install production dependencies (node_modules not shipped in tarball)
-    if (!onlyPlatform) {
+    let npmCiFailure = null;
+    // --rules-only installs rules and nothing else: no dependency refresh to
+    // fail it (#232 review).
+    if (!onlyPlatform && !rulesOnly) {
         const nodeModulesPath = path.join(rootDir, 'node_modules');
         const npmCiCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
         if (!existsSync(nodeModulesPath)) {
@@ -525,7 +529,13 @@ async function run() {
             : spawnSync(npmCiCmd, npmCiArgs, { ...npmCiOpts, windowsHide: true });
         if (npmCiResult.status !== 0) {
             if (childOutput(npmCiResult)) console.log(childOutput(npmCiResult));
-            warn(`npm ci failed (${npmCiResult.error ? npmCiResult.error.message : `exit ${npmCiResult.status}`}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.`);
+            // #232: this used to end in a warning and a "✓ installed", and
+            // `agenfk upgrade` (which trusts install.mjs's exit status) then
+            // printed "✓ Upgraded" while production deps had stopped updating.
+            // The remaining steps still run - rules, hooks and the restart do
+            // not need new deps - but the install ends as a failure.
+            npmCiFailure = `npm ci failed (${npmCiResult.error ? npmCiResult.error.message : `exit ${npmCiResult.status}`})`;
+            warn(`${npmCiFailure}. Run 'npm ci --omit=dev --ignore-scripts' in ${rootDir} to repair the install.`);
         }
     }
 
@@ -1719,6 +1729,15 @@ async function run() {
         } catch (e) {
             warn(`Could not auto-restart the server: ${e?.message ?? e}. Run \`agenfk restart\` to bring the new version online.`);
         }
+    }
+
+    if (npmCiFailure) {
+        console.error(`${RED}✗ AgEnFK ${installedVersion ? `${installedVersion} ` : ''}is NOT fully installed: ${npmCiFailure}, so its production dependencies are missing or out of date.${NC}`);
+        // The directory and the command on lines of their own: no one quoting
+        // makes a path safe to splice into a command for every shell.
+        console.error(`  Repair it: in ${rootDir}, run`);
+        console.error('  npm ci --omit=dev --ignore-scripts');
+        process.exit(1);
     }
 
     if (rulesOnly) {

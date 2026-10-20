@@ -13,6 +13,7 @@ import { spawnSync } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { fakeBin, type FakeBin } from './fakeBin';
 
 export const REPO_ROOT = path.resolve(__dirname, '../../../../..');
 const INSTALL = path.join(REPO_ROOT, 'scripts', 'install.mjs');
@@ -62,9 +63,22 @@ export function cleanupHome(home: string): void {
   rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
+/*
+ * The installer runs `npm ci` and (#232) fails the install when it fails. The
+ * sandbox PATH used to hold no npm at all, so every spec ran the "npm ci
+ * failed" path and passed only because that failure was a warning. A stub npm
+ * that succeeds (and touches nothing) stands in for a working one; a spec that
+ * wants npm to fail passes its own PATH. One stub dir per process, reused.
+ */
+let okNpm: FakeBin | undefined;
+export function workingNpmEnv(): NodeJS.ProcessEnv {
+  okNpm ??= fakeBin(mkdtempSync(path.join(os.tmpdir(), 'agenfk-ok-npm-')), { stubs: { npm: '' } });
+  return okNpm.env();
+}
+
 /** Run scripts/install.mjs into a throwaway HOME (created if not supplied). */
 export function runInstall(args: string[] = [], home = makeHome('agenfk-install'), cwd?: string, extraEnv?: Record<string, string>): RunResult {
-  return run(INSTALL, args, home, { cwd, extraEnv });
+  return run(INSTALL, args, home, { cwd, extraEnv: { ...(workingNpmEnv() as Record<string, string>), ...(extraEnv || {}) } });
 }
 
 /** Run scripts/uninstall.mjs against an existing throwaway HOME. */
