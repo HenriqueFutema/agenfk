@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # beta too (#249): betas are cut from the beta line, and a direct push
+    # there used to get no CI result at all.
+    branches: [main, beta]
   # No `branches:` filter on pull_request, deliberately. That filter matches the
   # PR's BASE branch, so it silently skipped every PR stacked on another PR's
   # branch — the mid-stack layers got no CI at all while the bottom one looked
