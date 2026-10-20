@@ -306,6 +306,26 @@ describe('flow registry commands', () => {
       logSpy.mockRestore();
     });
 
+    it('installs a flow in the shape the registry actually publishes, which has no schemaVersion (#252)', async () => {
+      // cglab-public/agenfk-flows/flows/tdd-flow.json carries name, description,
+      // author, version and steps - no schemaVersion - and nothing in the CLI
+      // (flow publish included) writes one, so requiring it refused every flow.
+      mockedAxios.get.mockResolvedValue({ data: {
+        name: 'TDD Flow', description: 'd', author: 'someone', version: '1.0.2',
+        steps: [
+          { name: 'TODO', label: 'To Do', exitCriteria: '', isAnchor: true, order: 0 },
+          { name: 'DONE', label: 'Done', exitCriteria: '', isAnchor: true, order: 1 },
+        ],
+      } });
+      mockedAxios.post.mockResolvedValue({ data: { id: 'new-flow-id', name: 'TDD Flow' } });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'tdd-flow.json']);
+      expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('Invalid flow file'));
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/flows'), expect.objectContaining({ name: 'TDD Flow' }));
+      errSpy.mockRestore(); logSpy.mockRestore();
+    });
+
     it('should error when flow JSON is invalid (missing required fields)', async () => {
       mockedAxios.get.mockResolvedValue({ data: { description: 'No name here' } });
 
