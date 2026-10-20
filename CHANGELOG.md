@@ -250,6 +250,8 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
 - Releases are gated on the suite: the release commands run it on the version-bump commit and stop on red,
   `release.yml` tests before pushing anything, and CI runs on pushes to `beta` (#249).
 - `agenfk hub deadletter requeue` resends deadlettered events, and refusals are surfaced (#223).
+- `agenfk flow install` installs community-registry flows again: it no longer requires a `schemaVersion` the
+  registry's files never carried (#252).
 
 ### Test suite
 
