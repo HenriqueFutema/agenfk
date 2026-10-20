@@ -1155,8 +1155,21 @@ const git = (args: readonly string[], cwd: string): Promise<{ ok: boolean; out: 
   new Promise((resolve) => execFile('git', args as string[], { cwd, windowsHide: true }, (e, stdout, stderr) =>
     resolve({ ok: !e, out: stdout ?? '', err: (stderr || (e as any)?.message || '').trim() })));
 
-/** A merge, rebase, cherry-pick or revert the author has not finished. */
-const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as const;
+/** A merge, cherry-pick or revert the author has not finished: git removes these when it ends. */
+const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as const;
+
+/*
+ * A rebase is NOT among them. Git can leave REBASE_HEAD behind after a rebase
+ * ends, and a stale one declined every later close commit in that repository
+ * (#251). Git itself decides "rebase in progress" by these state directories.
+ */
+const REBASE_STATE_DIRS = ['rebase-merge', 'rebase-apply'] as const;
+// A multi-commit cherry-pick or revert keeps the rest of its queue in
+// sequencer/ even after a hand-committed conflict clears its HEAD marker.
+const STATE_DIRS: ReadonlyArray<readonly [string, string]> = [
+  ...REBASE_STATE_DIRS.map((d) => [d, 'a rebase'] as const),
+  ['sequencer', 'a cherry-pick or revert sequence'],
+];
 
 /**
  * The worktree a card's work lives in: its own, else its nearest ancestor's.
@@ -1424,6 +1437,14 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
   for (const head of IN_PROGRESS_HEADS) {
     if ((await git(['rev-parse', '-q', '--verify', head], root)).ok) {
       return stop('declined', `a ${head.replace('_HEAD', '').toLowerCase().replace('_', ' ')} is in progress`);
+    }
+  }
+  for (const [dir, what] of STATE_DIRS) {
+    // --git-path resolves inside a linked worktree's own git dir, and is
+    // relative to `root` unless git returns it absolute.
+    const where = await git(['rev-parse', '--git-path', dir], root);
+    if (where.ok && fs.existsSync(path.resolve(root, where.out.trim()))) {
+      return stop('declined', `${what} is in progress`);
     }
   }
 
