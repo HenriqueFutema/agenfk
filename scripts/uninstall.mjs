@@ -15,6 +15,7 @@ import {
   isAgenfkOwnedArtifact,
   isAgenfkHomeRuntimeEntry,
   topLevelEntryWithin,
+  isAgenfkCliWrapper,
   SYSTEM_DIR_DATA_ENTRY,
 } from './uninstall-helpers.mjs';
 import { runTool } from './client-cli.mjs';
@@ -343,6 +344,12 @@ async function run() {
         // On Windows that is the .cmd shims AND the extensionless sh wrappers (#192).
         for (const name of hookBinFilenames(os.platform())) {
             const dest = path.join(localBinDir, name);
+            // #215: on Windows the extensionless `agenfk` goes only if it is our wrapper.
+            if (os.platform() === 'win32' && name === 'agenfk' && existsSync(dest)) {
+                let content = '';
+                try { content = await fs.readFile(dest, 'utf8'); } catch { /* a directory, or unreadable: not ours */ }
+                if (!isAgenfkCliWrapper(content)) continue;
+            }
             if (await rmIfExists(dest)) {
                 console.log(`  Removed: ${dest}`);
                 removed = true;

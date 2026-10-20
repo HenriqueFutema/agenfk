@@ -25,6 +25,7 @@ import {
   resolveConfirmation,
   summarizeResults,
   topLevelEntryWithin,
+  isAgenfkCliWrapper,
 } from '../../../../scripts/uninstall-helpers.mjs';
 
 const ROOT = path.resolve(__dirname, '../../../..');
@@ -53,8 +54,9 @@ describe('issue #88 — uninstall-helpers', () => {
     expect(hookBinFilenames('win32')).toEqual([
       'agenfk.cmd', 'agenfk-gatekeeper.cmd', 'agenfk-mcp-enforcer.cmd',
       'agenfk-pr-hook.cmd', 'agenfk-run-hook.cmd',
-      // #192: the extensionless sh wrappers Claude Code's Git Bash hooks run
-      'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook',
+      // #192: the extensionless sh wrappers Claude Code's Git Bash hooks run,
+      // and (#215) the CLI's own, which install.mjs writes under MinGW too
+      'agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook',
     ]);
   });
 
@@ -78,10 +80,12 @@ describe('issue #88 — uninstall-helpers', () => {
     // firing into a framework that is gone. Opencode plugins are deliberately
     // NOT tied to this count — not every hook has one.
     expect(hookBinFilenames('linux')).toEqual(['agenfk', ...HOOK_VARIANTS]);
-    // On win32 each hook is also an extensionless sh wrapper: Claude Code runs
-    // hooks through Git Bash, which cannot execute a .cmd (#192).
+    // On win32 each is also an extensionless sh wrapper: Claude Code runs hooks
+    // through Git Bash, which cannot execute a .cmd (#192), and Git Bash runs
+    // the CLI's own wrapper as `agenfk` (#215).
     expect(hookBinFilenames('win32')).toEqual([
       ...['agenfk', ...HOOK_VARIANTS].map(n => `${n}.cmd`),
+      'agenfk',
       ...HOOK_VARIANTS,
     ]);
     expect(HOOK_VARIANTS).toContain('agenfk-run-hook');
@@ -142,6 +146,17 @@ describe('issue #88 — uninstall-helpers', () => {
 // ---------------------------------------------------------------------------
 // Part B — end-to-end uninstall against a throwaway HOME
 // ---------------------------------------------------------------------------
+describe('#215 — isAgenfkCliWrapper', () => {
+  it('recognises the Git Bash wrapper install.mjs writes', () => {
+    expect(isAgenfkCliWrapper('#!/bin/sh\nnode "C:/Users/u/.agenfk-system/packages/cli/bin/agenfk.js" "$@"')).toBe(true);
+    expect(isAgenfkCliWrapper('#!/bin/sh\r\nnode "C:\\Users\\u\\.agenfk-system\\packages\\cli\\bin\\agenfk.js" "$@"\r\n')).toBe(true);
+  });
+  it('leaves anything else alone', () => {
+    expect(isAgenfkCliWrapper('#!/bin/sh\nexec /opt/my-own-agenfk "$@"')).toBe(false);
+    expect(isAgenfkCliWrapper('')).toBe(false);
+  });
+});
+
 describe('#214 — topLevelEntryWithin', () => {
   it('treats a name that merely starts with ".." as inside the root', () => {
     expect(topLevelEntryWithin('/r', '/r/..boards/db.sqlite', path.posix)).toBe('..boards');
@@ -315,6 +330,23 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     const r = runUninstall(['-y']);
     expect(existsSync(p('.agenfk-system'))).toBe(false);
     expect(r.status).toBe(0);
+  });
+
+  it.runIf(process.platform === 'win32')('removes the extensionless agenfk wrapper Git Bash runs, not only agenfk.cmd (#215)', () => {
+    // install.mjs writes both under MinGW: agenfk.cmd for cmd/PowerShell and an
+    // extensionless #!/bin/sh wrapper for Git Bash. Leaving the wrapper behind
+    // kept `agenfk` on PATH pointing at a framework that was gone.
+    writeFileSync(p('.local', 'bin', 'agenfk.cmd'), '@echo off\r\n');
+    writeFileSync(p('.local', 'bin', 'agenfk'), `#!/bin/sh\nnode "${p('.agenfk-system', 'packages', 'cli', 'bin', 'agenfk.js')}" "$@"`);
+    runUninstall(['-y']);
+    expect(existsSync(p('.local', 'bin', 'agenfk.cmd'))).toBe(false);
+    expect(existsSync(p('.local', 'bin', 'agenfk'))).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('keeps a ~/.local/bin/agenfk that is not the wrapper it wrote (#215 review)', () => {
+    writeFileSync(p('.local', 'bin', 'agenfk'), '#!/bin/sh\nexec /opt/my-own-agenfk "$@"\n');
+    runUninstall(['-y']);
+    expect(existsSync(p('.local', 'bin', 'agenfk'))).toBe(true);
   });
 
   it('aborts without -y on non-interactive stdin and leaves artifacts intact (Bug 5)', () => {

@@ -12,13 +12,15 @@
 export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook'];
 
 // Bin filenames the installer drops into ~/.local/bin. The `agenfk` CLI symlink
-// plus all three hook variants. On Windows each is a `.cmd` shim, and each hook
-// also has an extensionless `#!/bin/sh` wrapper (the one Claude Code's Git Bash
-// hook command points at, issue #192).
+// plus all three hook variants. On Windows each is a `.cmd` shim, and each also
+// has an extensionless `#!/bin/sh` wrapper: the hooks' is what Claude Code's Git
+// Bash hook command points at (issue #192), the CLI's is what Git Bash runs as
+// `agenfk` (install.mjs writes it under MinGW; #215 - it used to be left behind).
 export function hookBinFilenames(platform) {
   if (platform === 'win32') {
     return [
       ...['agenfk', ...HOOK_VARIANTS].map((n) => `${n}.cmd`),
+      'agenfk',
       ...HOOK_VARIANTS,
     ];
   }
@@ -66,6 +68,14 @@ export function topLevelEntryWithin(root, target, pathMod) {
 // default npx install (install.mjs: dbPath = <rootDir>/.agenfk/db.sqlite).
 // A default uninstall removes the framework around it and keeps it.
 export const SYSTEM_DIR_DATA_ENTRY = '.agenfk';
+
+// The Windows extensionless `agenfk` is ours only when it is the wrapper
+// install.mjs writes under MinGW: `#!/bin/sh` then `node "<...>/agenfk.js" "$@"`.
+// A non-MinGW install never writes one, so a file of that name there may be the
+// user's own and is left alone (#215 review).
+export function isAgenfkCliWrapper(content) {
+  return /^#!\/bin\/sh\r?\nnode "[^"]*agenfk\.js" "\$@"\s*$/.test(String(content));
+}
 
 // Not every hook has an Opencode plugin. The installer copies one only where a
 // `bin/<name>-opencode.mjs` source exists, and agenfk-run-hook has none — it is
