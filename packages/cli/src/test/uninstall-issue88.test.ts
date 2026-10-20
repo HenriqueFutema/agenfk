@@ -178,9 +178,12 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
   function seedInstall() {
     // bins
     mkdirSync(p('.local', 'bin'), { recursive: true });
-    for (const f of ['agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook']) {
+    for (const f of ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook']) {
       writeFileSync(p('.local', 'bin', f), '#!/bin/sh\n');
     }
+    // The CLI wrapper as install.mjs writes it. On win32 the uninstaller removes
+    // the extensionless `agenfk` only when it is this wrapper (#215).
+    writeFileSync(p('.local', 'bin', 'agenfk'), `#!/bin/sh\nnode "${p('.agenfk-system', 'packages', 'cli', 'bin', 'agenfk.js')}" "$@"`);
     // opencode plugins
     mkdirSync(p('.config', 'opencode', 'plugins'), { recursive: true });
     for (const f of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs']) {
