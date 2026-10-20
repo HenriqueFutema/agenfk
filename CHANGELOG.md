@@ -2,6 +2,22 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-rc.1] — 2026-10-20
+
+First release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-beta.46` (tracking issue #250):
+
+- `uninstall` keeps the board database, backups, hub enrolment, `installation-id` and `config.json`;
+  `--purge-data` deletes them too (#214).
+- A failed `npm ci` fails the install and `agenfk upgrade` instead of reporting success, and the dist ships
+  every workspace manifest so a stale one cannot send `npm ci` to the registry (#232).
+- `npx github:cglab-public/agenfk#<tag>` installs that tag's release (#216).
+- Windows `uninstall` removes the extensionless `agenfk` wrapper (#215).
+- A stale `.git/REBASE_HEAD` no longer blocks the close commit (#251).
+- Releases are gated on the suite, and CI runs on pushes to `beta` (#249).
+- `agenfk flow install` accepts community-registry flows again (#252).
+- `agenfk hub deadletter requeue` and surfaced refusals (#223).
+
 ## [2.0.0] — Unreleased
 
 Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12` and `2.0.0-beta.1`
