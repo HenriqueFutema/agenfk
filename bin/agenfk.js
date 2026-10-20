@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { compareSemver, newestChannelTag } from './version-utils.mjs';
 import { pruneInstallDir, pruneInstallDirAgainstManifest } from './sync-install-dir.mjs';
 import { forceLocalFlag, tarPath } from './tar-flags.mjs';
+import { requestedGitRef, releaseTagForRef, releaseTagForVersion } from './requested-ref.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -221,6 +222,32 @@ if (isNpxCache) {
   // download-failure case, which is how that path was missed.)
   let skipSourcePrune = false;
 
+  // #216: a pinned ref (`npx github:cglab-public/agenfk#<tag>`) gets ITS
+  // release's dist, fetched BEFORE anything is copied: once the pinned source
+  // is over the install dir, a failed download would leave it on another
+  // release's dist - the mix this exists to prevent. So a pin that cannot be
+  // fetched stops here, with the install untouched.
+  const pinnedRef = shouldRebuild ? null : requestedGitRef(REPO_ROOT, fs, path);
+  let pinnedTag = null;
+  let pinnedArchive = null;
+  if (pinnedRef) {
+    pinnedTag = releaseTagForRef(pinnedRef, readLocalVersion(REPO_ROOT));
+    pinnedArchive = path.join(os.tmpdir(), `agenfk-dist-${process.pid}-${Date.now()}.tar.gz`);
+    try {
+      if (!pinnedTag) throw new Error('it is neither a release tag nor a tree that declares a release version');
+      downloadAsset('cglab-public/agenfk', pinnedTag, 'agenfk-dist.tar.gz', pinnedArchive);
+      // Read it through once, too: a truncated or corrupt archive must also
+      // fail here, before the pinned source goes in, not at extraction.
+      const listFlags = process.platform === 'win32' ? `${forceLocalFlag()}-tzf` : '-tzf';
+      execSync(`tar ${listFlags} "${tarPath(pinnedArchive)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    } catch (e) {
+      try { fs.unlinkSync(pinnedArchive); } catch { /* never written */ }
+      console.error(`${YELLOW}❌ Could not fetch the release for the requested ref ${JSON.stringify(pinnedRef)}${pinnedTag ? ` (${pinnedTag})` : ''}: ${e.message}${RESET}`);
+      console.error(`${YELLOW}   Nothing was changed${isUpdate ? ` in ${INSTALL_DIR}` : ''}. Pin a published release tag, or run without a ref to install the latest.${RESET}`);
+      process.exit(1);
+    }
+  }
+
   if (isUpdate) {
     console.log(`${GREEN}Updating AgEnFK at ${INSTALL_DIR}...${RESET}`);
     // Copy the new files over the existing install AND prune what this version
@@ -248,7 +275,7 @@ if (isNpxCache) {
   if (!shouldRebuild && (isUpdate || distMissing)) {
     const REPO = 'cglab-public/agenfk';
     try {
-      const latestTag = fetchLatestTag(REPO, isBeta);
+      const latestTag = pinnedTag || fetchLatestTag(REPO, isBeta);
       // Downgrade guard: refuse to extract a tag whose version is older than
       // the existing install. Without this, `npx github:cglab-public/agenfk`
       // (no --beta) on a beta install resolves to the latest *stable* tag,
@@ -256,7 +283,8 @@ if (isNpxCache) {
       // reverts the install. (Bug 28635f38.)
       const localVersion = installedVersion;
       const remoteVersion = String(latestTag || '').replace(/^v/, '');
-      if (localVersion && remoteVersion && compareSemver(remoteVersion, localVersion) < 0) {
+      // Not for a pin: the user named that version, and its source is already in.
+      if (!pinnedTag && localVersion && remoteVersion && compareSemver(remoteVersion, localVersion) < 0) {
         console.log(`${YELLOW}Skip: refusing to downgrade — local install is on a newer version (${localVersion}) than the resolved tag (${remoteVersion}). Pass --beta to track prereleases.${RESET}`);
         // And skip the prune entirely. The install dir is deliberately left on a
         // NEWER ref than either the resolved tag or REPO_ROOT (the npx git ref,
@@ -267,7 +295,13 @@ if (isNpxCache) {
       } else {
         const archive = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
         try {
-        downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', archive);
+        if (pinnedArchive) {
+          // Fetched up front (above); copy, not rename: tmp may be another volume.
+          fs.copyFileSync(pinnedArchive, archive);
+          fs.unlinkSync(pinnedArchive);
+        } else {
+          downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', archive);
+        }
         execSync(`tar ${tarFlags} "${tarPath(archive)}" -C "${tarPath(INSTALL_DIR)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         // Prune against the ARCHIVE, not against REPO_ROOT. REPO_ROOT is the
         // npx git ref (the default branch); the tarball is fetchLatestTag,
@@ -299,6 +333,14 @@ if (isNpxCache) {
         }
       }
     } catch (e) {
+      if (pinnedTag) {
+        // The archive was fetched and read before the copy, so this is rarer
+        // (a full disk, say) - but the pinned source is already in, and the
+        // fallback below would finish the install on another release's dist.
+        console.error(`${YELLOW}❌ Could not install ${pinnedTag}'s pre-built binary: ${e.message}${RESET}`);
+        console.error(`${YELLOW}   ${INSTALL_DIR} now holds ${pinnedTag}'s source without its binaries. Re-run the same command to finish.${RESET}`);
+        process.exit(1);
+      }
       console.error(`Failed to download pre-built binary: ${e.message}`);
       console.log(`${BLUE}Falling back to source-based installation...${RESET}`);
       // And do NOT prune. The existing install is on the tag the user already
@@ -311,6 +353,9 @@ if (isNpxCache) {
       skipSourcePrune = true;
     }
   }
+
+  // A pinned archive the block above did not consume (no download was due).
+  if (pinnedArchive) { try { fs.unlinkSync(pinnedArchive); } catch { /* consumed */ } }
 
   // Only when the npx cache genuinely IS the last writer for PRUNED_DIRS —
   // i.e. --rebuild, where no archive was ever fetched. Every path where the
@@ -339,7 +384,9 @@ if (isNpxCache) {
   if (!shouldRebuild && distMissing) {
     const REPO = 'cglab-public/agenfk';
     try {
-      const latestTag = fetchLatestTag(REPO, isBeta);
+      // #216: this clone's own release, not whatever is newest - the dist must
+      // match the source it lands in.
+      const latestTag = releaseTagForVersion(readLocalVersion(REPO_ROOT)) || fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
       execSync(`tar ${tarFlags} "${tarPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${tarPath(REPO_ROOT)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024, windowsHide: true });
       fs.unlinkSync(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
