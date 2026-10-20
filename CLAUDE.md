@@ -76,7 +76,7 @@ The old version is read from the root `package.json`; commit the manifest change
 
 **Single Owner**: the API server in `packages/server` is the only writer of state. CLI, MCP clients, and UI all go through its REST endpoints; updates fan out over Socket.io. Never read `.agenfk/db.sqlite` directly from other packages — go through the storage interface in `core`.
 
-**Storage**: SQLite-only via `better-sqlite3` (`packages/storage-sqlite`). The repo previously supported `db.json`; existing JSON DBs are auto-migrated by the installer. WAL mode + indexed schema.
+**Storage**: SQLite-only via Node's built-in `node:sqlite` (`DatabaseSync`, in `packages/storage-sqlite`; no native module). The repo previously supported `db.json`; existing JSON DBs are auto-migrated by the installer. WAL mode + indexed schema.
 
 **Serving the UI**: the server serves the built board itself - `agenfk up` (`scripts/start-services.mjs`) sets `AGENFK_SERVE_UI` to `packages/ui/dist`, so REST, Socket.io and assets share one origin and the board's lifecycle is the server's (no separate UI process; with no build the API runs alone and says so). That one origin is also what the Electron desktop shell loads. For UI development, `cd packages/ui && npm run dev` still runs vite against the API. The path must be a *build output*: a directory containing `node_modules/` or `src/` is rejected, because `packages/ui/index.html` exists and the near-miss typo would otherwise expose the source tree. With the variable unset, behaviour is unchanged.
 
