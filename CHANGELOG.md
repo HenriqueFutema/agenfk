@@ -115,9 +115,11 @@ port, project ids kept out of version control, and hub-side flow adherence.
   <!-- verified: packages/server/src/server.ts:6973 -->
 
 - **Database migrations at first start.** Per-test results move to a `blobs` table and existing cards are
-  pruned to their latest capture per step and latest green. A pre-2.0 server misreads the moved results, so a
-  downgrade needs a backup taken before the upgrade.
-  *Migrate:* `agenfk backup` before upgrading if you may want to go back.
+  pruned to their latest capture per step and latest green. 1.1.20 keeps reading and writing a migrated
+  database (it ignores 2.0-only data such as step records), so going back is `agenfk upgrade --version
+  1.1.20`, no restore needed. A 2.0 beta older than the `blobs` move misreads the moved results.
+  *Migrate:* nothing for 1.1.20. For a byte-identical way back, copy the database file aside before
+  upgrading (below). `agenfk backup` is not that: it writes a JSON export that no version can restore.
 
 - **`agenfk verify --no-wait` and `AGENFK_NO_BROWSER` are removed.** When only a person's approval holds a
   card, verify opens it on the board and waits (up to 9 minutes; `--wait-minutes` changes it; never in `CI`).
@@ -163,7 +165,10 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
 
 ### Upgrading from 1.1.x
 
-1. `agenfk backup`. 2.0 migrates the database at first start and a 1.1.x server cannot read it back.
+1. Optional, for a byte-identical way back: while the server runs, note the database path `agenfk db status`
+   reports (`AGENFK_DB_PATH` can override `config.json`), then `agenfk down` and copy that file and any `-wal`
+   and `-shm` files beside it somewhere safe. 2.0 migrates the database at first start; 1.1.20 still reads
+   and writes it afterwards, so this copy is a safety net, not a requirement.
 2. Upgrade: `agenfk upgrade --version 2.0.0`. Naming the version is safest: 1.1.x picks "latest" by publish
    date, not by version.
 3. The first upgrade is run by your old CLI. It downloads and extracts 2.0, then runs 2.0's `install.mjs`.
@@ -183,7 +188,14 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
 7. If you copied rules into a project with `agenfk skills install --project`, run it again there.
 8. Hub-joined users: reconnect JIRA through the hub ("Connect JIRA" on the board) after an admin configures it
    under hub Admin → JIRA.
-9. Hub operators: deploy, set `AGENFK_HUB_TRUST_PROXY` / `AGENFK_HUB_PUBLIC_URL` for your topology, run the
+9. To go back: `agenfk upgrade --version 1.1.20`. Board data (projects, cards, statuses, comments) carries
+   over in both directions, including cards created or edited on the other version. 1.1.20 ignores 2.0-only
+   data such as step records and reviews; keeping it across a round trip is not promised. Do not edit
+   existing flows while downgraded: 2.0 reads its saved flow revisions, so those edits are ignored after
+   upgrading again. To return to the exact pre-upgrade state instead: `agenfk down`, move the current
+   database and its `-wal`/`-shm` files aside (a leftover WAL would replay newer pages over the restored
+   file), then put back the saved database and whichever sidecars were saved with it.
+10. Hub operators: deploy, set `AGENFK_HUB_TRUST_PROXY` / `AGENFK_HUB_PUBLIC_URL` for your topology, run the
    full rollup recompute once, and upgrade every member before dispatching a flow that uses the `backlog`
    role. Expect the hub's closed-card counts to rise: cards closed by roll-up, sibling propagation or a flow
    whose last step is not named DONE now emit `item.closed`.
