@@ -2,6 +2,276 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0] — Unreleased
+
+Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12` and `2.0.0-beta.1`
+through `2.0.0-beta.46`. 2.0 moves workflow enforcement into the server. A card moves forward only through
+`agenfk verify`, each step carries a role and checks the server runs from recorded evidence, and the final step
+runs the project's own verify command. The line also brings the desktop app, a board served from the API's own
+port, project ids kept out of version control, and hub-side flow adherence.
+
+### Breaking changes
+
+- **Forward moves go through `agenfk verify` only.** `agenfk update <id> --status <later step>` (and MCP
+  `update_item`, `PUT /items/:id`, `POST /items/bulk`) is refused with HTTP 409 and a message naming
+  `agenfk verify <id>`. A move onto the step that completes the card is refused with 403 by every route,
+  whatever the exit step is called, and the internal verify token no longer exempts anything. A jump past the
+  allowed targets is a 400. `update --status` still moves a card back, or to PAUSED/BLOCKED. The one forward
+  move left outside verify is a person dragging a card on the board; it is recorded on the card and on the PR
+  as made without evidence or checks.
+  *Affects:* scripts and agent rules that advance cards with `update --status`.
+  *Migrate:* replace them with `agenfk verify <id> --evidence "<text>"`. The shipped rules already say so and
+  are reinstalled by the upgrade.
+  <!-- verified: packages/server/src/server.ts:7629 (token no longer exempts), :7655 (403 completion), :7666 (409 forward), :2139 classifyStatusMove (board-only forward), :2110 refusal text -->
+
+- **The final step runs the project's own verify command.** A command passed to `agenfk verify` on the final
+  step is ignored, with a warning on the reply naming the project's command (never a 400, so older skills keep
+  working), and it cannot stand in for a missing project command. Intermediate steps still take an optional
+  command, which can only add a check.
+  *Affects:* anyone who relied on `agenfk verify <id> --evidence x "<cmd>"` to choose what runs at the close.
+  *Migrate:* set the command once: `agenfk update-project <id> --verify-command "<cmd>"`, or `verifyCommand`
+  in `.agenfk/project.json` (see the approval note below).
+  <!-- verified: packages/server/src/server.ts:9716-9719, :8135 ignoredCommandNote -->
+
+- **A repository-declared verify command needs a person's approval.** `.agenfk/project.json` can now carry
+  shared settings, and a `verifyCommand` from that file wins over the stored one. It runs only after someone
+  approves it on the project's Settings tab on the board; the approval is pinned to a SHA-256 fingerprint of
+  the exact command, so an edit to it needs approving again. Until then the final verify is refused with
+  `COMMAND_NEEDS_APPROVAL`. The CLI cannot approve.
+  *Migrate:* approve the command on the board the first time a close asks for it.
+  <!-- verified: packages/server/src/server.ts:9269 unapprovedFileVerify, :9711-9714 -->
+
+- **One origin: the API and the board share one port (CGLAB-165).** The server serves the built board itself;
+  `agenfk up` no longer starts `vite preview`. The board is at the API's port (`http://localhost:3000` by
+  default) and nothing listens on 5173. Neither `agenfk down` nor `agenfk kill` kills by port 5173 any more:
+  `down` stops processes by pattern (the server, and a UI process an older version left running), and `kill`
+  additionally frees the discovered and default API ports, never a dev server that merely holds 5173.
+  *Affects:* bookmarks and scripts that open `localhost:5173`; reverse proxies, CSPs or CORS allowlists
+  written for two origins.
+  *Migrate:* use `agenfk ui`, which reads `~/.agenfk/server-port` (and opens the desktop app when one is
+  installed; `--web` forces the browser). If you set `AGENFK_SERVE_UI` yourself, point it at a build output:
+  a directory holding `src/` or `node_modules/` is refused. With the variable unset the server serves the API
+  only; `agenfk up` sets it whenever `packages/ui/dist` exists. Rebuilding the UI with the server up needs
+  `agenfk restart`.
+  <!-- verified: scripts/start-services.mjs:43-59; packages/server/src/server.ts:12354 resolveUiDir, :12440; packages/cli/src/index.ts:1025 (no kill by port 5173) -->
+
+- **`projectId` moved out of version control (CGLAB-625).** The id is a row in one machine's database, so it
+  lives in the git-ignored `.agenfk/local.json`; `.agenfk/project.json` keeps only shared settings
+  (`verifyCommand`, `flow`, `setupCommand`, `name`, `description`). `agenfk init` writes `local.json` and adds
+  it to `.gitignore` unless git already ignores it. A legacy id still in `project.json` keeps working, with a
+  warning on stderr; re-running `agenfk init` moves it into `local.json` when this machine's server has that
+  project (an emptied `project.json` stays as `{}`). A fresh clone is linked with `agenfk init --project <id>`.
+  A git worktree takes its project id from its main checkout; `agenfk init` and `agenfk configure-ide` refuse
+  to run inside one.
+  *Migrate:* run `agenfk init` once in each main checkout, then commit `.gitignore` and the stripped
+  `project.json`. Teammates link their clones with `agenfk init --project <id>` (ids from
+  `agenfk list-projects` on their own server) or `agenfk init <name>`.
+  <!-- verified: packages/core/src/projectIdentity.ts:17, :103 resolveProjectIdentity; packages/cli/src/index.ts:1418 (--project), :1439 (worktree refusal), :1830 (legacy warning); packages/cli/src/localProject.ts:76; packages/cli/src/index.ts:1615 (configure-ide) -->
+
+- **Leaving TODO fetches and checks the card's tree.** The shipped default and TDD flows give TODO the new
+  `backlog` role, whose `tree-in-sync` check runs a `git fetch` and refuses a tree that is behind or has
+  diverged from its upstream (ahead is fine; no remote passes; an unreachable remote warns). Projects with no
+  flow of their own get it through the built-in default.
+  *Migrate:* `git pull --ff-only` before starting a card, or remove the role from your flow's TODO step.
+  Upgrade every member before a hub dispatches flows that carry roles or checks: a 1.1.20 client silently
+  strips those fields (the flow arrives without their enforcement), and a 2.0 beta older than the `backlog`
+  role rejects it as `unknown role`.
+  <!-- verified: packages/core/src/defaultFlow.ts:16 -->
+
+- **The built-in default flow requires an independent review at REVIEW.** Its REVIEW step now carries the
+  `review` role, whose `review-record` check refuses to leave REVIEW without a recorded review by someone other
+  than the card's authors (a self-review in the evidence does not count, on harnesses whose session logs the
+  server can read). Children are normally reviewed with their parent.
+  *Migrate:* `agenfk review brief <id>` gives a separate reviewer its prompt; record its result with
+  `agenfk review record <id> --transcript <reviewer session log> --findings '<json>'`. Or use a flow whose
+  review step has no `review` role.
+  <!-- verified: packages/core/src/defaultFlow.ts:29; packages/server/src/checkEngine.ts:332 -->
+
+- **Hub-joined installations take JIRA from the hub only.** A local JIRA setup and token are no longer used
+  once the installation has joined a hub, and `agenfk jira setup` refuses there.
+  *Migrate:* a hub admin configures the org's Atlassian app once (hub Admin → JIRA); each user then connects
+  their own JIRA with "Connect JIRA" on the board.
+  <!-- verified: packages/server/src/server.ts:11139; packages/cli/src/index.ts:2738 -->
+
+- **`agenfk get` / `GET /items` leave step records out.** `GET /items` and `agenfk list --json` no longer
+  carry `stepRecords` or `supersededRecords`; a single card includes them only when asked
+  (`GET /items/:id?records=1`, `agenfk get <id> --records`, MCP `get_item` with `includeRecords: true`).
+  <!-- verified: packages/server/src/server.ts:6973 -->
+
+- **Database migrations at first start.** Per-test results move to a `blobs` table and existing cards are
+  pruned to their latest capture per step and latest green. A pre-2.0 server misreads the moved results, so a
+  downgrade needs a backup taken before the upgrade.
+  *Migrate:* `agenfk backup` before upgrading if you may want to go back.
+
+- **`agenfk verify --no-wait` and `AGENFK_NO_BROWSER` are removed.** When only a person's approval holds a
+  card, verify opens it on the board and waits (up to 9 minutes; `--wait-minutes` changes it; never in `CI`).
+  `--no-wait` is accepted and ignored with a warning.
+  <!-- verified: packages/cli/src/index.ts:4427, :4559 -->
+
+- **A card cannot close while anything under it is open.** The closing move is refused with `CHILDREN_OPEN`,
+  naming the open descendants.
+  <!-- verified: packages/server/src/server.ts:877 -->
+
+- **`agenfk upgrade` never downgrades unless asked.** It refuses a version that is not newer; `--force` only
+  reinstalls the same version; `--version <x>` is the only way back. `--beta` includes stable releases. It
+  also refuses to extract over a development (git) checkout.
+  <!-- verified: packages/cli/src/index.ts:766, :793 -->
+
+- **`agenfk init` respects the CLI-only default.** It registers the agenfk MCP server only on a `--with-mcp`
+  install; `agenfk configure-ide` still adds it on demand. The enforcer hook's `mcp-fallback-approved` bypass
+  is gone.
+  <!-- verified: packages/cli/src/index.ts:1567 -->
+
+- **Claims are removed.** Only relevant if you ran a `1.1.21` or `2.0` beta before `2.0.0-beta.24`: claims
+  never shipped in a stable release. `agenfk update` has no `--claims` option, `PUT /items/:id` ignores the
+  field, and the stored field is dropped once at server start.
+  <!-- verified: packages/storage-sqlite/src/index.ts:155-167; absent from v1.1.20:packages/cli/src/index.ts -->
+
+- **Hub: the PR-overview metric is `adherence`.** `/v1/prs/overview` returns `adherence` (aggregate and per
+  developer) where betas returned `compliance`, and the UI says Adherence. The stored payload field
+  `compliant` and the rollup column `transitions_compliant` keep their names. After deploying, a signed-in
+  admin should run one full rollup recompute, `POST /v1/admin/rollups/recompute` with `{"full": true}`
+  (there is no button for it), so days rolled up before the adherence columns existed are filled in.
+  <!-- verified: packages/hub/src/routes/queries.ts:855-859; packages/hub/src/routes/admin.ts:662; packages/hub/src/rollup.ts:102 -->
+
+- **Hub: proxy and network defaults.** `AGENFK_HUB_TRUST_PROXY` defaults to `1` (one proxy appends to
+  `X-Forwarded-For`); a hub exposed directly must set `0`. `X-Forwarded-Host` is no longer read: if your proxy
+  rewrites `Host`, set `AGENFK_HUB_PUBLIC_URL`, which now sets the origin of every URL the hub hands out.
+  Federation calls no longer go through `HTTP_PROXY`/`HTTPS_PROXY`, and a parent on a link-local or
+  cloud-metadata address is refused even with `AGENFK_HUB_ALLOW_PRIVATE_PARENT`. The hub moves to Express 5:
+  bracket query syntax (`?from[a]=b`) is no longer parsed into objects.
+  <!-- verified: packages/hub/src/server.ts:411, :455, :486; packages/hub/package.json:28 -->
+
+Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in `node:sqlite`.
+<!-- verified: package.json:54; packages/storage-sqlite/src/index.ts:31 (same in v1.1.20) -->
+
+### Upgrading from 1.1.x
+
+1. `agenfk backup`. 2.0 migrates the database at first start and a 1.1.x server cannot read it back.
+2. Upgrade: `agenfk upgrade --version 2.0.0`. Naming the version is safest: 1.1.x picks "latest" by publish
+   date, not by version.
+3. The first upgrade is run by your old CLI. It downloads and extracts 2.0, then runs 2.0's `install.mjs`.
+   In practice:
+   - Fixes in 2.0's installer apply now: the install-dir prune (when coming from 1.1.20, which hands the
+     archive to the installer), surfacing a failing `npm ci`, the rules and hooks reinstall.
+   - Fixes in 2.0's `agenfk upgrade` command do not apply until your next upgrade: picking the newest release
+     by version, the no-downgrade guard, the refusal to extract over a git checkout, and the two-line output.
+     Expect the old, longer output this once.
+   - From a pre-1.1.20 install the old CLI does not hand the archive to the installer, so files 2.0 dropped
+     stay in `~/.agenfk-system` until the next upgrade. Run `agenfk upgrade --force` once on 2.0 to prune them.
+4. `agenfk restart`, then open the board with `agenfk ui` (it is on the API's port now).
+5. In each repository: `agenfk init` to move `projectId` into `.agenfk/local.json`, then commit `.gitignore`
+   and `.agenfk/project.json`.
+6. Make sure each project has a verify command (`agenfk update-project <id> --verify-command "<cmd>"`). If it
+   is declared in `project.json`, approve it on the project's Settings tab.
+7. If you copied rules into a project with `agenfk skills install --project`, run it again there.
+8. Hub-joined users: reconnect JIRA through the hub ("Connect JIRA" on the board) after an admin configures it
+   under hub Admin → JIRA.
+9. Hub operators: deploy, set `AGENFK_HUB_TRUST_PROXY` / `AGENFK_HUB_PUBLIC_URL` for your topology, run the
+   full rollup recompute once, and upgrade every member before dispatching a flow that uses the `backlog`
+   role. Expect the hub's closed-card counts to rise: cards closed by roll-up, sibling propagation or a flow
+   whose last step is not named DONE now emit `item.closed`.
+
+### Highlights
+
+**Workflow and checks**
+- Step roles (backlog, planning, test-authoring, coding, refactoring, review, testing, closing) and a
+  record-based check engine:
+  tree-clean, on-card-branch, tree-in-sync, jira-key-valid, the TDD red/green and test-surface checks,
+  suite-green, `tests-added-late`, `fixes-reviewed`, `tree-warnings`.
+- Custom checks per step: command checks (argv in the card's tree, optional passkey approval) and agent checks
+  (`agenfk verify --check <name>=pass|fail`).
+- Human gates on the board: approvals and overrides with a reason, optional passkey (WebAuthn) signing, all
+  listed on the PR. Verify opens the card and waits, and prints an `APPROVAL NEEDED` block.
+- Warnings are answered with `--check-note <check>="..."`; answers go to the reviewer and the PR.
+- Independent reviews: `agenfk review brief <id>` writes the reviewer's prompt, `agenfk review record` checks
+  the reviewer's transcript, findings carry a severity, and a Reviews tab shows them.
+- Fewer suite runs: reuse of a green of the same tree content, related-tests-only runs on intermediate steps
+  (`--test-report-related-command`), Markdown edits no test names skip the suite, the close stands on a green
+  already on record, siblings share runs, and suite runs are queued server-wide (`maxConcurrentSuiteRuns`).
+- `agenfk verify --plan` and the gatekeeper say what leaving a step will run before it runs.
+- `verifyAt: parent` runs the suite once at the top-level card.
+- A failed verify command leaves the card where it is instead of rolling it back.
+- `agenfk update <id> --worktree <path>|none|inherit` chooses where a card runs; verify and the close commit
+  run in the card's worktree.
+- Per-step auto commit; JUnit reports from `node:test`, pytest and xUnit; several report paths per project.
+- `agenfk create` prints the created card as JSON and exits non-zero on failure.
+- Immutable flow revisions; transitions are stamped with their flow revision, and a flow adherence score is
+  shown per card and per project.
+- `agenfk config get|set` reaches every server setting.
+
+**Hub and federation**
+- JIRA configured once by a hub admin; each user connects their own JIRA through the hub.
+- A hub admin can switch individual checks off on a step (`disabledChecks`); every verify and PR names them.
+- Flow adherence for the org: `GET /v1/adherence`, an `/adherence` page, and adherence on the PR overview.
+- Flow dispatch and group upgrades to child hubs from Admin; publish to the org's own registry as a pull
+  request; the registry's open pull requests listed in Admin.
+- Config audit log with CSV export; admin recovery for an SSO-only hub (`AGENFK_HUB_RESET_ADMIN_EMAIL`).
+- Rate limits per signed-in user, `express-rate-limit`, hardened invite redemption and first-run setup, and a
+  parent hub judged by the address it resolves to.
+- Dashboards: filters in the link, people shown by name, local-time dates, sortable tables, phone layout and
+  keyboard-usable charts; the last admin cannot be removed.
+
+**Desktop app**
+- Electron app (macOS, Windows, Linux) on the same origin as the server: terminals in a pane tree, an agent
+  picker that finds CLIs on a fresh-terminal PATH, Start on a card hands the agent the card as its prompt.
+- Add Project by picking a folder, cloning, or creating a GitHub repository; a project page with its cards.
+- A file's diff from the worktree panel; a running-verifies chip in the status bar.
+
+**Board**
+- Checks, Reviews and Adherence tabs on a card; a running verify shown on the card; a verifies-running chip.
+- One visual system with the hub and flow editor, neutral dark mode, visible focus, AA contrast.
+- Created and updated dates on cards, a date filter, Settings in the browser board, drill-down into any card
+  with children.
+
+**Installer and CLI**
+- Two-line upgrades, one-line `up`/`down`/`restart`/`kill`; step-by-step logs behind `--debuglog`.
+- Upgrades and the installer never overwrite a development checkout; JIRA secrets written 0600.
+- `agenfk pr create --base <branch>`; PR model detection reads the harness's own session id.
+- Windows: hooks run under Git Bash, client CLIs launch from `.cmd` shims, every child process is hidden, and
+  the full suite runs on Windows in CI. The pi.dev extension gates every mutating tool.
+
+### Fixed since the last beta
+
+- `uninstall` keeps your data: the board database (wherever `dbPath` points, SQLite sidecars included),
+  backups, `hub.json`, `installation-id` and `config.json`. Only runtime files and the framework go;
+  `--purge-data` deletes the data too. A symlinked `~/.agenfk-system` is never deleted through (#214).
+- `agenfk upgrade` no longer reports success over a failed `npm ci`: the install ends with a ✗ verdict and a
+  repair command, and exits non-zero. The dist now ships every workspace's `package.json`, so a stale copy
+  left by a source install no longer sends `npm ci` to the registry (E404) (#232).
+- `npx github:cglab-public/agenfk#<tag>` installs that tag's release, not the newest one over the tag's
+  source. A pin that cannot be fetched stops before touching the install. A git clone without a built dist
+  fetches its own version's release (#216).
+- Windows: `uninstall` removes the extensionless `agenfk` wrapper Git Bash runs, and only when it is the
+  wrapper the installer wrote (#215).
+- The close commit is no longer refused as "a rebase is in progress" because of a stale `.git/REBASE_HEAD`.
+  A rebase is detected the way git does, and a cherry-pick or revert sequence stopped between picks is
+  declined too (#251).
+- Releases are gated on the suite: the release commands run it on the version-bump commit and stop on red,
+  `release.yml` tests before pushing anything, and CI runs on pushes to `beta` (#249).
+- `agenfk hub deadletter requeue` resends deadlettered events, and refusals are surfaced (#223).
+- `agenfk flow install` installs community-registry flows again: it no longer requires a `schemaVersion` the
+  registry's files never carried (#252).
+
+### Test suite
+
+- The full suite runs on Linux and, in shards, on Windows in CI; the Windows job blocks.
+- The board's specs run inside the root vitest run as their own project, so verify and the test report see
+  them.
+- Tests make no non-loopback network connections, and server tests keep their sqlite files in the HOME
+  sandbox instead of the repo root.
+- The load-only `ECONNRESET` failures are gone (supertest now dials the loopback it bound), and orphaned jsdom
+  stylesheets are dropped after each test (`AppShell.test.tsx` 80s to 11s).
+- `npm run e2e:tdd` walks a full TDD cycle, human gates included, in a container.
+
+### Dependencies
+
+- The hub declares `express ^5` and `@types/express ^5`, matching what its image always ran.
+- Hub and server rate limiting runs on `express-rate-limit`.
+- `figlet` is removed with the ASCII banners.
+- `js-yaml` is declared in the root lockfile.
+
+
 ## [2.0.0-beta.46] — 2026-10-16
 
 Pre-release, cut from the `beta` line. Cumulative over `2.0.0-beta.45` (#241).

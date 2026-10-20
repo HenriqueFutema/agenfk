@@ -5636,8 +5636,11 @@ flowCommand
       );
       const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
 
-      if (!parsed.schemaVersion || !parsed.name || !Array.isArray(parsed.steps)) {
-        console.error(chalk.red('Error: Invalid flow file — missing required fields (schemaVersion, name, steps).'));
+      // No schemaVersion requirement (#252): the registry's files carry none and
+      // nothing here (flow publish included) writes one, so requiring it refused
+      // every published flow.
+      if (!parsed.name || !Array.isArray(parsed.steps)) {
+        console.error(chalk.red('Error: Invalid flow file — missing required fields (name, steps).'));
         process.exit(1);
         return;
       }

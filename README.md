@@ -223,15 +223,17 @@ Paused integrations are tracked in `~/.agenfk/config.json` under `pausedIntegrat
 
 > **Supported platform IDs:** `claude`, `opencode`, `cursor`, `codex`, `gemini`. You can also use the alias `claude-code` for `claude`.
 >
-> **Note on [pi](https://pi.dev):** pi's native extension is managed by the main installer (and removed by `agenfk uninstall`), not by the `agenfk integration` / `pause` / `resume` commands. To remove just the pi extension, delete `~/.pi/agent/extensions/agenfk.ts`; re-run the installer to restore it.
+> **Note on [pi](https://pi.dev):** pi's native extension is managed by the main installer (and removed by the uninstaller, `node ~/.agenfk-system/scripts/uninstall.mjs`), not by the `agenfk integration` / `pause` / `resume` commands. To remove just the pi extension, delete `~/.pi/agent/extensions/agenfk.ts`; re-run the installer to restore it.
 
 ### Uninstalling AgEnFK
 
 To fully remove AgEnFK from your system:
 
 ```bash
-agenfk uninstall
+node ~/.agenfk-system/scripts/uninstall.mjs
 ```
+
+(or `/agenfk-uninstall` from your AI client).
 
 This removes:
 - All slash commands and skills from Claude Code, Opencode, and Gemini CLI
@@ -243,7 +245,13 @@ This removes:
 - The `~/.agenfk-system` framework files
 - The `agenfk` CLI symlink from `~/.local/bin`
 
-Your project data (`~/.agenfk/db.sqlite`, `~/.agenfk/config.json`) is **not** deleted by default, so you can reinstall later without losing your boards and history.
+Your data is **not** deleted by default, so you can reinstall later without losing your boards and history. That covers the board database (`~/.agenfk-system/.agenfk/` on a default install, or wherever `dbPath` in `~/.agenfk/config.json` points), the automatic backups in `~/.agenfk/backup/`, your hub enrolment (`~/.agenfk/hub.json`), `installation-id` and `config.json`. Only runtime files (the verify token, server port, active-work notes) are removed from `~/.agenfk`.
+
+To delete your data as well, pass `--purge-data` to the uninstall script:
+
+```bash
+node ~/.agenfk-system/scripts/uninstall.mjs --purge-data
+```
 
 **To uninstall only a specific editor integration** (leaving all others intact):
 

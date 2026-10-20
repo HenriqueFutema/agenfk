@@ -67,6 +67,18 @@ jobs:
         # install is the one that fails.
         run: npm install --package-lock-only --ignore-scripts
 
+      # #249: nothing reaches the remote - not the bump, not the tag - from a
+      # ref whose suite is red. The suite runs on the bumped tree, which is
+      # exactly what gets tagged.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test (release gate)
+        run: npm test
+
       - name: Commit and push version bump
         run: |
           git config user.name "github-actions[bot]"
@@ -79,12 +91,6 @@ jobs:
           # no-op bump is success, not failure.
           git commit -m "chore: bump version to ${{ steps.version.outputs.version }}" || echo "Version already current on this ref — nothing to bump."
           git push
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
 
       - name: Package distributable
         run: node scripts/package-dist.mjs
