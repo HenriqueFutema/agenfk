@@ -24,6 +24,7 @@ import {
   stripAgenfkHookEntries,
   resolveConfirmation,
   summarizeResults,
+  topLevelEntryWithin,
 } from '../../../../scripts/uninstall-helpers.mjs';
 
 const ROOT = path.resolve(__dirname, '../../../..');
@@ -141,6 +142,17 @@ describe('issue #88 — uninstall-helpers', () => {
 // ---------------------------------------------------------------------------
 // Part B — end-to-end uninstall against a throwaway HOME
 // ---------------------------------------------------------------------------
+describe('#214 — topLevelEntryWithin', () => {
+  it('treats a name that merely starts with ".." as inside the root', () => {
+    expect(topLevelEntryWithin('/r', '/r/..boards/db.sqlite', path.posix)).toBe('..boards');
+  });
+  it('rejects the parent, a sibling and the root itself', () => {
+    expect(topLevelEntryWithin('/r', '/db.sqlite', path.posix)).toBeNull();
+    expect(topLevelEntryWithin('/r', '/r2/db.sqlite', path.posix)).toBeNull();
+    expect(topLevelEntryWithin('/r', '/r', path.posix)).toBeNull();
+  });
+});
+
 describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
   let home: string;
 
@@ -292,8 +304,10 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     expect(codex).not.toHaveProperty('PostToolUse');
   });
 
-  it('removes the entire ~/.agenfk data dir, not just verify-token (Bug 3)', () => {
-    runUninstall(['-y']);
+  it('--purge-data removes the entire ~/.agenfk data dir, not just verify-token (Bug 3)', () => {
+    // #214: a default uninstall keeps the user's data; the whole-directory
+    // removal Bug 3 asked for is now the explicit --purge-data path.
+    runUninstall(['-y', '--purge-data']);
     expect(existsSync(p('.agenfk'))).toBe(false);
   });
 

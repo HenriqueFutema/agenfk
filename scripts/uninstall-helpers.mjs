@@ -25,6 +25,48 @@ export function hookBinFilenames(platform) {
   return ['agenfk', ...HOOK_VARIANTS];
 }
 
+// What a default uninstall removes from ~/.agenfk (#214). Everything else in
+// that directory is the user's data — the database, backup/, hub.json (hub
+// enrolment), installation-id, config.json (which carries dbPath, so a
+// reinstall finds the board again), the hub deadletter, stored tokens — and
+// is kept unless --purge-data is passed. Listing what goes rather than what
+// stays is deliberate: a state file added later is kept by default instead of
+// silently deleted.
+export const AGENFK_HOME_RUNTIME_ENTRIES = [
+  'verify-token',
+  'server-port',
+  'active-work',
+  'active-work.json',
+  'claude-runs.json',
+  'upgrade-tier-cache.json',
+  'bin',
+  // The release commands' gatekeeper bypass: honoured for five minutes, so a
+  // quick reinstall would otherwise come back with enforcement off.
+  'skip-gatekeeper',
+];
+
+// True for an entry of ~/.agenfk that a default uninstall removes: the list
+// above, plus the run hook's write-then-rename temp file (claude-runs.json.<pid>)
+// that an interrupted hook leaves behind.
+export function isAgenfkHomeRuntimeEntry(name) {
+  return AGENFK_HOME_RUNTIME_ENTRIES.includes(name) || /^claude-runs\.json\.\d+$/.test(name);
+}
+
+// The first path segment of `target` below `root`, or null when `target` is
+// not inside `root`. Used to keep the ~/.agenfk-system entry that holds the
+// board database when the rest of that directory is removed.
+export function topLevelEntryWithin(root, target, pathMod) {
+  const rel = pathMod.relative(root, target);
+  // `..` exactly or `..<sep>…` is outside; a name like `..boards` is inside.
+  if (!rel || rel === '..' || rel.startsWith(`..${pathMod.sep}`) || pathMod.isAbsolute(rel)) return null;
+  return rel.split(pathMod.sep)[0];
+}
+
+// The directory under ~/.agenfk-system that holds the board database on a
+// default npx install (install.mjs: dbPath = <rootDir>/.agenfk/db.sqlite).
+// A default uninstall removes the framework around it and keeps it.
+export const SYSTEM_DIR_DATA_ENTRY = '.agenfk';
+
 // Not every hook has an Opencode plugin. The installer copies one only where a
 // `bin/<name>-opencode.mjs` source exists, and agenfk-run-hook has none — it is
 // a Claude Code PostToolUse hook. Deriving this list from HOOK_VARIANTS made the

@@ -13,6 +13,9 @@ import {
   isAgenfkOwnedEntry,
   isAgenfkOwnedFile,
   isAgenfkOwnedArtifact,
+  isAgenfkHomeRuntimeEntry,
+  topLevelEntryWithin,
+  SYSTEM_DIR_DATA_ENTRY,
 } from './uninstall-helpers.mjs';
 import { runTool } from './client-cli.mjs';
 
@@ -106,6 +109,9 @@ async function run() {
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
     const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
     const rulesOnly = process.argv.includes('--rules-only');
+    // #214: the user's data (database, backups, hub enrolment) is kept unless
+    // this is passed.
+    const purgeData = process.argv.includes('--purge-data');
     const projectDir = rulesOnly ? process.cwd() : rootDir;
 
     // Hoisted to function scope so every step can use it. Previously declared
@@ -148,12 +154,15 @@ async function run() {
     }
 
     // Read rulesScope from config to know where rules were installed
+    // (and dbPath, so the board database is kept wherever it lives — #214)
     let rulesScope = rulesScopeArg || '';
+    let configuredDbPath = '';
     const agenfkConfigPath = path.join(os.homedir(), '.agenfk', 'config.json');
-    if (!rulesScope && existsSync(agenfkConfigPath)) {
+    if (existsSync(agenfkConfigPath)) {
         try {
             const cfg = JSON.parse(await fs.readFile(agenfkConfigPath, 'utf8'));
-            if (cfg.rulesScope) rulesScope = cfg.rulesScope;
+            if (!rulesScope && cfg.rulesScope) rulesScope = cfg.rulesScope;
+            if (typeof cfg.dbPath === 'string') configuredDbPath = cfg.dbPath;
         } catch {}
     }
     if (!rulesScope) rulesScope = 'global';
@@ -175,7 +184,16 @@ async function run() {
         console.log("  - AgenFK workflow rules from ~/.claude/CLAUDE.md");
         console.log("  - AgenFK Pre/PostToolUse hooks from ~/.claude/settings.json");
         console.log("  - Hook scripts (gatekeeper, mcp-enforcer, pr-hook) from ~/.local/bin");
-        console.log("  - ~/.agenfk (config + verify token) and ~/.agenfk-system (the framework files)");
+        if (purgeData) {
+            console.log(`  - ${RED}--purge-data: ~/.agenfk and ~/.agenfk-system entirely, INCLUDING your data —${NC}`);
+            console.log(`    ${RED}the board database, every backup, the hub enrolment (hub.json) and installation-id${NC}`);
+        } else {
+            console.log("  - ~/.agenfk-system (the framework files) and the runtime files in ~/.agenfk");
+            console.log("");
+            console.log(`${GREEN}Kept:${NC} your data — the board database, backups, hub enrolment (hub.json),`);
+            console.log("  installation-id and config.json — so a reinstall picks up where you left off.");
+            console.log(`  To delete it as well, re-run with ${YELLOW}--purge-data${NC}.`);
+        }
         console.log("");
     }
 
@@ -526,11 +544,24 @@ async function run() {
         return;
     }
 
-    // 9. ~/.agenfk data dir (config.json + verify-token) — #88 Bug 3 (was token-only)
+    // 9. ~/.agenfk — #88 Bug 3 removed the whole directory, which took the
+    // user's data with it (#214). By default only the runtime entries go;
+    // --purge-data removes the directory as before.
     await step('~/.agenfk data dir', !onlyPlatform, async () => {
-        console.log(`${GREEN}[9] Removing ~/.agenfk data dir...${NC}`);
-        const removed = await rmIfExists(path.join(os.homedir(), '.agenfk'));
-        if (removed) console.log(`  Removed: ${path.join(os.homedir(), '.agenfk')}`);
+        const agenfkHome = path.join(os.homedir(), '.agenfk');
+        if (purgeData) {
+            console.log(`${GREEN}[9] Removing ~/.agenfk, data included (--purge-data)...${NC}`);
+            const removed = await rmIfExists(agenfkHome);
+            if (removed) console.log(`  Removed: ${agenfkHome}`);
+            return removed;
+        }
+        console.log(`${GREEN}[9] Removing runtime files from ~/.agenfk (your data is kept)...${NC}`);
+        let removed = false;
+        const entries = existsSync(agenfkHome) ? await fs.readdir(agenfkHome) : [];
+        for (const entry of entries.filter(isAgenfkHomeRuntimeEntry)) {
+            removed = (await rmIfExists(path.join(agenfkHome, entry))) || removed;
+        }
+        if (existsSync(agenfkHome)) console.log(`  Kept: ${agenfkHome}`);
         return removed;
     });
 
@@ -592,9 +623,60 @@ async function run() {
             console.log("");
             console.log(`${RED}Removing ~/.agenfk-system...${NC}`);
             const systemDir = path.join(os.homedir(), '.agenfk-system');
-            const removed = await rmIfExists(systemDir);
-            if (removed) console.log(`  Removed: ${systemDir}`);
-            return removed;
+            // Never enumerate through a link: readdir follows it, and the loop
+            // below would delete inside its target (a developer's checkout).
+            // Removing the link alone is what a whole-directory rm always did -
+            // unless the board database is reached through it: unlinking would
+            // leave config.json's dbPath dangling, and the next install would
+            // open an empty board in a fresh directory there.
+            let systemStat = null;
+            try { systemStat = await fs.lstat(systemDir); } catch {}
+            if (!systemStat) return false;
+            if (systemStat.isSymbolicLink()) {
+                const dbThroughLink = !purgeData && (
+                    existsSync(path.join(systemDir, SYSTEM_DIR_DATA_ENTRY)) ||
+                    (configuredDbPath && topLevelEntryWithin(systemDir, path.resolve(configuredDbPath), path) !== null));
+                if (dbThroughLink) {
+                    console.log(`  Kept the link ${systemDir}: your board database is reached through it. Its target was not touched.`);
+                    return false;
+                }
+                await fs.unlink(systemDir);
+                console.log(`  Removed the link ${systemDir}; its target was not touched`);
+                return true;
+            }
+            // A default npx install keeps the board database in here (#214):
+            // in .agenfk/, or wherever config.json's dbPath points. Remove the
+            // framework around it; keep it unless --purge-data. Each candidate
+            // is checked as written and as resolved, so a symlinked database
+            // directory keeps its target too.
+            const keep = new Set();
+            if (!purgeData) {
+                const realSystemDir = await fs.realpath(systemDir);
+                for (const candidate of [path.join(systemDir, SYSTEM_DIR_DATA_ENTRY), configuredDbPath].filter(Boolean)) {
+                    const literal = topLevelEntryWithin(systemDir, path.resolve(candidate), path);
+                    if (literal && existsSync(path.join(systemDir, literal))) keep.add(literal);
+                    let real = null;
+                    try { real = await fs.realpath(candidate); } catch {}
+                    const resolved = real && topLevelEntryWithin(realSystemDir, real, path);
+                    if (resolved) keep.add(resolved);
+                }
+            }
+            if (keep.size === 0) {
+                const removed = await rmIfExists(systemDir);
+                if (removed) console.log(`  Removed: ${systemDir}`);
+                return removed;
+            }
+            // A database file kept at the top level keeps its SQLite sidecars:
+            // in WAL mode the -wal file holds committed transactions.
+            for (const entry of [...keep]) {
+                for (const suffix of ['-wal', '-shm', '-journal']) keep.add(`${entry}${suffix}`);
+            }
+            for (const entry of await fs.readdir(systemDir)) {
+                if (keep.has(entry)) continue;
+                await fs.rm(path.join(systemDir, entry), { recursive: true, force: true });
+            }
+            console.log(`  Removed the framework files; kept your board database in ${[...keep].filter(e => existsSync(path.join(systemDir, e))).map(e => path.join(systemDir, e)).join(', ')}`);
+            return true;
         });
         finish(`${GREEN}AgenFK uninstalled. Restart your AI editor to complete the removal.${NC}`);
     } else {
