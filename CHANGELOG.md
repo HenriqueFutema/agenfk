@@ -2,6 +2,34 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-rc.3] — 2026-10-21
+
+Third release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.2` (#260, PR #261):
+
+- **A repository-declared `verifyCommand` runs as committed.** The per-machine approval of a command from
+  `.agenfk/project.json` is gone: the approve route, the desktop Approve button and the approval refusals.
+  `agenfk approve-file-command` stays, so scripts don't break, and now says there is nothing to approve. A command
+  holding hidden characters (bidi, zero-width, other invisible ones) is still refused before it runs
+  (`COMMAND_UNREADABLE`), and a change to the declared command is noted on the open cards.
+- **`verifyAt: parent` can reach across worktrees.** A new flow setting, `verifyAtScope`, which a project can
+  override with `agenfk update-project <id> --verify-at-scope project|worktree|none`, MCP `update_project` or the
+  board. The default `worktree` keeps today's behaviour. With `project`, a child in another worktree of the
+  repository closes without running the suite.
+  - The parent's verify is refused (`DEFERRED_CHILD_UNMERGED`) until every such child's close commit is merged
+    into the parent's branch. A squash or rebase merge does not count.
+  - Such a child is refused (`DEFERRED_CLOSE_UNCOMMITTED`) while it has unstaged or untracked work.
+  - Moving a card to another project is refused (`DEFERRED_OBLIGATION_OPEN`) if the move would drop a pending
+    merge.
+- **One suite at a time per project.** `agenfk update-project <id> --exclusive-suite on` runs at most one of that
+  project's suites at once, for suites sharing a database or fixed ports. Other projects are not held back.
+- **The board has a Project section in Settings** for the open project's two suite settings. It is reachable
+  from the browser board, which has no project page, as well as the desktop app. The flow editor has the scope
+  selector.
+- **The PR's "Warnings the checks raised" table lists only warnings that held the card**: ones that had to be
+  answered, answered test removals, and ones a person passed. Advisory warnings no longer flood it, and the
+  section is left out when there are none.
+
 ## [2.0.0-rc.2] — 2026-10-21
 
 Second release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
