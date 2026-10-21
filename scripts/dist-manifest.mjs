@@ -4,6 +4,8 @@
 export const DIST_INCLUDE = [
     'package.json',
     'package-lock.json',
+    // Apache-2.0 section 4(a): every copy we hand out carries the license text.
+    'LICENSE',
     'SKILL.md',
     'bin/',
     'scripts/start-services.mjs',
