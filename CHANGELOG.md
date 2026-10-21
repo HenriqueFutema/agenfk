@@ -160,8 +160,14 @@ port, project ids kept out of version control, and hub-side flow adherence.
   bracket query syntax (`?from[a]=b`) is no longer parsed into objects.
   <!-- verified: packages/hub/src/server.ts:411, :455, :486; packages/hub/package.json:28 -->
 
-Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in `node:sqlite`.
-<!-- verified: package.json:54; packages/storage-sqlite/src/index.ts:31 (same in v1.1.20) -->
+- **Node 22.12 or newer.** The floor rises from `>=22.5.0` to `>=22.12.0` (root, `create` and, newly, the hub
+  package). The hub's `jwks-rsa` 4 loads the ESM-only `jose` 6 with `require()`, which Node enables by default
+  from 22.12; on 22.5–22.11 the hub fails at startup with `ERR_REQUIRE_ESM`, even with Entra sign-in off.
+  *Migrate:* upgrade Node to 22.12 or later before upgrading AgEnFK. The published hub image already runs Node 26.
+  <!-- verified: node_modules/jwks-rsa/package.json engines; packages/cli/src/test/node-floor-covers-dependencies.test.ts -->
+
+Not changed: storage is still the built-in `node:sqlite`.
+<!-- verified: packages/storage-sqlite/src/index.ts:31 (same in v1.1.20) -->
 
 ### Upgrading from 1.1.x
 
@@ -169,7 +175,7 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
    reports (`AGENFK_DB_PATH` can override `config.json`), then `agenfk down` and copy that file and any `-wal`
    and `-shm` files beside it somewhere safe. 2.0 migrates the database at first start; 1.1.20 still reads
    and writes it afterwards, so this copy is a safety net, not a requirement.
-2. Upgrade: `agenfk upgrade --version 2.0.0`. Naming the version is safest: 1.1.x picks "latest" by publish
+2. Check `node -v` reports 22.12 or later, then upgrade: `agenfk upgrade --version 2.0.0`. Naming the version is safest: 1.1.x picks "latest" by publish
    date, not by version.
 3. The first upgrade is run by your old CLI. It downloads and extracts 2.0, then runs 2.0's `install.mjs`.
    In practice:
@@ -298,6 +304,13 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
 - Hub and server rate limiting runs on `express-rate-limit`.
 - `figlet` is removed with the ASCII banners.
 - `js-yaml` is declared in the root lockfile.
+- The majors that landed on `main` after 1.1.20 now ship: `zod` 4 (server), `vite` 8 (board and hub UI),
+  `jwks-rsa` 4 and `bcryptjs` 3 (hub), with the npm production and development group bumps (#257).
+
+### License
+
+- AgEnFK is licensed under Apache-2.0 instead of ISC. Every package declares it, and the release tarballs
+  and the hub image now carry the license text (#257).
 
 
 ## [2.0.0-beta.46] — 2026-10-16

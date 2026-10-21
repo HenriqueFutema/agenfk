@@ -2,6 +2,9 @@
   "name": "@agenfk/hub",
   "version": "2.0.0-rc.1",
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "description": "Corporate Hub for AgEnFK — fleet-wide metrics + timeline server",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",

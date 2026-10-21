@@ -4,7 +4,7 @@ Thank you for your interest in contributing to AgEnFK!
 
 ## Development Setup
 
-**Requirements:** Node.js 18+, git, npm
+**Requirements:** Node.js 22.12+, git, npm
 
 ```bash
 git clone https://github.com/cglab-public/agenfk.git
