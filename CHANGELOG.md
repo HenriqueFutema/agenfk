@@ -2,6 +2,20 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-rc.2] — 2026-10-21
+
+Second release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.1` (#257, PR #258):
+
+- `main`'s commits reach the beta line: the Apache-2.0 license (#248) and the dependency majors `zod` 4
+  (server), `vite` 8 (board and hub UI), `jwks-rsa` 4 and `bcryptjs` 3 (hub), with the npm production and
+  development group bumps. No source change was needed for them.
+- **Node 22.12 or newer is required** (was 22.5). `jwks-rsa` 4 loads the ESM-only `jose` 6 with `require()`,
+  so a hub on 22.5–22.11 failed at startup. A test now checks that the advertised floor runs every installed
+  runtime dependency.
+- The license text ships in `agenfk-dist.tar.gz`, `agenfk-hub-dist.tar.gz`, the hub image and the desktop app.
+- The README and CONTRIBUTING state the Node 22.12 floor.
+
 ## [2.0.0-rc.1] — 2026-10-20
 
 First release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
