@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -2207,23 +2207,15 @@ program
 
 program
   .command('approve-file-command <projectId>')
-  .description('Show the commands this project declares in .agenfk/project.json, and where a person approves them (the board)')
+  .description('Show the commands this project declares in .agenfk/project.json (they run as committed: no approval since 2.0.0-rc.3)')
   // Kept so a script passing it gets the explanation below instead of an unknown-option error.
-  .option('-y, --yes', 'no longer approves: approving is done by a person on the board')
+  .option('-y, --yes', 'no longer does anything: a declared command needs no approval')
   .action(async (projectId: string, options: { yes?: boolean }) => {
     /*
-     * The way OUT of the refusal - for a person.
-     *
-     * A project may declare its own verifyCommand in the repository, which is
-     * what lets configuration travel - and is also how cloning a repo could
-     * hand this machine a command it runs. So the server refuses to run one
-     * until somebody here has read it.
-     *
-     * This command used to do the approving, with ~/.agenfk/verify-token: the
-     * token the agent's own CLI holds, so the agent the refusal was addressed
-     * to could approve and run the command itself (34ee6b8a). Approving is now
-     * a person's act on the board; this prints what there is to read and
-     * where to approve it.
+     * Kept so scripts and docs that call it get an answer instead of an unknown
+     * command. A verifyCommand the repository declares used to need a person's
+     * approval per machine; since #260 it runs as committed, like the rest of
+     * the repository's code. This shows what the file declares.
      */
     try {
       const { data: project } = await axios.get(`${API_URL}/projects/${projectId}`);
@@ -2245,18 +2237,18 @@ program
         .map(key => ({ key, command: value.settings[key] }))
         .filter((c): c is { key: 'verifyCommand' | 'setupCommand'; command: string } => Boolean(c.command));
       if (commands.length === 0) {
-        console.log(chalk.gray('This repository declares no commands, so there is nothing to approve.'));
+        console.log(chalk.gray('This repository declares no commands.'));
         return;
       }
 
       console.log(chalk.bold(`\n${filePath} declares:`));
       for (const { key, command } of commands) console.log(`  ${chalk.cyan(key)}: ${command}`);
-      if (options.yes) console.log(chalk.yellow('\n--yes no longer approves anything.'));
-      if (commands.some(c => c.key === 'verifyCommand')) {
-        console.log(chalk.yellow(
-          '\nA person approves the verifyCommand on the board: open the project\'s Settings in `agenfk ui`, read it, and press Approve. '
-          + 'An agent cannot approve it.',
-        ));
+      const verify = commands.find(c => c.key === 'verifyCommand');
+      if (verify) {
+        const unreadable = unreadableFileCommand(verify);
+        console.log(unreadable
+          ? chalk.red(`\n${unreadable.reason}`)
+          : chalk.green('\nNothing to approve: the verifyCommand runs as committed, like the rest of the repository\'s code.'));
       }
       // Said, so nobody goes looking for an approval that would change nothing.
       if (commands.some(c => c.key === 'setupCommand')) {

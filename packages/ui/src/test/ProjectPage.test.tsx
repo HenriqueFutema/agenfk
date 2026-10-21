@@ -1072,9 +1072,9 @@ describe('settings the project file decided', () => {
 
 
 /*
- * 34ee6b8a: approving a command the repository declares is a person's act on
- * the board - the CLI route the agent could reach is gone - so the row that
- * shows the command is where the approval happens.
+ * A command the repository declares runs as committed (#260): the row shows it
+ * in full, and names any characters a screen cannot show faithfully, which
+ * keep it from running. There is no approval to give.
  */
 describe('a command the repository asks to run', () => {
   const rows = [
@@ -1084,28 +1084,18 @@ describe('a command the repository asks to run', () => {
       value: 'echo from-the-repo', origin: 'from-file', from: 'Declared by the repository, in .agenfk/project.json.',
     },
   ];
-  const openWith = async (approved: boolean) => {
+  it('#260: shows a declared command in full and offers no approval: it runs like committed code', async () => {
     (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({
       rows, fileProblems: [],
-      fileCommands: [{ key: 'verifyCommand', command: 'echo from-the-repo', fingerprint: 'abc', approved }],
+      // The payload after #260: what the repository declares, and any hidden characters, never an approval state.
+      fileCommands: [{ key: 'verifyCommand', command: 'echo from-the-repo', hidden: [] }],
     } as never);
     open();
     fireEvent.click(screen.getByTestId('project-tab-settings'));
-    return waitFor(() => screen.getByTestId('setting-verifyCommand'));
-  };
-
-  it('offers a person the approval, next to the command it approves', async () => {
-    const approveFileCommand = vi.fn(async () => ({ approved: true }));
-    (api as unknown as { approveFileCommand: typeof approveFileCommand }).approveFileCommand = approveFileCommand;
-    await openWith(false);
-    expect(screen.getByTestId('setting-verifyCommand').textContent).toContain('echo from-the-repo');
-    fireEvent.click(screen.getByTestId('setting-approve-verifyCommand'));
-    await waitFor(() => expect(approveFileCommand).toHaveBeenCalledWith('p1', 'echo from-the-repo'));
-  });
-
-  it('offers nothing once it is approved', async () => {
-    await openWith(true);
+    const row = await waitFor(() => screen.getByTestId('setting-verifyCommand'));
+    expect(row.textContent).toContain('echo from-the-repo');
     expect(screen.queryByTestId('setting-approve-verifyCommand')).toBeNull();
+    expect(screen.queryByTestId('setting-hidden-verifyCommand')).toBeNull();
   });
 
   it('shows the whole command it asks to approve, lines and all, not a truncated prefix', async () => {
@@ -1123,7 +1113,7 @@ describe('a command the repository asks to run', () => {
     expect(value.className).toMatch(/whitespace-pre-wrap/);
   });
 
-  it('writes out hidden characters instead of obeying them, and offers no approval for them', async () => {
+  it('writes out hidden characters instead of obeying them, and says the command will not run', async () => {
     // A right-to-left override would make this READ as one quoted echo.
     const command = "echo 'safe\u202E'; printf X; #";
     (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -1137,6 +1127,7 @@ describe('a command the repository asks to run', () => {
     expect(value.textContent).not.toContain('\u202E');
     expect(screen.queryByTestId('setting-approve-verifyCommand')).toBeNull();
     expect(screen.getByTestId('setting-hidden-verifyCommand').textContent).toContain('U+202E');
+    expect(screen.getByTestId('setting-hidden-verifyCommand').textContent).toMatch(/will not run until they are removed/);
   });
 
   it('writes out a default-ignorable character too, which renders as nothing', async () => {
@@ -1163,14 +1154,4 @@ describe('a command the repository asks to run', () => {
     expect(value.textContent).toBe('npm run test⟨U+000D⟩ # note');
   });
 
-  it('says why when the approval is refused', async () => {
-    const approveFileCommand = vi.fn(async () => {
-      throw Object.assign(new Error('Request failed'), { response: { data: { error: 'Approve it from the board this server serves.' } } });
-    });
-    (api as unknown as { approveFileCommand: typeof approveFileCommand }).approveFileCommand = approveFileCommand;
-    await openWith(false);
-    fireEvent.click(screen.getByTestId('setting-approve-verifyCommand'));
-    await waitFor(() => expect(screen.getByTestId('setting-approve-error-verifyCommand').textContent)
-      .toContain('Approve it from the board this server serves.'));
-  });
 });

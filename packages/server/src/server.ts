@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2668,114 +2668,6 @@ function readDeclaredSettings(projectRoot?: string | null): {
   return { settings, keys, path: rel, problems };
 }
 
-/**
- * "I have read this command and I am willing to run it here."
- *
- * A PERSON'S act, on the board - like a step approval or an override. This is
- * the decision to execute a shell string that arrived with a repository. It
- * used to sit behind the internal token, which kept browsers out but let the
- * agent in: that token is the one the agent's own CLI holds, so an agent
- * refused COMMAND_NEEDS_APPROVAL could approve the command and run it
- * (34ee6b8a). The board's word is recorded as 'unverified' unless a passkey
- * signs it, exactly as a step approval without `signature: passkey`.
- *
- * Stored per exact command. A pull that edits it asks again, because what was
- * read and approved is the string, not the field.
- */
-/**
- * Did a page this server served send the request? (reviews of 34ee6b8a)
- *
- * CORS lets any loopback origin talk to this server, so the board header
- * alone would let a page on ANOTHER local port - any dev server, any local
- * web app - approve a repository command for this machine; the internal
- * token this route used to need kept browsers out. A browser stamps Origin
- * on every POST and a page cannot forge it. So the page must be:
- *
- * - the very address the request was sent to (Origin host = Host): a page
- *   squatting `[::1]:<this port>` - this server binds 127.0.0.1 - names
- *   itself, not the address it is calling;
- * - the literal address this server binds, which neither a DNS-rebinding
- *   page nor an IPv6 squatter on `localhost` can claim;
- * - on the port the request arrived on.
- *
- * Or an origin configured explicitly in AGENFK_BOARD_ORIGINS (the vite dev
- * board). Not the implicit localhost:5173 boardOrigins() falls back to with no
- * UI served: whatever happens to listen there would be trusted unasked.
- */
-function fromOwnBoardPage(req: any): boolean {
-  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
-  if (!origin) return false;
-  const configured = (process.env.AGENFK_BOARD_ORIGINS ?? '').split(',').map(o => o.trim()).filter(Boolean);
-  if (configured.includes(origin)) return true;
-  let page: URL;
-  try { page = new URL(origin); } catch { return false; }
-  /*
-   * The LITERAL address this server binds - 127.0.0.1 by default - never the
-   * name `localhost`: localhost resolves to [::1] too, so a page served from
-   * [::1]:<this port> by something else can drop its listener and have its
-   * next request fall back to this IPv4 one, same Origin, same Host. The
-   * desktop shell, the only place the approval is offered, loads 127.0.0.1.
-   */
-  const bound = approvalPageHost(BIND_HOST);
-  return bound !== null && page.hostname === bound && page.protocol === 'http:' && page.host === String(req.headers.host ?? '')
-    && Number(page.port || 80) === req.socket?.localPort;
-}
-
-/**
- * The hostname a board page approving a command must have, given what the
- * server binds - canonical and NUMERIC, or null for "none implicitly".
- *
- * - An IPv4 literal is itself; an IPv6 literal is canonicalised the way the
- *   URL parser writes an Origin (`[::1]`), so an expanded form still matches.
- * - A wildcard (0.0.0.0, ::) is reached by the desktop on 127.0.0.1.
- * - A NAME - `localhost` above all - is null: it may resolve to an address
- *   somebody else holds, which is the IPv6-to-IPv4 handoff this route closes.
- *   Such a setup approves only from an origin set in AGENFK_BOARD_ORIGINS.
- */
-export function approvalPageHost(bindHost: string): string | null {
-  const host = bindHost.trim();
-  const kind = net.isIP(host);
-  if (kind === 4) return host === '0.0.0.0' ? '127.0.0.1' : host;
-  if (kind === 6) {
-    let canonical: string;
-    try { canonical = new URL(`http://[${host}]`).hostname; } catch { return null; }
-    return canonical === '[::]' ? '127.0.0.1' : canonical;
-  }
-  return null;
-}
-
-app.post("/projects/:id/approve-file-command", limitExpensive, asyncHandler(async (req: any, res: any) => {
-  if (refuseUnlessBoard(req, res)) return;
-  if (!fromOwnBoardPage(req)) {
-    return res.status(403).json({ error: "Approve it from the board this server serves: open it at http://127.0.0.1:<port> (the desktop app does); a page from another origin cannot approve a command for this machine (a dev board needs its origin in AGENFK_BOARD_ORIGINS)." });
-  }
-  const project: any = await storage.getProject(req.params.id);
-  if (!project) return res.status(404).json({ error: "Project not found" });
-  const command = typeof req.body?.command === 'string' ? req.body.command : '';
-  if (!command.trim()) return res.status(400).json({ error: "command is required" });
-  // Not approvable at all while it holds characters a screen cannot show: what a person read
-  // would not be what runs (review of 34ee6b8a). The fix is in the file, not here.
-  const hidden = hiddenCharacters(command);
-  if (hidden.length) {
-    return res.status(400).json({ error: `This command holds characters that cannot be shown faithfully (${hidden.join(', ')}), so it cannot be approved as read. Remove them from .agenfk/project.json.` });
-  }
-
-  const fingerprint = commandFingerprint(command);
-  const authority = gateAuthority(req, res, { purpose: 'file-command', itemId: project.id, checkId: fingerprint }, false);
-  if (!authority) return;
-  const approved: string[] = Array.isArray(project.approvedFileCommands)
-    ? project.approvedFileCommands
-    : [];
-  // Who said yes, and how sure we are of it - the fingerprint list alone could not say.
-  const rec = { fingerprint, command: command.trim(), at: new Date().toISOString(), by: 'board', ...authority };
-  const records: any[] = Array.isArray(project.fileCommandApprovals) ? project.fileCommandApprovals : [];
-  await storage.updateProject(project.id, {
-    approvedFileCommands: approved.includes(fingerprint) ? approved : [...approved, fingerprint],
-    fileCommandApprovals: [...records.filter(r => r?.fingerprint !== fingerprint), rec],
-  } as any);
-  recordHubEvent({ type: 'command.approved', projectId: project.id, payload: { source: 'project-file', fingerprint, command: rec.command, by: 'board', authority: authority.authority } });
-  res.json({ approved: true, fingerprint, authority: authority.authority });
-}));
 
 app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
   const project = await storage.getProject(req.params.id);
@@ -2805,19 +2697,18 @@ app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
       homeDir: os.homedir(),
     }),
     /*
-     * The commands the repository asks this machine to run, and whether a
-     * person here has approved each - what the screen offers to approve
-     * (34ee6b8a). Judged by the same approvalFor the verify uses, so the
-     * screen and the refusal can never disagree about one command.
+     * The commands the repository declares for this machine to run, shown in
+     * full with any characters a screen cannot show faithfully (those never
+     * run). There is no approval to give: a declared command runs like any
+     * other committed code (#260).
      */
     // verifyCommand only: it is the one this machine runs from the file. A file's setupCommand is
-    // never run (worktree setup reads the stored row), so approving it would approve nothing.
+    // never run (worktree setup reads the stored row).
     fileCommands: (['verifyCommand'] as const)
       .filter(key => typeof declared.settings[key] === 'string' && String(declared.settings[key]).trim())
       .map(key => {
         const command = String(declared.settings[key]);
-        const verdict = approvalFor({ key, command }, ((project as any).approvedFileCommands ?? []) as string[]);
-        return { key, command, fingerprint: verdict.fingerprint ?? commandFingerprint(command), approved: verdict.allowed, hidden: hiddenCharacters(command) };
+        return { key, command, hidden: hiddenCharacters(command) };
       }),
   });
 }));
@@ -3347,6 +3238,50 @@ async function noteGateChangeOnCards(project: any, heading: string, body: string
   for (const it of items.filter(i => active.has(i.id) || i.status === Status.PAUSED || i.status === Status.BLOCKED)) {
     await noteOnItem(it.id, `### ${heading}\n\n${body}`);
   }
+}
+
+/**
+ * #260: the verify command a repository declares changes with a pull, not with
+ * `update-project`, and it runs without anybody approving it - so a change of it
+ * is written where the people reading the board will see it, exactly as a change
+ * of the stored command is (CGLAB-378). The first command seen is recorded
+ * silently: it is where the project starts, not a change.
+ *
+ * Observed at the start of EVERY verify, on any step (review of #260): an
+ * intermediate capture runs the declared command too, so a change seen only
+ * there must not go unrecorded. ONE observation at a time per project, each
+ * re-reading the project inside: two verifies racing would otherwise both
+ * announce the same change, or write back a history missing the other's entry.
+ */
+const declaredObservations = new Map<string, Promise<void>>();
+export function observeDeclaredVerifyCommand(projectId: string, selected?: string | null): Promise<void> {
+  const previous = declaredObservations.get(projectId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(() => recordDeclaredVerifyCommand(projectId, selected));
+  declaredObservations.set(projectId, next);
+  void next.finally(() => { if (declaredObservations.get(projectId) === next) declaredObservations.delete(projectId); }).catch(() => undefined);
+  return next;
+}
+
+/**
+ * `selected`, when given, is the exact string a capture or a close is about to
+ * run: recorded as it will run, never re-read, so a pull landing while a long
+ * capture ran cannot run one command and record another (review of #260).
+ */
+async function recordDeclaredVerifyCommand(projectId: string, selected?: string | null): Promise<void> {
+  const project: any = await storage.getProject(projectId);
+  if (!project?.projectRoot) return;
+  const raw = selected !== undefined ? selected : readDeclaredSettings(project.projectRoot).settings.verifyCommand;
+  const declared = typeof raw === 'string' ? raw : null;
+  const seen = Object.prototype.hasOwnProperty.call(project, 'declaredVerifyCommand');
+  const previous: string | null = seen ? (project.declaredVerifyCommand ?? null) : null;
+  if (seen && previous === declared) return;
+  await storage.updateProject(project.id, {
+    declaredVerifyCommand: declared,
+    ...(seen ? { verifyCommandChanges: [...(project.verifyCommandChanges ?? []), { from: previous, to: declared, at: new Date().toISOString(), source: 'file' }] } : {}),
+  } as any);
+  if (!seen) return;
+  const shown = (c?: string | null) => (c ? `\`${c}\`` : '(none)');
+  await noteGateChangeOnCards(project, 'Repository verify command changed', `\`.agenfk/project.json\` now declares ${shown(declared)} (was ${shown(previous)}). This card's final step runs the new command.`);
 }
 
 // ── Test reports and step records (CGLAB-379) ────────────────────────────────
@@ -4477,8 +4412,8 @@ type CaptureOutcome =
  * is verifiable without anybody re-setting it by hand. The stored
  * `testReport.command` is more specific and stays first.
  *
- * `fromFile` is what the approval gate keys on: only a command that arrived
- * with a clone needs reading before it runs.
+ * `fromFile` is what the hidden-character check keys on: only a command that
+ * arrived with the repository is judged by it (#260).
  */
 function effectiveVerifyCommand(project: any): { command: string | null; fromFile: boolean } {
   const report = typeof project?.testReport?.command === 'string' ? project.testReport.command : null;
@@ -4512,22 +4447,18 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
     return { status: 400, error: 'NO_REPORT_COMMAND', message: 'Nothing to run: set a test report (agenfk update-project <id> --test-report-...) or a verifyCommand.' };
   }
   /*
-   * A command that arrived with the repository does not run until somebody on
-   * this machine has read it. Checked HERE, not only on the final verify: the
-   * step checks run the same command on an intermediate step, and running it
-   * there without approval would be the hole the approval exists to close.
+   * A command that arrived with the repository runs like committed code (#260),
+   * unless it holds characters a screen cannot show faithfully: then what a
+   * person reads is not what runs, and it never runs. Checked HERE, not only on
+   * the final verify: the step checks run the same command on an intermediate step.
    */
   if (resolved.fromFile) {
-    const verdict = approvalFor(
-      { key: 'verifyCommand', command },
-      ((project as any)?.approvedFileCommands ?? []) as string[],
-    );
-    if (!verdict.allowed) {
-      return {
-        status: 400, error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '',
-        fingerprint: verdict.fingerprint, command,
-      };
+    const unreadable = unreadableFileCommand({ key: 'verifyCommand', command });
+    if (unreadable) {
+      return { status: 400, error: 'COMMAND_UNREADABLE', message: unreadable.reason, command };
     }
+    // The exact command this capture runs, recorded before it runs (review of #260).
+    await observeDeclaredVerifyCommand(item.projectId, command);
   }
 
   /*
@@ -8242,11 +8173,11 @@ interface StepGate {
   results: CheckResult[];
   blocked: boolean;
   /**
-   * Set when the gate refused because a command from the repository has not
-   * been approved: the caller answers with `COMMAND_NEEDS_APPROVAL`, the shape
-   * the CLI already renders, rather than a generic failed-check reply.
+   * Set when the gate refused because a command from the repository holds
+   * characters a screen cannot show faithfully: the caller answers with
+   * `COMMAND_UNREADABLE`, naming the command, rather than a generic failed-check reply.
    */
-  approval?: { message: string; fingerprint?: string; command?: string };
+  unreadable?: { message: string; command?: string };
   /** CGLAB-428: the checks leaving this step would run, switched off by the org's hub. */
   disabled: Array<{ id: string; source: string }>;
   /** The capture this verify ran or reused, for saying which (d26832d6 #15). */
@@ -8785,7 +8716,7 @@ export interface LeavePlan {
   /** Why the card will be held instead of advancing, when it will be. */
   held?: string;
   /** Why verify will refuse before running anything: no verify command on the final step, or no tree to run in. */
-  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_NEEDS_APPROVAL' | 'NO_TREE';
+  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_UNREADABLE' | 'NO_TREE';
   /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
   narrowing: string[];
   /** One line for the agent. */
@@ -8823,12 +8754,12 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
   // checks reading its entry baseline (the gate's entry-baseline hold). An entry only non-blocking checks
   // read lets the card move without one, and a verify command alone runs wherever it is spawned.
-  // 2a181a8d: an unapproved repository command is refused before it runs - at the close (before the gate),
-  // and in a capture whose suite IS the file's command - so ahead of NO_TREE, and nothing runs.
+  // A repository command holding hidden characters is refused before it runs (#260) - at the close (before
+  // the gate), and in a capture whose suite IS the file's command - so ahead of NO_TREE, and nothing runs.
   const effective = effectiveVerifyCommand(project);
-  const captureNeedsApproval = cap.runs && effective.fromFile && !!effective.command && !!unapprovedFileVerify(project, effective.command);
+  const captureUnreadable = cap.runs && effective.fromFile && !!effective.command && !!unreadableFileVerify(project, effective.command);
   const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
-    : (final && !toParent && unapprovedFileVerify(project)) || captureNeedsApproval ? 'COMMAND_NEEDS_APPROVAL'
+    : (final && !toParent && unreadableFileVerify(project)) || captureUnreadable ? 'COMMAND_UNREADABLE'
     : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
   const role = (sorted[index] as any)?.role;
   const narrowing = runs === 'nothing' ? [] : [
@@ -8842,14 +8773,13 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   const smaller = narrowing.includes('affected-tests') ? ' The suite part may run only the tests the change affects, or reuse the last green run of an unchanged tree.'
     : runs === 'suite' ? ' The suite part may reuse the last green run of an unchanged tree.' : '';
   const dontPreRun = ` Don't run the full suite yourself first - run only the tests you are iterating on, then verify.`;
-  // Offered to run BY HAND only when running it needs nobody's say-so: the stored command, or the
-  // repository's once approved. Named here unapproved, it would walk past the approval gate.
+  // Offered to run BY HAND unless it is a repository command holding hidden characters, which never runs (#260).
   const handRunnable = verifyCommand && (verifyCommand === project?.verifyCommand
-    || approvalFor({ key: 'verifyCommand', command: verifyCommand }, (project?.approvedFileCommands ?? []) as string[]).allowed)
+    || !unreadableFileCommand({ key: 'verifyCommand', command: verifyCommand }))
     ? verifyCommand : undefined;
   const parts: string[] = [];
   // Not the command itself: the plan says it is refused, not what to run instead (34ee6b8a).
-  if (refuses === 'COMMAND_NEEDS_APPROVAL') parts.push(`Leaving ${step} runs the repository's own verify command, which nobody on this machine has approved: verify will refuse, and run nothing, until a person approves it on the board (the project's Settings in \`agenfk ui\`). An agent cannot approve it.`);
+  if (refuses === 'COMMAND_UNREADABLE') parts.push(`Leaving ${step} runs the repository's own verify command, which holds characters a screen cannot show faithfully: verify will refuse, and run nothing, until they are removed from .agenfk/project.json.`);
   else if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
@@ -8896,7 +8826,7 @@ export interface LeavePrediction {
  */
 async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, project: any): Promise<LeavePrediction> {
   // The step's checks run before the final gate's refusal: a capture is still spent on a verify that then refuses.
-  if (plan.refuses === 'NO_TREE' || plan.refuses === 'COMMAND_NEEDS_APPROVAL' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
+  if (plan.refuses === 'NO_TREE' || plan.refuses === 'COMMAND_UNREADABLE' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
   if (plan.runs === 'nothing') return { mode: 'none', advice: 'On this tree it would run nothing.' };
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const sorted = sortedFlowSteps(flow as any);
@@ -9000,7 +8930,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const disabled = disabledChecksOf(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
-  let approval: { message: string; fingerprint?: string; command?: string } | undefined;
+  let unreadable: { message: string; command?: string } | undefined;
   // 961f301d: waiting on a person, the slow checks wait too (see waitsOnPerson).
   const waitingOn = opts?.personFirst ? awaitingPersonCommands(resolved, flow, project) : [];
   const deferToApproval = opts?.personFirst
@@ -9021,8 +8951,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     const lazyOver = await entryCaptureOf(item, sorted, index);
     const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
     if ('error' in out) {
-      if (out.error === 'COMMAND_NEEDS_APPROVAL') {
-        approval = { message: out.message, fingerprint: out.fingerprint, command: out.command };
+      if (out.error === 'COMMAND_UNREADABLE') {
+        unreadable = { message: out.message, command: out.command };
       } else captureError = out.message;
     } else capture = out.record;
     // beae41a0: the suite is done; what follows (command checks, fetches) is the step's checks again.
@@ -9035,7 +8965,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   }
   // Refused before anything else runs: an unapproved repository command is not
   // a failed check, it is a question for the person.
-  if (approval) return { results: [], blocked: true, approval, disabled, step: item.status };
+  if (unreadable) return { results: [], blocked: true, unreadable, disabled, step: item.status };
   const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
   const lastOf = (pred: (r: any) => boolean) => [...records].reverse().find(pred) ?? null;
   const prev = sorted[index - 1];
@@ -9262,19 +9192,19 @@ async function refuseOnChecks(res: any, item: any, gate: StepGate) {
 
 /**
  * The refusal a close owes when it would run the repository's own
- * verifyCommand (.agenfk/project.json) unapproved, or null (2a181a8d). One
- * definition for the check before the gate and the one at the close, so the
- * two cannot disagree about one command.
+ * verifyCommand (.agenfk/project.json) while it holds characters a screen
+ * cannot show faithfully, or null (#260). One definition for the check before
+ * the gate and the one at the close, so the two cannot disagree about one command.
  */
-export function unapprovedFileVerify(
+export function unreadableFileVerify(
   project: any,
   // The exact string the caller selected to run, when it has one: judged as it will run, never re-read -
   // a file edited between selecting and checking must not pass one command and run another (Codex review).
   declared: unknown = readDeclaredSettings(project?.projectRoot).settings.verifyCommand,
-): { error: 'COMMAND_NEEDS_APPROVAL'; message: string; fingerprint?: string; command: string } | null {
+): { error: 'COMMAND_UNREADABLE'; message: string; command: string } | null {
   if (typeof declared !== 'string') return null;
-  const verdict = approvalFor({ key: 'verifyCommand', command: declared }, ((project?.approvedFileCommands ?? []) as string[]));
-  return verdict.allowed ? null : { error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '', fingerprint: verdict.fingerprint, command: declared };
+  const unreadable = unreadableFileCommand({ key: 'verifyCommand', command: declared });
+  return unreadable ? { error: 'COMMAND_UNREADABLE', message: unreadable.reason, command: declared } : null;
 }
 
 /** A response stand-in that writes a verify reply into a background run. */
@@ -9290,8 +9220,7 @@ function runRecorder(run: ValidateRun) {
       // 5a8d22e6: a named cause and its fix reach whoever follows the run, not only a sync caller.
       if (typeof payload?.error === 'string') (run as any).error = payload.error;
       if (payload && 'fix' in payload) (run as any).fix = payload.fix;
-      // 2a181a8d: a COMMAND_NEEDS_APPROVAL refusal names what to approve - the background caller needs it too.
-      if (typeof payload?.fingerprint === 'string') (run as any).fingerprint = payload.fingerprint;
+      // A COMMAND_UNREADABLE refusal names the command it refused - the background caller needs it too.
       if (typeof payload?.command === 'string') (run as any).command = payload.command;
       // 8024f6c4: a CHILDREN_OPEN refusal lists every open card, not only the ten its message shows.
       if (Array.isArray(payload?.children)) (run as any).children = payload.children;
@@ -9322,6 +9251,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // Reload item so subsequent comment appends don't lose the evidence comment
     const refreshed = await storage.getItem(itemId);
     if (refreshed) Object.assign(item, refreshed);
+  }
+
+  /*
+   * #260: a change of the repository's declared verify command, written on the
+   * open cards. Before the project and this card are read for the rest of the
+   * verify, so every later write starts from a copy that already carries the note.
+   */
+  if (!opts?.gate) {
+    await observeDeclaredVerifyCommand(item.projectId);
+    const noted = await storage.getItem(itemId);
+    if (noted) Object.assign(item, noted);
   }
 
   const project = await storage.getProject(item.projectId);
@@ -9412,18 +9352,18 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
 
   /*
-   * 2a181a8d: a close that would run the repository's own unapproved
-   * verifyCommand is refused HERE, before the gate - otherwise its capture can
-   * run a stored test report's whole suite only for the final check to throw
-   * the run away. Not when the close is deferred to an open parent (verifyAt
-   * 'parent'): that close runs no command, so there is nothing to approve. The
-   * final check below still stands for a gate handed in from the background.
+   * 2a181a8d / #260: a close that would run the repository's own verifyCommand
+   * while it holds characters a screen cannot show faithfully is refused HERE,
+   * before the gate - otherwise its capture can run a stored test report's whole
+   * suite only for the final check to throw the run away. Not when the close is
+   * deferred to an open parent (verifyAt 'parent'): that close runs no command.
+   * The final check below still stands for a gate handed in from the background.
    */
   if (!opts?.gate) {
     const upcoming = sorted[currentFlowStep.index + 1];
     const finalMove = !upcoming || upcoming.name === Status.DONE || isBoundaryStep(upcoming);
     if (finalMove) {
-      const refusal = unapprovedFileVerify(project);
+      const refusal = unreadableFileVerify(project);
       if (refusal && !(await parentToDeferTo(item, activeFlow))) return res.status(400).json(refusal);
     }
   }
@@ -9458,11 +9398,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
         const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers });
-        if (g.approval) {
-          return recorder.status(400).json({
-            error: 'COMMAND_NEEDS_APPROVAL', message: g.approval.message,
-            fingerprint: g.approval.fingerprint, command: g.approval.command,
-          });
+        if (g.unreadable) {
+          return recorder.status(400).json({ error: 'COMMAND_UNREADABLE', message: g.unreadable.message, command: g.unreadable.command });
         }
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
         return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers });
@@ -9480,11 +9417,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       return;
     }
     gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers });
-    if (gate.approval) {
-      return res.status(400).json({
-        error: 'COMMAND_NEEDS_APPROVAL', message: gate.approval.message,
-        fingerprint: gate.approval.fingerprint, command: gate.approval.command,
-      });
+    if (gate.unreadable) {
+      return res.status(400).json({ error: 'COMMAND_UNREADABLE', message: gate.unreadable.message, command: gate.unreadable.command });
     }
     if (gate.blocked) return refuseOnChecks(res, item, gate);
     // The gate may have written a capture and produced records: build the
@@ -9706,12 +9640,18 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * Gated on the command that would ACTUALLY RUN, not on "the caller passed
    * none": CGLAB-378 ignores a caller command on the final step, so a call
    * carrying one still ends up running the file's command — and that is
-   * exactly the command that needs approval. Not on a close deferred to its
-   * parent: that close runs no command (2a181a8d).
+   * exactly the command the hidden-character check must judge. Not on a close
+   * deferred to its parent: that close runs no command (2a181a8d).
    */
+  if (isFinalStep && !deferTo) {
+    // The command this close runs, as selected - a pull may have landed while the gate ran (review of #260).
+    await observeDeclaredVerifyCommand(item.projectId, fileVerify);
+    const noted = await storage.getItem(itemId);
+    if (noted) Object.assign(item, noted);
+  }
   if (isFinalStep && !deferTo && fileVerify !== null) {
     // The string selected above - the one that runs - not the file as it reads now.
-    const refusal = unapprovedFileVerify(project, fileVerify);
+    const refusal = unreadableFileVerify(project, fileVerify);
     if (refusal) return res.status(400).json(refusal);
   }
   const resolvedCommand = isFinalStep ? projectVerify : command;

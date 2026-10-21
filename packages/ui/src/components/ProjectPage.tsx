@@ -324,8 +324,6 @@ export function ProjectPage({
   const [tab, setTab] = React.useState<'cards' | 'settings'>('cards');
   const [changingFlow, setChangingFlow] = React.useState(false);
   const [togglingWorktree, setTogglingWorktree] = React.useState(false);
-  const [approvingCommand, setApprovingCommand] = React.useState(false);
-  const [approveError, setApproveError] = React.useState<string | null>(null);
   /*
    * OPEN BY DEFAULT. The report this answers: 135 cards, most of them DONE,
    * and every finished row offering Start. Open means "not finished" on THIS
@@ -459,9 +457,9 @@ export function ProjectPage({
     queryFn: () => api.projectSettings(project.id),
     enabled: tab === 'settings',
   });
-  /** The repository's command on this row, when a person here has not approved it yet. */
-  const pendingApproval = (row: { key: string; origin: string }) =>
-    row.origin === 'from-file' ? settings?.fileCommands?.find(c => c.key === row.key && !c.approved) : undefined;
+  /** The command the repository declares on this row (#260: it runs as committed, with no approval). */
+  const declaredCommand = (row: { key: string; origin: string }) =>
+    row.origin === 'from-file' ? settings?.fileCommands?.find(c => c.key === row.key) : undefined;
 
   /*
    * How many of how many, whenever the rows are not all of them — the default
@@ -589,46 +587,17 @@ export function ProjectPage({
                     />
                   )}
                   {/*
-                    * A command the repository asks this machine to run, not yet
-                    * approved: the approval is a person's, so it lives here and
-                    * nowhere an agent can reach (34ee6b8a). What is approved is
-                    * exactly the text shown in full under it.
+                    * A command the repository declares that holds characters a
+                    * screen cannot show faithfully never runs (#260): said here,
+                    * next to the command, so the fix is the file.
                     */}
                   {(() => {
-                    const pending = pendingApproval(row);
-                    if (!pending) return null;
-                    // The server refuses these anyway: say why here, instead of offering a button that fails.
-                    if (pending.hidden?.length) {
-                      return (
-                        <span data-testid={`setting-hidden-${row.key}`} className="shrink-0 text-[11px] font-semibold text-danger-text">
-                          Holds hidden characters ({pending.hidden.join(', ')}): fix the file to approve it
-                        </span>
-                      );
-                    }
+                    const declared = declaredCommand(row);
+                    if (!declared?.hidden?.length) return null;
                     return (
-                      <button
-                        type="button"
-                        data-testid={`setting-approve-${row.key}`}
-                        disabled={approvingCommand}
-                        title="Let this machine run the command the repository declares"
-                        onClick={async () => {
-                          setApprovingCommand(true);
-                          setApproveError(null);
-                          try {
-                            await api.approveFileCommand(project.id, pending.command);
-                            await refetchSettings();
-                          } catch (e) {
-                            // Said on screen: a refusal (another origin, a rate limit) must not look like nothing happened.
-                            const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
-                            setApproveError(detail ?? (e instanceof Error ? e.message : 'The approval failed.'));
-                          } finally {
-                            setApprovingCommand(false);
-                          }
-                        }}
-                        className="shrink-0 rounded-lg border border-accent bg-brand px-2.5 py-1 text-[11px] font-semibold text-navy disabled:opacity-50"
-                      >
-                        Approve
-                      </button>
+                      <span data-testid={`setting-hidden-${row.key}`} className="shrink-0 text-[11px] font-semibold text-danger-text">
+                        Holds hidden characters ({declared.hidden.join(', ')}): it will not run until they are removed from the file
+                      </span>
                     );
                   })()}
                 </div>
@@ -636,11 +605,11 @@ export function ProjectPage({
                 {/* The switch IS the value where there is one; the text repeated under it read as the control. */}
                 {!hasSwitch(row) && (() => {
                   /*
-                   * In FULL while it waits for approval: truncated, a harmless
-                   * prefix could hide the rest of the line, or a second line,
-                   * from the person approving it (review of 34ee6b8a).
+                   * A command the repository declares is shown in FULL: it runs as
+                   * committed, and truncated, a harmless prefix could hide the rest
+                   * of the line, or a second line (review of 34ee6b8a).
                    */
-                  const pending = pendingApproval(row);
+                  const pending = declaredCommand(row);
                   return (
                     <p data-testid={`setting-value-${row.key}`} className={`mt-2 rounded-lg border px-3 py-2 font-mono text-[11px] ${
                       pending ? 'whitespace-pre-wrap break-all' : 'truncate'
@@ -653,11 +622,6 @@ export function ProjectPage({
                     </p>
                   );
                 })()}
-                {approveError && pendingApproval(row) && (
-                  <p data-testid={`setting-approve-error-${row.key}`} className="mt-1.5 text-[11px] text-danger-text">
-                    {approveError}
-                  </p>
-                )}
                 {row.warning && (
                   <p data-testid={`setting-warning-${row.key}`} className="mt-1.5 text-[11px] text-danger-text">
                     {row.warning}

@@ -60,16 +60,17 @@ port, project ids kept out of version control, and hub-side flow adherence.
   command, which can only add a check.
   *Affects:* anyone who relied on `agenfk verify <id> --evidence x "<cmd>"` to choose what runs at the close.
   *Migrate:* set the command once: `agenfk update-project <id> --verify-command "<cmd>"`, or `verifyCommand`
-  in `.agenfk/project.json` (see the approval note below).
+  in `.agenfk/project.json` (see the note below).
   <!-- verified: packages/server/src/server.ts:9716-9719, :8135 ignoredCommandNote -->
 
-- **A repository-declared verify command needs a person's approval.** `.agenfk/project.json` can now carry
-  shared settings, and a `verifyCommand` from that file wins over the stored one. It runs only after someone
-  approves it on the project's Settings tab on the board; the approval is pinned to a SHA-256 fingerprint of
-  the exact command, so an edit to it needs approving again. Until then the final verify is refused with
-  `COMMAND_NEEDS_APPROVAL`. The CLI cannot approve.
-  *Migrate:* approve the command on the board the first time a close asks for it.
-  <!-- verified: packages/server/src/server.ts:9269 unapprovedFileVerify, :9711-9714 -->
+- **A repository can declare its own verify command.** `.agenfk/project.json` can now carry shared settings, and
+  a `verifyCommand` from that file wins over the stored one. It runs as committed, like the rest of the
+  repository's code: there is no per-machine approval (#260). A command holding characters a screen cannot show
+  faithfully (bidi overrides, zero-width or other invisible characters) is refused with `COMMAND_UNREADABLE` and
+  never runs. A change to the declared command is written on the open cards, as a change of the stored one is.
+  *Migrate:* to share one command across the team, commit it in `.agenfk/project.json`; review changes to it in
+  pull requests like any other code.
+  <!-- verified: packages/core/src/fileCommand.ts unreadableFileCommand; packages/server/src/server.ts unreadableFileVerify, observeDeclaredVerifyCommand -->
 
 - **One origin: the API and the board share one port (CGLAB-165).** The server serves the built board itself;
   `agenfk up` no longer starts `vite preview`. The board is at the API's port (`http://localhost:3000` by
@@ -203,8 +204,8 @@ Not changed: storage is still the built-in `node:sqlite`.
 4. `agenfk restart`, then open the board with `agenfk ui` (it is on the API's port now).
 5. In each repository: `agenfk init` to move `projectId` into `.agenfk/local.json`, then commit `.gitignore`
    and `.agenfk/project.json`.
-6. Make sure each project has a verify command (`agenfk update-project <id> --verify-command "<cmd>"`). If it
-   is declared in `project.json`, approve it on the project's Settings tab.
+6. Make sure each project has a verify command: `agenfk update-project <id> --verify-command "<cmd>"`, or one
+   committed in `.agenfk/project.json` for the whole team.
 7. If you copied rules into a project with `agenfk skills install --project`, run it again there.
 8. Hub-joined users: reconnect JIRA through the hub ("Connect JIRA" on the board) after an admin configures it
    under hub Admin → JIRA.
