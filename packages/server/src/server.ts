@@ -2378,6 +2378,22 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * that is never evicted is a denial of service inside the fix for one.
  */
 /**
+ * d929cb53 - the board's own item routes and the running-verifies list (CodeQL js/missing-rate-limiting on PR #194).
+ * The board edits, moves and deletes cards and reads the list all day, several panes at once: a ceiling far above
+ * that, which still stops a runaway loop. Per route, as limitFlowWrites.
+ */
+const limitBoardRoutes = rateLimit({
+  windowMs: 60_000,
+  limit: 1200,
+  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req: any, res: any) => {
+    res.status(429).json({ error: `Too many requests to ${req.path}. This route is capped at 1200 a minute; this is almost always a loop.` });
+  },
+});
+
+/**
  * A ceiling on the routes that do real work per request (CodeQL js/missing-rate-limiting).
  *
  * Applied to the five that spawn a process, walk a directory, or reach the
@@ -2669,7 +2685,7 @@ function readDeclaredSettings(projectRoot?: string | null): {
 }
 
 
-app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
+app.get("/projects/:id/settings", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   const project = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
   const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
@@ -3209,7 +3225,7 @@ app.get("/projects/:id", asyncHandler(async (req: any, res: any) => {
   res.json(project);
 }));
 
-app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
+app.put("/projects/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   // Allowlist the mutable fields. Passing req.body straight through let an
   // unauthenticated caller overwrite verifyCommand (a shell string later run
   // by validate_progress), projectRoot (its cwd) and flowId — mass assignment
@@ -6217,22 +6233,6 @@ const limitFlowWrites = rateLimit({
   },
 });
 
-/**
- * d929cb53 - the board's own item routes and the running-verifies list (CodeQL js/missing-rate-limiting on PR #194).
- * The board edits, moves and deletes cards and reads the list all day, several panes at once: a ceiling far above
- * that, which still stops a runaway loop. Per route, as limitFlowWrites.
- */
-const limitBoardRoutes = rateLimit({
-  windowMs: 60_000,
-  limit: 1200,
-  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}`,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  handler: (req: any, res: any) => {
-    res.status(429).json({ error: `Too many requests to ${req.path}. This route is capped at 1200 a minute; this is almost always a loop.` });
-  },
-});
-
 app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
   const { name, description, version, steps, verifyAt, verifyAtScope } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
@@ -8363,6 +8363,9 @@ async function treeWarningsOf(item: any): Promise<TreeWarning[]> {
         // e2ab4ced: an answered removal is the reviewer's to judge, as a warning is.
         latest.set(key, (c?.severity === 'warn' || c?.answeredRemoval === true) && c?.outcome === 'fail' && c?.id !== 'tree-warnings' && !noise
           ? { itemId: card.id, title: String(card.title ?? ''), step: String(r.step), check: String(c.id), detail: String(c.detail ?? '').slice(0, 300),
+            // fe3ca491: whether it held the card - had to be answered, or a person passed it - rather than only advised.
+            // A record from before the flag: the answer-required warnings are exactly the ones that held (review of fe3ca491).
+            held: c?.answeredRemoval === true || (r.heldMarked === true ? c?.heldUntilAnswered === true : ANSWER_REQUIRED.has(String(c?.id))),
             ...(typeof c.answer === 'string' ? { answer: c.answer } : c?.overridden?.reason ? { answer: `passed by ${c.overridden.by ?? 'a person'} on the board: ${c.overridden.reason}` } : {}) }
           : null);
       }
@@ -9300,7 +9303,10 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     for (const r of outcome.results) {
       // Only the warning that marks a test which cannot fail must be answered: red on a missing
       // symbol is the normal path of TDD, and asking every time trains rubber stamps.
-      if (!ANSWER_REQUIRED.has(r.id) || r.severity !== 'warn' || r.outcome !== 'fail' || r.overridden || r.answer) continue;
+      if (!ANSWER_REQUIRED.has(r.id) || r.severity !== 'warn' || r.outcome !== 'fail') continue;
+      // fe3ca491: it holds the card until answered or passed - the PR lists such a warning, and only such.
+      (r as any).heldUntilAnswered = true;
+      if (r.overridden || r.answer) continue;
       const held = `${r.detail} Answer it before the card leaves this step - say why it is fine, or what you changed: agenfk verify ${item.id} --check-note ${r.id}="<your answer>" --evidence "..." (MCP: validate_progress with checkAnswers).`;
       // A person's pass counts for the failure they saw, not a later, different one.
       const person = overrides[r.id];
@@ -9670,6 +9676,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   if (gate) {
     (exitRecord as any).checks = gate.results;
+    // fe3ca491: its checks say whether they held the card (heldUntilAnswered); an older record is judged by the rule.
+    (exitRecord as any).heldMarked = true;
     if (gate.disabled.length) (exitRecord as any).disabled = gate.disabled;
     // d26832d6 #9/#15: a pass says what it judged - every check, soft and warn
     // included, and whether the suite ran - on the reply AND on the card.
