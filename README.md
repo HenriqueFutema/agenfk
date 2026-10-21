@@ -552,5 +552,11 @@ Use `agenfk pause <platform>` to disable a specific integration. For example, `a
 ![AgEnFK Dashboard](./docs/dashboard-screenshot.png)
 
 ---
+## License
+
+AgEnFK is licensed under the [Apache License 2.0](./LICENSE).
+
+Copyright (c) 2026 CG/lab.
+
 *Built with ❤️ by the CG/lab AgEnFK Platform Team.*
 *CG/lab - a CAR Group company*

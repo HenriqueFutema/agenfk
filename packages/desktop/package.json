@@ -1,6 +1,7 @@
 {
   "name": "@agenfk/desktop",
   "version": "2.0.0-rc.1",
+  "license": "Apache-2.0",
   "private": true,
   "description": "AgEnFK Desktop — run agent orchestration as a native app",
   "main": "dist/main/index.js",
