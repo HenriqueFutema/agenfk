@@ -1020,6 +1020,32 @@ describe('CGLAB-420: field findings from CGLAB-419', () => {
       expect(ws).toEqual(expect.arrayContaining([expect.objectContaining({ itemId: task, check: 'new-tests-born-green', step: 'SPECS', answer: 'answered: new-tests-born-green' })]));
     });
 
+    // fe3ca491: the PR lists only what held the card; the server says which did.
+    it('says which warnings held the card: one that had to be answered did, one answered unasked did not', async () => {
+      const { story, task } = await storyAtLook();
+      const ws = (await agent().get(`/items/${story}/warnings`)).body;
+      expect(ws).toEqual(expect.arrayContaining([
+        expect.objectContaining({ itemId: task, check: 'new-tests-born-green', held: true }),
+        expect.objectContaining({ itemId: task, check: 'red-is-assertion', held: false }),
+      ]));
+    });
+
+    // Review of fe3ca491: a record written before the flag is judged by the rule - the answer-required warning held.
+    it('classifies warnings on records from before the flag: the answer-required one held, an advisory one did not', async () => {
+      const pid = await project(await flow(tddSteps()));
+      const c = await card(pid, 'START');
+      const old = { step: 'SPECS', kind: 'exit', at: '2026-09-01T00:00:00.000Z', checks: [
+        { id: 'new-tests-born-green', severity: 'warn', outcome: 'fail', detail: 'add_again passed before any code', overridden: { by: 'board', reason: 'pinned on purpose' } },
+        { id: 'on-card-branch', severity: 'warn', outcome: 'fail', detail: "the tree is on 'a', but the card's branch is 'b'" },
+      ] };
+      await storage.updateItem(c, { stepRecords: [old] } as any);
+      const ws = (await agent().get(`/items/${c}/warnings`)).body;
+      expect(ws).toEqual(expect.arrayContaining([
+        expect.objectContaining({ check: 'new-tests-born-green', held: true, answer: expect.stringMatching(/pinned on purpose/) }),
+        expect.objectContaining({ check: 'on-card-branch', held: false }),
+      ]));
+    });
+
     it('the parent\'s review step lists its children\'s warnings on its own checks', async () => {
       const { story } = await storyAtLook();
       const r = await validate(story, AUTHOR);

@@ -85,3 +85,7 @@ export class SuiteSlots {
 /** The line a waiting run prints. */
 export const waitingLine = (w: SuiteWait) =>
   `[agenfk] waiting for a suite-run slot: ${w.ahead} run(s) ahead, at most ${w.limit} at once (setting maxConcurrentSuiteRuns)\n`;
+
+/** 7ddeaf7c: the line a run prints while it waits for its own project, which runs one suite at a time. */
+export const projectWaitingLine = (w: SuiteWait) =>
+  `[agenfk] waiting for this project's suite run: ${w.ahead} run(s) ahead, at most ${w.limit} at once in this project (project setting exclusiveSuite)\n`;

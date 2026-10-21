@@ -63,7 +63,8 @@ export interface CheckMeta {
 }
 
 /** A failing warning a card left a step with (CGLAB-420). */
-export interface TreeWarning { itemId: string; title: string; step: string; check: string; detail: string; answer?: string }
+/** `held`: it held the card until answered or passed by a person (fe3ca491) - the PR lists only these. */
+export interface TreeWarning { itemId: string; title: string; step: string; check: string; detail: string; answer?: string; held?: boolean }
 
 /** One line per warning, for a reviewer's brief and the check that lists them. */
 export function describeTreeWarnings(ws: readonly TreeWarning[]): string {

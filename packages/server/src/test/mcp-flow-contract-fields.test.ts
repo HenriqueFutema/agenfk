@@ -56,6 +56,29 @@ describe('MCP flow tools carry the step contract', () => {
     expect(axiosMock.put.mock.calls[0][1].verifyAt).toBe('leaf');
   });
 
+  it('create_flow and update_flow advertise and forward verifyAtScope (7ddeaf7c)', async () => {
+    for (const tool of ['create_flow', 'update_flow']) {
+      expect(Object.keys(tools.find(t => t.name === tool)?.inputSchema?.properties ?? {}), tool).toContain('verifyAtScope');
+    }
+    axiosMock.post.mockResolvedValue({ data: { id: 'f1', name: 'F' } });
+    await mcp.client.callTool({ name: 'create_flow', arguments: { name: 'F', steps: [step], verifyAt: 'parent', verifyAtScope: 'project' } });
+    expect(axiosMock.post.mock.calls.find(([u]: [string]) => u === '/flows')[1].verifyAtScope).toBe('project');
+    axiosMock.put.mockResolvedValue({ data: { id: 'f1', name: 'F' } });
+    await mcp.client.callTool({ name: 'update_flow', arguments: { id: 'f1', verifyAtScope: 'worktree' } });
+    expect(axiosMock.put.mock.calls.at(-1)[1].verifyAtScope).toBe('worktree');
+  });
+
+  // Review of 7ddeaf7c (Codex #6): zod stripped both, so the call "succeeded" and changed nothing.
+  it('update_project advertises and forwards verifyAtScope (null clears) and exclusiveSuite', async () => {
+    const props = Object.keys(tools.find(t => t.name === 'update_project')?.inputSchema?.properties ?? {});
+    expect(props).toEqual(expect.arrayContaining(['verifyAtScope', 'exclusiveSuite']));
+    axiosMock.put.mockResolvedValue({ data: { id: 'p1' } });
+    await mcp.client.callTool({ name: 'update_project', arguments: { id: 'p1', verifyAtScope: 'project', exclusiveSuite: true } });
+    expect(axiosMock.put.mock.calls.at(-1)).toEqual(['/projects/p1', { verifyAtScope: 'project', exclusiveSuite: true }]);
+    await mcp.client.callTool({ name: 'update_project', arguments: { id: 'p1', verifyAtScope: null } });
+    expect(axiosMock.put.mock.calls.at(-1)).toEqual(['/projects/p1', { verifyAtScope: null }]);
+  });
+
   it('create_flow forwards them to POST /flows', async () => {
     axiosMock.post.mockResolvedValue({ data: { id: 'f1', name: 'F' } });
     await mcp.client.callTool({ name: 'create_flow', arguments: { name: 'F', steps: [step] } });

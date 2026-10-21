@@ -234,3 +234,150 @@ describe('suite runs across projects take a slot', () => {
     expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
   });
 });
+
+/*
+ * 7ddeaf7c — exclusiveSuite: a project whose suites share something outside
+ * the tree (one database, fixed ports) runs one at a time, whatever the
+ * server-wide limit allows - and only that project waits for it.
+ */
+/** One project, two cards each in its own worktree of the repo (no reuse between them), plus a card in another project. */
+async function exclusiveProject(kind: 'capture' | 'final', exclusive: boolean, ms: { A?: number; B?: number } = {}) {
+  const log = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-excl-log-'))), 'log');
+  dirs.push(path.dirname(log));
+  const runner = path.join(path.dirname(log), 'runner.js');
+  // Each run logs which project it belongs to, read from its argument.
+  fs.writeFileSync(runner, `const fs = require('fs');
+const who = process.argv[2];
+fs.appendFileSync(${JSON.stringify(log)}, 'start ' + who + ' ' + Date.now() + '\\n');
+setTimeout(() => {
+  fs.writeFileSync('report.xml', '<testsuites><testsuite name="s"><testcase classname="t" name="ok" file="t.test.js"/></testsuite></testsuites>');
+  fs.appendFileSync(${JSON.stringify(log)}, 'end ' + who + ' ' + Date.now() + '\\n');
+  process.exit(0);
+}, who === 'B' ? ${ms.B ?? Math.round(RUN_MS / 2)} : ${ms.A ?? RUN_MS});`);
+  const s = (name: string, order: number) => ({ id: `${name}-${order}-${++seq}`, name, label: name, order, ...(name !== 'WORK' ? { isAnchor: true } : {}) });
+  const make = async (who: string, extra: Record<string, unknown>) => {
+    const f = await agent().post('/flows').send({ name: `excl-${++seq}`, steps: [s('START', 0), s('WORK', 1), s('END', 2)] });
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-excl-repo-')));
+    dirs.push(repo);
+    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo report.xml > .gitignore && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: posixShell() });
+    const p = await agent().post('/projects').send({ name: `excl-${++seq}` });
+    const cmd = `node ${runner} ${who}`;
+    await storage.updateProject(p.body.id, {
+      flowId: f.body.id, projectRoot: repo, ...extra,
+      verifyCommand: kind === 'final' ? cmd : 'exit 0',
+      ...(kind === 'capture' ? { testReport: { format: 'junit-xml', command: cmd, reportPath: 'report.xml' } } : {}),
+    } as never);
+    return { pid: p.body.id as string, repo };
+  };
+  const cardIn = async (pid: string, worktreePath?: string) => {
+    const c = await agent().post('/items').send({ type: 'TASK', title: `excl-${++seq}`, projectId: pid });
+    await storage.updateItem(c.body.id, { status: 'WORK', ...(worktreePath ? { worktreePath } : {}) } as any);
+    return c.body.id as string;
+  };
+  const a = await make('A', exclusive ? { exclusiveSuite: true } : {});
+  const wts = ['one', 'two'].map(n => {
+    const wt = `${a.repo}-${n}`;
+    dirs.push(wt);
+    execSync(`git worktree add -q -b ${n} ${JSON.stringify(wt)}`, { cwd: a.repo });
+    return wt;
+  });
+  const b = await make('B', {});
+  const sameProject = [await cardIn(a.pid, wts[0]), await cardIn(a.pid, wts[1])];
+  const otherProject = await cardIn(b.pid);
+  const intervals = (who: string) => {
+    const lines = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => l.split(' ')).filter(l => l[1] === who);
+    return { starts: lines.filter(l => l[0] === 'start').map(l => Number(l[2])), ends: lines.filter(l => l[0] === 'end').map(l => Number(l[2])) };
+  };
+  return { sameProject, otherProject, intervals, pid: a.pid };
+}
+const runVerify = (kind: 'capture' | 'final', id: string) => kind === 'capture'
+  ? agent().post(`/items/${id}/step-records/capture`).set(internal()).send({})
+  : agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok' });
+
+// Runs here are serialised on purpose (several RUN_MS each, 3s on Windows): well past vitest's 5s default.
+describe('exclusiveSuite: one suite run at a time in the project', { timeout: 60_000 }, () => {
+  for (const kind of ['capture', 'final'] as const) {
+    it(`two ${kind === 'capture' ? 'captures' : 'final-step verifies'} in an exclusive project do not overlap, while another project's run is not held back`, async () => {
+      await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
+      try {
+        const t = await exclusiveProject(kind, true);
+        const rs = await Promise.all([...t.sameProject, t.otherProject].map(id => runVerify(kind, id)));
+        for (const r of rs) expect(r.status, JSON.stringify(r.body)).toBe(200);
+        const a = t.intervals('A');
+        expect(a.starts).toHaveLength(2);
+        expect(Math.max(...a.starts), 'the exclusive project ran two suites at once').toBeGreaterThanOrEqual(Math.min(...a.ends));
+        // The other project's run overlapped the first of A's: it was not queued behind A's second.
+        const b = t.intervals('B');
+        expect(b.starts).toHaveLength(1);
+        expect(b.starts[0], "another project's run waited for the exclusive project").toBeLessThan(Math.min(...a.ends));
+      } finally {
+        await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
+      }
+    });
+  }
+
+  it('without it, the same two runs overlap: the limit is the server-wide one', async () => {
+    await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
+    try {
+      const t = await exclusiveProject('capture', false);
+      for (const r of await Promise.all(t.sameProject.map(id => runVerify('capture', id)))) expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const a = t.intervals('A');
+      expect(Math.max(...a.starts)).toBeLessThan(Math.min(...a.ends));
+    } finally {
+      await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
+    }
+  });
+
+  // Review of 7ddeaf7c (Codex #5): a run already going when the setting is turned on still counts.
+  it('turning it on while a run is going makes the next run wait for that one', async () => {
+    await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
+    try {
+      const t = await exclusiveProject('capture', false);
+      const first = runVerify('capture', t.sameProject[0]).then(r => r);
+      const started = () => { try { return t.intervals('A').starts.length; } catch { return 0; } };
+      for (let i = 0; i < 300 && started() < 1; i++) await new Promise(r => setTimeout(r, 10));
+      expect(t.intervals('A').starts).toHaveLength(1);
+      expect((await agent().put(`/projects/${t.pid}`).send({ exclusiveSuite: true })).status).toBe(200);
+      const second = await runVerify('capture', t.sameProject[1]);
+      expect(second.status, JSON.stringify(second.body)).toBe(200);
+      expect((await first).status).toBe(200);
+      const a = t.intervals('A');
+      expect(Math.max(...a.starts), 'the second run overlapped one started before the setting was on').toBeGreaterThanOrEqual(Math.min(...a.ends));
+    } finally {
+      await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
+    }
+  });
+
+  // Review of 7ddeaf7c, second pass: a run admitted to the project's line before the setting, still waiting for a server slot.
+  it('a run already queued for a server slot when it is turned on does not start beside the project\'s running one', async () => {
+    await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
+    try {
+      // A's runs outlast B's by far, so B's slot frees while A's first run is still going.
+      const t = await exclusiveProject('capture', false, { A: RUN_MS * 5, B: Math.round(RUN_MS / 2) });
+      const count = (who: string) => { try { return t.intervals(who).starts.length; } catch { return 0; } };
+      const a1 = runVerify('capture', t.sameProject[0]).then(r => r);
+      for (let i = 0; i < 300 && count('A') < 1; i++) await new Promise(r => setTimeout(r, 10));
+      const b1 = runVerify('capture', t.otherProject).then(r => r);
+      for (let i = 0; i < 300 && count('B') < 1; i++) await new Promise(r => setTimeout(r, 10));
+      // Both server slots are taken: A's second run is admitted to its (unlimited) project line and waits for one.
+      const a2 = runVerify('capture', t.sameProject[1]).then(r => r);
+      await new Promise(r => setTimeout(r, 150));
+      expect((await agent().put(`/projects/${t.pid}`).send({ exclusiveSuite: true })).status).toBe(200);
+      // B ends first and frees a server slot while A's first run is still going.
+      for (const r of await Promise.all([a1, b1, a2])) expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const a = t.intervals('A');
+      expect(a.starts).toHaveLength(2);
+      expect(Math.max(...a.starts), "A's queued run started beside its running one").toBeGreaterThanOrEqual(Math.min(...a.ends));
+    } finally {
+      await agent().put('/settings').send({ maxConcurrentSuiteRuns: 0 });
+    }
+  });
+
+  it("the line a run waiting for its project prints names the project's setting, not the server's", async () => {
+    const { projectWaitingLine } = await slotsModule();
+    const line = projectWaitingLine({ ahead: 1, limit: 1 });
+    expect(line).toMatch(/1 run\(s\) ahead/);
+    expect(line).toMatch(/exclusiveSuite/);
+    expect(line).not.toMatch(/maxConcurrentSuiteRuns/);
+  });
+});

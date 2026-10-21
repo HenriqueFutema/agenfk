@@ -142,6 +142,8 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
     // every sync, because updateFlow merges and an omitted key would keep 'parent'
     // after the org turned it off. Anything unknown is the default.
     verifyAt: remote.verifyAt === 'parent' ? 'parent' : 'leaf',
+    // 7ddeaf7c: and how far 'parent' reaches, written every sync for the same reason.
+    verifyAtScope: remote.verifyAtScope === 'project' ? 'project' : 'worktree',
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     source: 'hub',

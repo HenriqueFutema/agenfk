@@ -597,6 +597,10 @@ export interface Project {
   projectRoot?: string;   // Absolute path to the project's root directory (set automatically by MCP on validate)
   /** Give each item its own git worktree when it enters a working step (CGLAB-166). */
   autoWorktree?: boolean;
+  /** Overrides the flow's verifyAtScope for this project (7ddeaf7c). Unset: the flow's. */
+  verifyAtScope?: 'worktree' | 'project';
+  /** At most one suite run at a time in this project, on top of the server-wide limit (7ddeaf7c): for suites that share a database or fixed ports. */
+  exclusiveSuite?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -744,6 +748,8 @@ export interface Flow {
   origin?: 'registry';
   /** Where the project's suite runs: every card's final step ('leaf', default) or once at the top-level card ('parent'). See verifyAt.ts. */
   verifyAt?: 'leaf' | 'parent';
+  /** How far 'parent' reaches: a parent in the same tree ('worktree', default) or any open parent in the project ('project'). See verifyAt.ts. */
+  verifyAtScope?: 'worktree' | 'project';
   /** CGLAB-607: which immutable revision this read came from (max revision when served current). */
   revision?: number;
 }

@@ -71,6 +71,14 @@ describe('gh publish keeps the step contract', () => {
     expect(JSON.parse(written!).verifyAt).toBe('parent');
   });
 
+  it('writes the flow-level verifyAtScope into the registry file (7ddeaf7c)', async () => {
+    const id = await flowWith(rich);
+    await agent().put(`/flows/${id}`).send({ verifyAt: 'parent', verifyAtScope: 'project' });
+    const res = await agent().post('/registry/flows/publish').send({ flowId: id });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.parse(written!).verifyAtScope).toBe('project');
+  });
+
   it('writes role and checks into the registry file', async () => {
     const id = await flowWith(rich);
     const res = await agent().post('/registry/flows/publish').send({ flowId: id });

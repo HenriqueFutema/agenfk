@@ -110,6 +110,8 @@ describe('test-count-not-lower: a removal is answered with a reason', () => {
     const warnings = (await agent().get(`/items/${t.id}/warnings`)).body;
     expect(warnings).toEqual(expect.arrayContaining([expect.objectContaining({
       step: 'WORK', check: 'test-count-not-lower', answer: 'pinned the old behaviour this card replaces', detail: expect.stringMatching(/old behaviour/),
+      // fe3ca491: it held the card until answered, so the PR lists it.
+      held: true,
     })]));
   });
 

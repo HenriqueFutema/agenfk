@@ -160,6 +160,28 @@ describe('the warnings the checks raised, on the PR (CGLAB-420)', () => {
     expect(t).toMatch(/⚠️ not answered/);
   });
 
+  /*
+   * fe3ca491: only a warning that HELD the card (had to be answered, or passed by
+   * a person) is the reviewer's news. One that never stopped anything - on a flow
+   * with no roles every universal check only warns - flooded a PR with 41 rows.
+   */
+  it('lists only the warnings that held the card, and drops the section when none did', () => {
+    const advisory: TreeWarningRow = { itemId: 'c9', title: 'Config', step: 'DISCOVERY', check: 'on-card-branch', detail: "the tree is on 'a', but the card's branch is 'b'", held: false };
+    const held: TreeWarningRow = { ...open, held: true };
+    const t = formatTreeWarnings([advisory, held]);
+    expect(t).toMatch(/red-is-assertion/);
+    expect(t).not.toMatch(/on-card-branch/);
+    expect(t).toMatch(/1 of 1 was never answered/);
+    expect(formatTreeWarnings([advisory])).toBe('');
+    expect(buildPrBody('Summary', [], [], [advisory])).toBe('Summary');
+    // The pr-register comment too: nothing that held a card is nothing to post.
+    expect(prRegisterComment([], [], [advisory])).toBeNull();
+  });
+
+  it('keeps a row from a server that does not say whether it held the card', () => {
+    expect(formatTreeWarnings([open])).toMatch(/red-is-assertion/);
+  });
+
   it('goes into the PR body with the other sections', () => {
     expect(buildPrBody('Summary', [], [], [open])).toMatch(/^Summary\n\n## Warnings the checks raised/);
   });

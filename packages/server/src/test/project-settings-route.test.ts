@@ -8,7 +8,7 @@
 import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, closeStorage, storage, VERIFY_TOKEN, approvalPageHost } from '../server';
+import { app, initStorage, closeStorage, storage, VERIFY_TOKEN } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -36,7 +36,7 @@ it('answers with a row per setting, each carrying its origin', async () => {
   expect(res.status).toBe(200);
   const keys = res.body.rows.map((r: any) => r.key).sort();
   expect(keys).toEqual(
-    ['autoWorktree', 'flow', 'projectRoot', 'setupCommand', 'verifyCommand', 'worktreeRoot'].sort(),
+    ['autoWorktree', 'exclusiveSuite', 'flow', 'projectRoot', 'setupCommand', 'verifyAtScope', 'verifyCommand', 'worktreeRoot'].sort(),
   );
   for (const row of res.body.rows) expect(row.origin).toBeTruthy();
 });
@@ -176,21 +176,16 @@ describe('GET /projects/:id/settings with a project file', () => {
 
 
 /*
- * A verify command that arrived with the repository.
- *
- * The file is what makes a project's configuration travel; it is also a way
- * for a clone to hand this machine a string it will run on verify. So one
- * that came from the file runs only after somebody here has read it — once per
- * exact command, because a pull that edits it is a new thing to read.
+ * #260: a command the repository declares (.agenfk/project.json) runs as
+ * committed, with no per-machine approval. The settings screen shows it in
+ * full, with any characters a screen cannot show faithfully, which still keep
+ * it from running.
  */
-describe('approving a command declared by the repository', () => {
+describe('a command declared by the repository', () => {
   const write = (root: string, body: unknown): void => {
     fs.mkdirSync(path.join(root, '.agenfk'), { recursive: true });
     fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify(body));
   };
-
-  /** Where the board's own page lives: the address the request is sent to. */
-  const ownHost = () => `127.0.0.1:${(server.address() as import('net').AddressInfo).port}`;
 
   const cardOn = async (projectId: string): Promise<string> => {
     const created = await request(server).post('/items').send({
@@ -199,196 +194,45 @@ describe('approving a command declared by the repository', () => {
     return created.body.id as string;
   };
 
-  it('refuses to run it until it has been approved, and shows what it is', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-approve-'));
-    // A git repo: the default flow's `tree-clean` check (CGLAB-380) reads
-    // `git status`, and a bare temp directory fails it before the final step
-    // ever runs the command this test is about.
+  it('tells the settings screen what the repository asks to run, with no approval state', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-file-cmds-'));
+    write(root, { projectId: 'x', verifyCommand: 'echo listed' });
+    const created = await request(server).post('/projects').send({ name: 'lists-them' });
+    await storage.updateProject(created.body.id, { projectRoot: root } as never);
+
+    const settings = await request(server).get(`/projects/${created.body.id}/settings`);
+    expect(settings.body.fileCommands).toEqual([{ key: 'verifyCommand', command: 'echo listed', hidden: [] }]);
+  });
+
+  it('lists the characters a screen cannot show faithfully, and the verify refuses that command', async () => {
+    // A right-to-left override makes this READ as one quoted echo; the shell runs printf too.
+    const command = "echo 'safe\u202E'; printf REVIEW_MARKER; #";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-bidi-'));
     execSync('git init -q', { cwd: root });
-    write(root, { projectId: 'x', verifyCommand: 'echo from-the-repo' });
-    // Committed, or the new `tree-clean` check blocks leaving the first step
-    // on the very file this test needs present.
+    write(root, { projectId: 'x', verifyCommand: command });
     execSync('git add -A && git -c user.email=t@t -c user.name=t commit -qm seed', { cwd: root });
-    const created = await request(server).post('/projects').send({ name: 'approve-me' });
-    await request(server)
-      .put(`/projects/${created.body.id}/project-root`)
-      .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ projectRoot: root });
+    const created = await request(server).post('/projects').send({ name: 'bidi' });
+    await storage.updateProject(created.body.id, { projectRoot: root } as never);
+    const settings = await request(server).get(`/projects/${created.body.id}/settings`);
+    expect(settings.body.fileCommands[0].hidden).toEqual(['U+202E']);
 
     const itemId = await cardOn(created.body.id);
-    // Walk to the last step, where the verify command is what runs.
-    // The validate endpoint is itself behind the internal token — it runs a
-    // shell string, which is the same reason this approval exists.
     const step = () => request(server)
       .post(`/items/${itemId}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ evidence: 'walking' });
     let res = await step();
     for (let i = 0; i < 6 && res.status === 200; i += 1) res = await step();
-    expect(res.body.error).toBe('COMMAND_NEEDS_APPROVAL');
-    expect(res.body.message).toContain('echo from-the-repo');
-    // Where to approve it - the board - since the agent reading this cannot.
-    expect(res.body.message).toMatch(/on the board/i);
-    expect(res.body.fingerprint).toBeTruthy();
+    expect(res.body.error, JSON.stringify(res.body)).toBe('COMMAND_UNREADABLE');
+    expect(res.body.message).toContain('U+202E');
   });
 
-  /*
-   * Approving is the decision to RUN a string that came with a repository, so
-   * it is a person's act on the board - like a step approval or an override.
-   * It used to sit behind the internal token, which is the token the agent's
-   * own CLI holds: an agent refused COMMAND_NEEDS_APPROVAL could approve the
-   * command and run it (34ee6b8a).
-   */
-  it('is approved by a person on the board, per exact command', async () => {
-    const created = await request(server).post('/projects').send({ name: 'approver' });
-    const res = await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-ui', '1')
-      .set('Host', ownHost())
-      .set('Origin', `http://${ownHost()}`)
-      .send({ command: 'echo from-the-repo' });
-    expect(res.status).toBe(200);
-    expect(res.body.approved).toBe(true);
-    // The board's word, recorded as such: no passkey was offered.
-    expect(res.body.authority).toBe('unverified');
-
-    const project = await request(server).get(`/projects/${created.body.id}`);
-    expect(project.body.approvedFileCommands).toContain(res.body.fingerprint);
-    expect(project.body.fileCommandApprovals).toEqual([
-      expect.objectContaining({ fingerprint: res.body.fingerprint, command: 'echo from-the-repo', by: 'board', authority: 'unverified' }),
-    ]);
-  });
-
-  it("refuses the agent's token, even when the request claims to come from the board", async () => {
-    const created = await request(server).post('/projects').send({ name: 'agent-tries' });
-    const res = await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-internal', VERIFY_TOKEN)
-      .set('x-agenfk-ui', '1')
-      .set('Host', ownHost())
-      .set('Origin', `http://${ownHost()}`)
-      .send({ command: 'echo from-the-repo' });
-    expect(res.status).toBe(403);
-    const project = await request(server).get(`/projects/${created.body.id}`);
-    expect(project.body.approvedFileCommands ?? []).toEqual([]);
-  });
-
-  it('refuses a page from another local origin, which CORS lets talk to the server', async () => {
-    // Any dev server or local web app on another port passes CORS here; the
-    // board header is no secret. Only a page this server served may approve.
-    const created = await request(server).post('/projects').send({ name: 'other-page' });
-    const res = await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-ui', '1')
-      .set('Host', ownHost())
-      .set('Origin', 'http://localhost:5555')
-      .send({ command: 'echo from-the-repo' });
-    expect(res.status).toBe(403);
-    const project = await request(server).get(`/projects/${created.body.id}`);
-    expect(project.body.approvedFileCommands ?? []).toEqual([]);
-  });
-
-  it('refuses a page squatting the IPv6 loopback on this port, which this server does not bind', async () => {
-    const created = await request(server).post('/projects').send({ name: 'ipv6-squatter' });
-    const port = (server.address() as import('net').AddressInfo).port;
-    const res = await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-ui', '1')
-      .set('Host', ownHost())
-      .set('Origin', `http://[::1]:${port}`)
-      .send({ command: 'echo from-the-repo' });
-    expect(res.status).toBe(403);
-  });
-
-  it('takes the literal address it binds, not the name localhost, which [::1] answers too', async () => {
-    // A page served by something squatting [::1]:<port> as http://localhost:<port> can drop its
-    // listener and have its next request fall back to this server's 127.0.0.1 - same Origin, same Host.
-    const created = await request(server).post('/projects').send({ name: 'localhost-name' });
-    const port = (server.address() as import('net').AddressInfo).port;
-    const res = await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-ui', '1')
-      .set('Host', `localhost:${port}`)
-      .set('Origin', `http://localhost:${port}`)
-      .send({ command: 'echo from-the-repo' });
-    expect(res.status).toBe(403);
-    expect(res.body.error).toMatch(/127\.0\.0\.1/);
-  });
-
-  it('does not trust whatever listens on the vite port unless that origin is configured', async () => {
-    const created = await request(server).post('/projects').send({ name: 'vite-port' });
-    const post = () => request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-ui', '1')
-      .set('Host', ownHost())
-      .set('Origin', 'http://localhost:5173')
-      .send({ command: 'echo from-the-repo' });
-    expect((await post()).status).toBe(403);
-    const before = process.env.AGENFK_BOARD_ORIGINS;
-    process.env.AGENFK_BOARD_ORIGINS = 'http://localhost:5173';
-    try {
-      expect((await post()).status).toBe(200);
-    } finally {
-      if (before === undefined) delete process.env.AGENFK_BOARD_ORIGINS; else process.env.AGENFK_BOARD_ORIGINS = before;
-    }
-  });
-
-  it('will not approve a command holding characters a screen cannot show faithfully', async () => {
-    // A right-to-left override makes this READ as one quoted echo; the shell runs printf too.
-    const command = "echo 'safe\u202E'; printf REVIEW_MARKER; #";
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-bidi-'));
-    write(root, { projectId: 'x', verifyCommand: command });
-    const created = await request(server).post('/projects').send({ name: 'bidi' });
-    await storage.updateProject(created.body.id, { projectRoot: root } as never);
-    const settings = await request(server).get(`/projects/${created.body.id}/settings`);
-    expect(settings.body.fileCommands[0].hidden).toEqual(['U+202E']);
-    const res = await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-ui', '1')
-      .set('Host', ownHost())
-      .set('Origin', `http://${ownHost()}`)
-      .send({ command });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/U\+202E/);
-    const project = await request(server).get(`/projects/${created.body.id}`);
-    expect(project.body.approvedFileCommands ?? []).toEqual([]);
-  });
-
-  it('refuses an approval that does not come from the board', async () => {
-    const created = await request(server).post('/projects').send({ name: 'no-board' });
-    const res = await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .send({ command: 'echo anything' });
-    expect(res.status).toBe(403);
-  });
-
-  it('tells the settings screen what the repository asks to run, and whether it is approved', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-file-cmds-'));
-    write(root, { projectId: 'x', verifyCommand: 'echo listed' });
-    const created = await request(server).post('/projects').send({ name: 'lists-them' });
-    await storage.updateProject(created.body.id, { projectRoot: root } as never);
-
-    const before = await request(server).get(`/projects/${created.body.id}/settings`);
-    expect(before.body.fileCommands).toEqual([
-      expect.objectContaining({ key: 'verifyCommand', command: 'echo listed', approved: false }),
-    ]);
-    await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-ui', '1')
-      .set('Host', ownHost())
-      .set('Origin', `http://${ownHost()}`)
-      .send({ command: 'echo listed' });
-    const after = await request(server).get(`/projects/${created.body.id}/settings`);
-    expect(after.body.fileCommands[0].approved).toBe(true);
-  });
-
-  it('never hands an unapproved command to the agent as a test-report fix', async () => {
+  it('builds a test-report fix from the stored command, never from the repository file', async () => {
     /*
      * The NO_TEST_REPORT refusal offers an `agenfk update-project
-     * --test-report-command "..."` for the agent to run by itself. Built from
-     * the repository's file, it would copy a command nobody approved into the
-     * stored test report, which runs as trusted from then on - no capture has
-     * run on this move, so the approval refusal never gets there first.
+     * --test-report-command "..."` for the agent to run by itself. It is built
+     * from the project's stored command (noTestReportFix): the repository's
+     * file declares what runs, it does not write the stored test report.
      */
     const flow = await request(server).post('/flows').set('x-agenfk-internal', VERIFY_TOKEN).send({
       name: 'entry-baseline',
@@ -405,7 +249,7 @@ describe('approving a command declared by the repository', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fix-'));
     execSync('git init -q', { cwd: root });
     // `vitest run` so the hint recognises the runner and would build a fix from it.
-    write(root, { projectId: 'x', verifyCommand: 'echo unapproved-marker && vitest run' });
+    write(root, { projectId: 'x', verifyCommand: 'echo file-marker && vitest run' });
     execSync('git add -A && git -c user.email=t@t -c user.name=t commit -qm seed', { cwd: root });
     const created = await request(server).post('/projects').send({ name: 'no-laundering' });
     await storage.updateProject(created.body.id, { flowId: flow.body.id, projectRoot: root } as never);
@@ -418,13 +262,12 @@ describe('approving a command declared by the repository', () => {
       .send({ evidence: 'leaving PLAN' });
     expect(res.body.error, JSON.stringify(res.body)).toBe('NO_TEST_REPORT');
     // The whole answer, not only `fix`: a regression moving the command into `message` counts too.
-    expect(JSON.stringify(res.body)).not.toContain('unapproved-marker');
+    expect(JSON.stringify(res.body)).not.toContain('file-marker');
   });
 
-  it('offers the repository command to run by hand only once it is approved', async () => {
+  it('offers the repository command to run by hand, unless it holds hidden characters', async () => {
     // Leaving a step that runs nothing tells the agent that running the tests is
-    // its own job, naming the command. An unapproved one named there walks past
-    // the approval exactly as a stored test report would.
+    // its own job, naming the command - the repository's runs as committed (#260).
     const flow = await request(server).post('/flows').set('x-agenfk-internal', VERIFY_TOKEN).send({
       name: 'runs-nothing',
       steps: [
@@ -442,41 +285,13 @@ describe('approving a command declared by the repository', () => {
     const itemId = await cardOn(created.body.id);
     await storage.updateItem(itemId, { status: 'PLAN' } as never);
 
-    const before = await request(server).get(`/items/${itemId}/leave-plan`);
-    expect(before.status, JSON.stringify(before.body)).toBe(200);
-    expect(before.body.advice).toMatch(/running them is yours/);
-    expect(before.body.advice).not.toContain('by-hand-marker');
+    const plain = await request(server).get(`/items/${itemId}/leave-plan`);
+    expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+    expect(plain.body.advice).toMatch(/running them is yours/);
+    expect(plain.body.advice).toContain('by-hand-marker');
 
-    await request(server)
-      .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-ui', '1')
-      .set('Host', ownHost())
-      .set('Origin', `http://${ownHost()}`)
-      .send({ command: 'echo by-hand-marker' });
-    const after = await request(server).get(`/items/${itemId}/leave-plan`);
-    expect(after.body.advice).toContain('by-hand-marker');
-  });
-});
-
-/*
- * Which page may approve, by what the server binds (review of 34ee6b8a): a
- * canonical numeric address, never a name - `localhost` may resolve to an
- * address somebody else holds.
- */
-describe('approvalPageHost', () => {
-  it('is the literal for an IPv4 or IPv6 bind, canonicalised as an Origin writes it', () => {
-    expect(approvalPageHost('127.0.0.1')).toBe('127.0.0.1');
-    expect(approvalPageHost('::1')).toBe('[::1]');
-    expect(approvalPageHost('0:0:0:0:0:0:0:1')).toBe('[::1]');
-  });
-
-  it('is 127.0.0.1 for a wildcard bind, where the desktop reaches it', () => {
-    expect(approvalPageHost('0.0.0.0')).toBe('127.0.0.1');
-    expect(approvalPageHost('::')).toBe('127.0.0.1');
-  });
-
-  it('is nothing for a name, localhost included', () => {
-    expect(approvalPageHost('localhost')).toBeNull();
-    expect(approvalPageHost('my-box.local')).toBeNull();
+    write(root, { projectId: 'x', verifyCommand: 'echo by-hand-marker\u200B' });
+    const hidden = await request(server).get(`/items/${itemId}/leave-plan`);
+    expect(hidden.body.advice).not.toContain('by-hand-marker');
   });
 });

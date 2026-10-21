@@ -10,14 +10,14 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { suggestTestReport, withTestFiles, quoteArg } from './testReportHint';
-import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
+import { SuiteSlots, suiteRunLimit, waitingLine, projectWaitingLine, type SuiteWait } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2378,6 +2378,22 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * that is never evicted is a denial of service inside the fix for one.
  */
 /**
+ * d929cb53 - the board's own item routes and the running-verifies list (CodeQL js/missing-rate-limiting on PR #194).
+ * The board edits, moves and deletes cards and reads the list all day, several panes at once: a ceiling far above
+ * that, which still stops a runaway loop. Per route, as limitFlowWrites.
+ */
+const limitBoardRoutes = rateLimit({
+  windowMs: 60_000,
+  limit: 1200,
+  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req: any, res: any) => {
+    res.status(429).json({ error: `Too many requests to ${req.path}. This route is capped at 1200 a minute; this is almost always a loop.` });
+  },
+});
+
+/**
  * A ceiling on the routes that do real work per request (CodeQL js/missing-rate-limiting).
  *
  * Applied to the five that spawn a process, walk a directory, or reach the
@@ -2668,116 +2684,8 @@ function readDeclaredSettings(projectRoot?: string | null): {
   return { settings, keys, path: rel, problems };
 }
 
-/**
- * "I have read this command and I am willing to run it here."
- *
- * A PERSON'S act, on the board - like a step approval or an override. This is
- * the decision to execute a shell string that arrived with a repository. It
- * used to sit behind the internal token, which kept browsers out but let the
- * agent in: that token is the one the agent's own CLI holds, so an agent
- * refused COMMAND_NEEDS_APPROVAL could approve the command and run it
- * (34ee6b8a). The board's word is recorded as 'unverified' unless a passkey
- * signs it, exactly as a step approval without `signature: passkey`.
- *
- * Stored per exact command. A pull that edits it asks again, because what was
- * read and approved is the string, not the field.
- */
-/**
- * Did a page this server served send the request? (reviews of 34ee6b8a)
- *
- * CORS lets any loopback origin talk to this server, so the board header
- * alone would let a page on ANOTHER local port - any dev server, any local
- * web app - approve a repository command for this machine; the internal
- * token this route used to need kept browsers out. A browser stamps Origin
- * on every POST and a page cannot forge it. So the page must be:
- *
- * - the very address the request was sent to (Origin host = Host): a page
- *   squatting `[::1]:<this port>` - this server binds 127.0.0.1 - names
- *   itself, not the address it is calling;
- * - the literal address this server binds, which neither a DNS-rebinding
- *   page nor an IPv6 squatter on `localhost` can claim;
- * - on the port the request arrived on.
- *
- * Or an origin configured explicitly in AGENFK_BOARD_ORIGINS (the vite dev
- * board). Not the implicit localhost:5173 boardOrigins() falls back to with no
- * UI served: whatever happens to listen there would be trusted unasked.
- */
-function fromOwnBoardPage(req: any): boolean {
-  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
-  if (!origin) return false;
-  const configured = (process.env.AGENFK_BOARD_ORIGINS ?? '').split(',').map(o => o.trim()).filter(Boolean);
-  if (configured.includes(origin)) return true;
-  let page: URL;
-  try { page = new URL(origin); } catch { return false; }
-  /*
-   * The LITERAL address this server binds - 127.0.0.1 by default - never the
-   * name `localhost`: localhost resolves to [::1] too, so a page served from
-   * [::1]:<this port> by something else can drop its listener and have its
-   * next request fall back to this IPv4 one, same Origin, same Host. The
-   * desktop shell, the only place the approval is offered, loads 127.0.0.1.
-   */
-  const bound = approvalPageHost(BIND_HOST);
-  return bound !== null && page.hostname === bound && page.protocol === 'http:' && page.host === String(req.headers.host ?? '')
-    && Number(page.port || 80) === req.socket?.localPort;
-}
 
-/**
- * The hostname a board page approving a command must have, given what the
- * server binds - canonical and NUMERIC, or null for "none implicitly".
- *
- * - An IPv4 literal is itself; an IPv6 literal is canonicalised the way the
- *   URL parser writes an Origin (`[::1]`), so an expanded form still matches.
- * - A wildcard (0.0.0.0, ::) is reached by the desktop on 127.0.0.1.
- * - A NAME - `localhost` above all - is null: it may resolve to an address
- *   somebody else holds, which is the IPv6-to-IPv4 handoff this route closes.
- *   Such a setup approves only from an origin set in AGENFK_BOARD_ORIGINS.
- */
-export function approvalPageHost(bindHost: string): string | null {
-  const host = bindHost.trim();
-  const kind = net.isIP(host);
-  if (kind === 4) return host === '0.0.0.0' ? '127.0.0.1' : host;
-  if (kind === 6) {
-    let canonical: string;
-    try { canonical = new URL(`http://[${host}]`).hostname; } catch { return null; }
-    return canonical === '[::]' ? '127.0.0.1' : canonical;
-  }
-  return null;
-}
-
-app.post("/projects/:id/approve-file-command", limitExpensive, asyncHandler(async (req: any, res: any) => {
-  if (refuseUnlessBoard(req, res)) return;
-  if (!fromOwnBoardPage(req)) {
-    return res.status(403).json({ error: "Approve it from the board this server serves: open it at http://127.0.0.1:<port> (the desktop app does); a page from another origin cannot approve a command for this machine (a dev board needs its origin in AGENFK_BOARD_ORIGINS)." });
-  }
-  const project: any = await storage.getProject(req.params.id);
-  if (!project) return res.status(404).json({ error: "Project not found" });
-  const command = typeof req.body?.command === 'string' ? req.body.command : '';
-  if (!command.trim()) return res.status(400).json({ error: "command is required" });
-  // Not approvable at all while it holds characters a screen cannot show: what a person read
-  // would not be what runs (review of 34ee6b8a). The fix is in the file, not here.
-  const hidden = hiddenCharacters(command);
-  if (hidden.length) {
-    return res.status(400).json({ error: `This command holds characters that cannot be shown faithfully (${hidden.join(', ')}), so it cannot be approved as read. Remove them from .agenfk/project.json.` });
-  }
-
-  const fingerprint = commandFingerprint(command);
-  const authority = gateAuthority(req, res, { purpose: 'file-command', itemId: project.id, checkId: fingerprint }, false);
-  if (!authority) return;
-  const approved: string[] = Array.isArray(project.approvedFileCommands)
-    ? project.approvedFileCommands
-    : [];
-  // Who said yes, and how sure we are of it - the fingerprint list alone could not say.
-  const rec = { fingerprint, command: command.trim(), at: new Date().toISOString(), by: 'board', ...authority };
-  const records: any[] = Array.isArray(project.fileCommandApprovals) ? project.fileCommandApprovals : [];
-  await storage.updateProject(project.id, {
-    approvedFileCommands: approved.includes(fingerprint) ? approved : [...approved, fingerprint],
-    fileCommandApprovals: [...records.filter(r => r?.fingerprint !== fingerprint), rec],
-  } as any);
-  recordHubEvent({ type: 'command.approved', projectId: project.id, payload: { source: 'project-file', fingerprint, command: rec.command, by: 'board', authority: authority.authority } });
-  res.json({ approved: true, fingerprint, authority: authority.authority });
-}));
-
-app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
+app.get("/projects/:id/settings", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   const project = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
   const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
@@ -2803,21 +2711,22 @@ app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
       flowName: flow?.name ?? DEFAULT_FLOW.name,
       worktreeRoot: defaultWorktreeRoot(),
       homeDir: os.homedir(),
+      flowVerifyAt: flowVerifyAt(flow),
+      ...(flow?.verifyAtScope ? { flowVerifyAtScope: flow.verifyAtScope } : {}),
     }),
     /*
-     * The commands the repository asks this machine to run, and whether a
-     * person here has approved each - what the screen offers to approve
-     * (34ee6b8a). Judged by the same approvalFor the verify uses, so the
-     * screen and the refusal can never disagree about one command.
+     * The commands the repository declares for this machine to run, shown in
+     * full with any characters a screen cannot show faithfully (those never
+     * run). There is no approval to give: a declared command runs like any
+     * other committed code (#260).
      */
     // verifyCommand only: it is the one this machine runs from the file. A file's setupCommand is
-    // never run (worktree setup reads the stored row), so approving it would approve nothing.
+    // never run (worktree setup reads the stored row).
     fileCommands: (['verifyCommand'] as const)
       .filter(key => typeof declared.settings[key] === 'string' && String(declared.settings[key]).trim())
       .map(key => {
         const command = String(declared.settings[key]);
-        const verdict = approvalFor({ key, command }, ((project as any).approvedFileCommands ?? []) as string[]);
-        return { key, command, fingerprint: verdict.fingerprint ?? commandFingerprint(command), approved: verdict.allowed, hidden: hiddenCharacters(command) };
+        return { key, command, hidden: hiddenCharacters(command) };
       }),
   });
 }));
@@ -3194,6 +3103,59 @@ app.get("/settings", asyncHandler(async (_req: any, res: any) => {
  */
 let suiteRunSetting = 0;
 const suiteSlots = new SuiteSlots(() => suiteRunLimit(os.cpus().length, suiteRunSetting));
+/**
+ * 7ddeaf7c: a project with exclusiveSuite runs one suite at a time - its own
+ * line, taken BEFORE the server-wide slot, so a run waiting for its project
+ * holds no server slot and other projects are not held back by it. EVERY run
+ * of a project takes its line (unlimited while the setting is off), so turning
+ * the setting on counts the runs already going. Each wait is reported with the
+ * line that names the setting it waits on.
+ */
+const projectSuiteSlots = new Map<string, SuiteSlots>();
+const projectExclusive = new Map<string, boolean>();
+/** Runs of each project actually going (both slots held), for the re-check after a server slot. */
+const projectRunning = new Map<string, number>();
+const projectSlotsFor = (projectId: string): SuiteSlots => {
+  let slots = projectSuiteSlots.get(projectId);
+  if (!slots) projectSuiteSlots.set(projectId, slots = new SuiteSlots(() => (projectExclusive.get(projectId) ? 1 : Number.MAX_SAFE_INTEGER)));
+  return slots;
+};
+/** A project's setting changed: the line applies it at once (a run waiting when it is turned off starts). */
+function noteProjectExclusive(projectId: string, exclusive: boolean): void {
+  projectExclusive.set(projectId, exclusive);
+  projectSuiteSlots.get(projectId)?.recheck();
+}
+async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void): Promise<() => void> {
+  if (!projectId) return suiteSlots.acquire(w => onWait(w, waitingLine(w)));
+  const project: any = await storage.getProject(projectId);
+  projectExclusive.set(projectId, project?.exclusiveSuite === true);
+  for (;;) {
+    const releaseProject = await projectSlotsFor(projectId).acquire(w => onWait(w, projectWaitingLine(w)));
+    let releaseServer: () => void;
+    try { releaseServer = await suiteSlots.acquire(w => onWait(w, waitingLine(w))); }
+    catch (e) { releaseProject(); throw e; }
+    /*
+     * Admitted to the project's line while it was unlimited, then the setting
+     * was turned on while this waited for a server slot: another run of the
+     * project may be going. Both slots go back and it queues again, now
+     * behind that run (review of 7ddeaf7c).
+     */
+    if (projectExclusive.get(projectId) && (projectRunning.get(projectId) ?? 0) > 0) {
+      releaseServer();
+      releaseProject();
+      continue;
+    }
+    projectRunning.set(projectId, (projectRunning.get(projectId) ?? 0) + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      projectRunning.set(projectId, (projectRunning.get(projectId) ?? 1) - 1);
+      releaseServer();
+      releaseProject();
+    };
+  }
+}
 async function loadSuiteRunSetting(): Promise<void> {
   try { suiteRunSetting = (await storage.getSettings()).maxConcurrentSuiteRuns ?? 0; } catch { /* automatic */ }
 }
@@ -3263,7 +3225,7 @@ app.get("/projects/:id", asyncHandler(async (req: any, res: any) => {
   res.json(project);
 }));
 
-app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
+app.put("/projects/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   // Allowlist the mutable fields. Passing req.body straight through let an
   // unauthenticated caller overwrite verifyCommand (a shell string later run
   // by validate_progress), projectRoot (its cwd) and flowId — mass assignment
@@ -3273,20 +3235,33 @@ app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
   // no execution semantics: the worst a caller can do is turn worktree
   // creation on or off. projectRoot and verifyCommand stay out — those are a
   // cwd and a shell string.
-  const updates: Partial<{ name: string; description: string; autoWorktree: boolean }> = {};
+  // 7ddeaf7c: verifyAtScope and exclusiveSuite join it on the same grounds - a
+  // choice between two values and a switch, neither of which runs anything.
+  const updates: Partial<{ name: string; description: string; autoWorktree: boolean; verifyAtScope: 'worktree' | 'project' | undefined; exclusiveSuite: boolean }> = {};
   if (typeof req.body?.name === 'string') updates.name = req.body.name;
   if (typeof req.body?.description === 'string') updates.description = req.body.description;
   if (typeof req.body?.autoWorktree === 'boolean') updates.autoWorktree = req.body.autoWorktree;
+  if (req.body && 'verifyAtScope' in req.body) {
+    const scopeProblem = verifyAtScopeError(req.body.verifyAtScope);
+    if (scopeProblem) return res.status(400).json({ error: scopeProblem });
+    // null clears the project's own value: the flow's applies again.
+    updates.verifyAtScope = req.body.verifyAtScope ?? undefined;
+  }
+  if (req.body?.exclusiveSuite !== undefined) {
+    if (typeof req.body.exclusiveSuite !== 'boolean') return res.status(400).json({ error: 'exclusiveSuite must be true or false.' });
+    updates.exclusiveSuite = req.body.exclusiveSuite;
+  }
   // tmuxByDefault deliberately does NOT belong here. It was project-scoped for
   // one commit; the decision changed to installation-wide, and it now lives at
   // PUT /settings. Accepting it in both places would give one preference two
   // sources of truth, so whichever the UI read, the other would silently
   // disagree — worse than either home alone.
   if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
+    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree, verifyAtScope, exclusiveSuite. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
   }
   try {
     const updated = await storage.updateProject(req.params.id, updates);
+    if (typeof updates.exclusiveSuite === 'boolean') noteProjectExclusive(req.params.id, updates.exclusiveSuite);
     io.emit('items_updated');
     res.json(updated);
   } catch (error) {
@@ -3347,6 +3322,50 @@ async function noteGateChangeOnCards(project: any, heading: string, body: string
   for (const it of items.filter(i => active.has(i.id) || i.status === Status.PAUSED || i.status === Status.BLOCKED)) {
     await noteOnItem(it.id, `### ${heading}\n\n${body}`);
   }
+}
+
+/**
+ * #260: the verify command a repository declares changes with a pull, not with
+ * `update-project`, and it runs without anybody approving it - so a change of it
+ * is written where the people reading the board will see it, exactly as a change
+ * of the stored command is (CGLAB-378). The first command seen is recorded
+ * silently: it is where the project starts, not a change.
+ *
+ * Observed at the start of EVERY verify, on any step (review of #260): an
+ * intermediate capture runs the declared command too, so a change seen only
+ * there must not go unrecorded. ONE observation at a time per project, each
+ * re-reading the project inside: two verifies racing would otherwise both
+ * announce the same change, or write back a history missing the other's entry.
+ */
+const declaredObservations = new Map<string, Promise<void>>();
+export function observeDeclaredVerifyCommand(projectId: string, selected?: string | null): Promise<void> {
+  const previous = declaredObservations.get(projectId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(() => recordDeclaredVerifyCommand(projectId, selected));
+  declaredObservations.set(projectId, next);
+  void next.finally(() => { if (declaredObservations.get(projectId) === next) declaredObservations.delete(projectId); }).catch(() => undefined);
+  return next;
+}
+
+/**
+ * `selected`, when given, is the exact string a capture or a close is about to
+ * run: recorded as it will run, never re-read, so a pull landing while a long
+ * capture ran cannot run one command and record another (review of #260).
+ */
+async function recordDeclaredVerifyCommand(projectId: string, selected?: string | null): Promise<void> {
+  const project: any = await storage.getProject(projectId);
+  if (!project?.projectRoot) return;
+  const raw = selected !== undefined ? selected : readDeclaredSettings(project.projectRoot).settings.verifyCommand;
+  const declared = typeof raw === 'string' ? raw : null;
+  const seen = Object.prototype.hasOwnProperty.call(project, 'declaredVerifyCommand');
+  const previous: string | null = seen ? (project.declaredVerifyCommand ?? null) : null;
+  if (seen && previous === declared) return;
+  await storage.updateProject(project.id, {
+    declaredVerifyCommand: declared,
+    ...(seen ? { verifyCommandChanges: [...(project.verifyCommandChanges ?? []), { from: previous, to: declared, at: new Date().toISOString(), source: 'file' }] } : {}),
+  } as any);
+  if (!seen) return;
+  const shown = (c?: string | null) => (c ? `\`${c}\`` : '(none)');
+  await noteGateChangeOnCards(project, 'Repository verify command changed', `\`.agenfk/project.json\` now declares ${shown(declared)} (was ${shown(previous)}). This card's final step runs the new command.`);
 }
 
 // ── Test reports and step records (CGLAB-379) ────────────────────────────────
@@ -4477,8 +4496,8 @@ type CaptureOutcome =
  * is verifiable without anybody re-setting it by hand. The stored
  * `testReport.command` is more specific and stays first.
  *
- * `fromFile` is what the approval gate keys on: only a command that arrived
- * with a clone needs reading before it runs.
+ * `fromFile` is what the hidden-character check keys on: only a command that
+ * arrived with the repository is judged by it (#260).
  */
 function effectiveVerifyCommand(project: any): { command: string | null; fromFile: boolean } {
   const report = typeof project?.testReport?.command === 'string' ? project.testReport.command : null;
@@ -4512,22 +4531,18 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
     return { status: 400, error: 'NO_REPORT_COMMAND', message: 'Nothing to run: set a test report (agenfk update-project <id> --test-report-...) or a verifyCommand.' };
   }
   /*
-   * A command that arrived with the repository does not run until somebody on
-   * this machine has read it. Checked HERE, not only on the final verify: the
-   * step checks run the same command on an intermediate step, and running it
-   * there without approval would be the hole the approval exists to close.
+   * A command that arrived with the repository runs like committed code (#260),
+   * unless it holds characters a screen cannot show faithfully: then what a
+   * person reads is not what runs, and it never runs. Checked HERE, not only on
+   * the final verify: the step checks run the same command on an intermediate step.
    */
   if (resolved.fromFile) {
-    const verdict = approvalFor(
-      { key: 'verifyCommand', command },
-      ((project as any)?.approvedFileCommands ?? []) as string[],
-    );
-    if (!verdict.allowed) {
-      return {
-        status: 400, error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '',
-        fingerprint: verdict.fingerprint, command,
-      };
+    const unreadable = unreadableFileCommand({ key: 'verifyCommand', command });
+    if (unreadable) {
+      return { status: 400, error: 'COMMAND_UNREADABLE', message: unreadable.reason, command };
     }
+    // The exact command this capture runs, recorded before it runs (review of #260).
+    await observeDeclaredVerifyCommand(item.projectId, command);
   }
 
   /*
@@ -4911,10 +4926,16 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   const running: VerifyPhase = !lazy ? { state: 'running', kind: 'whole' }
     : lazy.related ? { state: 'running', kind: 'affected', files: lazy.changed.length } : { state: 'running', kind: 'tests-only', files: lazy.ran.length };
   // f8d0a752: inside the report lock, so a card waiting on the lock holds no suite-run slot.
-  const record = await withReportLock(lockKey, () => suiteSlots.run(() => { opts?.onPhase?.(running); return runAndRead(item, root, setting, command, cleanSha, opts, lazy); }, w => {
-    opts?.onOutput?.(waitingLine(w));
-    opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
-  }), opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
+  const record = await withReportLock(lockKey, async () => {
+    const release = await acquireSuiteRun(item.projectId, (w, line) => {
+      opts?.onOutput?.(line);
+      opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
+    });
+    try {
+      opts?.onPhase?.(running);
+      return await runAndRead(item, root, setting, command, cleanSha, opts, lazy);
+    } finally { release(); }
+  }, opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
   if (record === null) return LAZY_FALLBACK;
   // The card may have moved while the command ran: a record for a step it
   // no longer occupies (or was rolled back over) must not be written.
@@ -6212,29 +6233,13 @@ const limitFlowWrites = rateLimit({
   },
 });
 
-/**
- * d929cb53 - the board's own item routes and the running-verifies list (CodeQL js/missing-rate-limiting on PR #194).
- * The board edits, moves and deletes cards and reads the list all day, several panes at once: a ceiling far above
- * that, which still stops a runaway loop. Per route, as limitFlowWrites.
- */
-const limitBoardRoutes = rateLimit({
-  windowMs: 60_000,
-  limit: 1200,
-  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}`,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  handler: (req: any, res: any) => {
-    res.status(429).json({ error: `Too many requests to ${req.path}. This route is capped at 1200 a minute; this is almost always a loop.` });
-  },
-});
-
 app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
-  const { name, description, version, steps, verifyAt } = req.body;
+  const { name, description, version, steps, verifyAt, verifyAtScope } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
   const stepsError = flowStepsError(steps);
   if (stepsError) return res.status(400).json({ error: stepsError });
-  const verifyAtProblem = verifyAtError(verifyAt);
+  const verifyAtProblem = verifyAtError(verifyAt) ?? verifyAtScopeError(verifyAtScope);
   if (verifyAtProblem) return res.status(400).json({ error: verifyAtProblem });
 
   // Always force `source = 'local'` on REST-driven creation. The reconciler
@@ -6250,6 +6255,7 @@ app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
     updatedAt: new Date(),
     source: 'local',
     ...(verifyAt ? { verifyAt } : {}),
+    ...(verifyAtScope ? { verifyAtScope } : {}),
   };
 
   const created = await storage.createFlow(flow);
@@ -6271,8 +6277,8 @@ app.put("/flows/:id", limitFlowWrites, asyncHandler(async (req: any, res: any) =
     return res.status(409).json({ error: HUB_MANAGED_FLOW_MSG });
   }
   try {
-    const { name, description, version, steps, verifyAt } = req.body;
-    const verifyAtProblem = verifyAtError(verifyAt);
+    const { name, description, version, steps, verifyAt, verifyAtScope } = req.body;
+    const verifyAtProblem = verifyAtError(verifyAt) ?? verifyAtScopeError(verifyAtScope);
     if (verifyAtProblem) return res.status(400).json({ error: verifyAtProblem });
     // Only validate steps when the caller is actually replacing them — a
     // rename-only PUT must keep working.
@@ -6290,6 +6296,7 @@ app.put("/flows/:id", limitFlowWrites, asyncHandler(async (req: any, res: any) =
     if (version !== undefined) updates.version = version;
     if (steps !== undefined) updates.steps = normalizeSteps(merged);
     if (verifyAt !== undefined && verifyAt !== null) updates.verifyAt = verifyAt;
+    if (verifyAtScope !== undefined && verifyAtScope !== null) updates.verifyAtScope = verifyAtScope;
 
     const updated = await storage.updateFlow(req.params.id, updates);
     io.emit('flow:updated', { flowId: updated.id });
@@ -6446,6 +6453,7 @@ app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any
         description: body.flow?.description,
         steps: hubSteps,
         ...(flowVerifyAt(body.flow) === 'parent' ? { verifyAt: 'parent' as const } : {}),
+        ...(body.flow?.verifyAtScope === 'project' ? { verifyAtScope: 'project' as const } : {}),
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -6487,6 +6495,7 @@ app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any
       description: flowData.description,
       steps,
       ...(flowVerifyAt(flowData) === 'parent' ? { verifyAt: 'parent' as const } : {}),
+      ...(flowData?.verifyAtScope === 'project' ? { verifyAtScope: 'project' as const } : {}),
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -6572,6 +6581,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
             description: flow.description ?? '',
             version: (flow as any).version || '1.0.0',
             ...(flowVerifyAt(flow) === 'parent' ? { verifyAt: 'parent' } : {}),
+            ...(flow?.verifyAtScope === 'project' ? { verifyAtScope: 'project' } : {}),
             // The registry's fields only: local step ids and cosmetics stay here.
             steps: [...flow.steps].sort((a: any, b: any) => a.order - b.order).map((st: any) => ({
               name: st.name,
@@ -6732,6 +6742,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
         author: ghUser,
         version,
         ...(flowVerifyAt(flow) === 'parent' ? { verifyAt: 'parent' } : {}),
+        ...(flow?.verifyAtScope === 'project' ? { verifyAtScope: 'project' } : {}),
         steps: flow.steps
           .sort((a: any, b: any) => a.order - b.order)
           .map((s: any) => ({
@@ -7931,6 +7942,16 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
     return res.status(404).json({ error: "Target project not found" });
   }
 
+  /*
+   * 7ddeaf7c (review): a merge owed across the move would be lost - the
+   * parent's verify looks for it in its own project. Refused while open, in
+   * either direction; owed inside the moved subtree, it moves with it.
+   */
+  const across = await obligationsAcrossMove(item as any);
+  if (across.length) {
+    return res.status(409).json({ error: 'DEFERRED_OBLIGATION_OPEN', message: `Not moved: ${across.join('; ')}. The parent's verify looks for that merge in its own project, so moving now would drop it. Close the parent first (merge the work, then verify it), or move them together.` });
+  }
+
   const sourceProjectId = item.projectId;
   const movedCount = await moveToProjectRecursively(req.params.id, targetProjectId);
 
@@ -8242,11 +8263,11 @@ interface StepGate {
   results: CheckResult[];
   blocked: boolean;
   /**
-   * Set when the gate refused because a command from the repository has not
-   * been approved: the caller answers with `COMMAND_NEEDS_APPROVAL`, the shape
-   * the CLI already renders, rather than a generic failed-check reply.
+   * Set when the gate refused because a command from the repository holds
+   * characters a screen cannot show faithfully: the caller answers with
+   * `COMMAND_UNREADABLE`, naming the command, rather than a generic failed-check reply.
    */
-  approval?: { message: string; fingerprint?: string; command?: string };
+  unreadable?: { message: string; command?: string };
   /** CGLAB-428: the checks leaving this step would run, switched off by the org's hub. */
   disabled: Array<{ id: string; source: string }>;
   /** The capture this verify ran or reused, for saying which (d26832d6 #15). */
@@ -8342,6 +8363,9 @@ async function treeWarningsOf(item: any): Promise<TreeWarning[]> {
         // e2ab4ced: an answered removal is the reviewer's to judge, as a warning is.
         latest.set(key, (c?.severity === 'warn' || c?.answeredRemoval === true) && c?.outcome === 'fail' && c?.id !== 'tree-warnings' && !noise
           ? { itemId: card.id, title: String(card.title ?? ''), step: String(r.step), check: String(c.id), detail: String(c.detail ?? '').slice(0, 300),
+            // fe3ca491: whether it held the card - had to be answered, or a person passed it - rather than only advised.
+            // A record from before the flag: the answer-required warnings are exactly the ones that held (review of fe3ca491).
+            held: c?.answeredRemoval === true || (r.heldMarked === true ? c?.heldUntilAnswered === true : ANSWER_REQUIRED.has(String(c?.id))),
             ...(typeof c.answer === 'string' ? { answer: c.answer } : c?.overridden?.reason ? { answer: `passed by ${c.overridden.by ?? 'a person'} on the board: ${c.overridden.reason}` } : {}) }
           : null);
       }
@@ -8515,7 +8539,7 @@ function deferredToCommand(flow: { steps: any[] }, status: string, project: any,
  * The roll-up never walks such a parent onto its exit step (syncParentStatus),
  * so its own final verify - the one run - always happens.
  */
-async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unknown }): Promise<any | null> {
+async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unknown; verifyAtScope?: unknown }): Promise<any | null> {
   if (flowVerifyAt(flow) !== 'parent' || !item?.parentId) return null;
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
@@ -8526,12 +8550,157 @@ async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unkno
   const parentStatus = String(parent.status).toUpperCase();
   if (parentStatus === 'DONE' || INACTIVE_STATUSES.has(parentStatus) || parent.status === sorted[sorted.length - 1]?.name) return null;
   if (activeValidateRunByItem.has(parent.id)) return null;
-  // The parent's verify tests the PARENT's tree: a child whose work lives in another one runs its own.
+  // The parent's verify tests the PARENT's tree: a child whose work lives in another one runs its own -
+  // unless the scope is 'project' (7ddeaf7c), and the other tree is a checkout of the same repository,
+  // so that the child's close commit can be merged into the parent's (unmergedDeferredWork holds the parent until it is).
   const project: any = await storage.getProject(item.projectId);
   const childRoot = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const parentRoot = resolveCommitRoot(await withEffectiveWorktree(parent), project?.projectRoot).root;
-  if (!childRoot || childRoot !== parentRoot) return null;
+  if (!childRoot || !parentRoot) return null;
+  if (childRoot !== parentRoot && (effectiveVerifyAtScope(flow, project) !== 'project' || !sameRepository(childRoot, parentRoot))) return null;
   return parent;
+}
+
+/** A card that deferred its suite run from another tree, by the commit it closed on (7ddeaf7c). */
+type UnmergedWork = { id: string; title: string; sha: string; branch: string | null };
+
+/** Whether two checkouts share one repository (the same git common dir), so a commit made in one is reachable from the other. */
+function sameRepository(a: string, b: string): boolean {
+  const commonDir = (root: string): string | null => {
+    try { return fs.realpathSync(path.resolve(root, runGitSync(['-C', root, 'rev-parse', '--git-common-dir']).trim())); } catch { return null; }
+  };
+  const ca = commonDir(a);
+  return ca !== null && ca === commonDir(b);
+}
+
+/**
+ * 7ddeaf7c — what a close deferred to a parent in ANOTHER tree leaves behind:
+ * the commit the child closed on, and its branch, so the parent's verify can
+ * tell whether that work has been merged into the tree it tests. Null when the
+ * two share a tree: the parent's run sees the child's work as it stands.
+ */
+function crossTreeDeferral(childRoot: string | null, parentRoot: string | null, committed?: string | null): { sha: string; root: string; branch: string | null } | null {
+  if (!childRoot || !parentRoot || childRoot === parentRoot) return null;
+  // The close commit's own sha when it made one: HEAD could have moved since.
+  const sha = committed || readHead(childRoot, gitRun);
+  if (!sha) return null;
+  let branch: string | null = null;
+  try { branch = runGitSync(['-C', childRoot, 'rev-parse', '--abbrev-ref', 'HEAD']).trim() || null; } catch { /* detached or unreadable */ }
+  return { sha, root: childRoot, branch: branch === 'HEAD' ? null : branch };
+}
+
+/**
+ * 7ddeaf7c — the deferred work the card's own suite run would miss: every card
+ * that deferred its run to this one (directly, or through a card that deferred
+ * in turn) from another tree, whose close commit is not reachable from this
+ * card's HEAD. The parent's verify tests the parent's tree; until that work is
+ * merged there, a green would cover a tree without it.
+ */
+async function unmergedDeferredWork(item: any, project: any): Promise<UnmergedWork[]> {
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  if (!root) return [];
+  const missing: UnmergedWork[] = [];
+  // By whom each card deferred TO, not by its parent now: a card re-parented or detached after it deferred still owes the merge.
+  const byTarget = new Map<string, any[]>();
+  for (const other of await storage.listItems({ projectId: item.projectId, hydrate: false } as any) as any[]) {
+    if (!other.suiteDeferredTo) continue;
+    const list = byTarget.get(other.suiteDeferredTo);
+    if (list) list.push(other); else byTarget.set(other.suiteDeferredTo, [other]);
+  }
+  const seen = new Set<string>();
+  const walk = (targetId: string): void => {
+    for (const child of byTarget.get(targetId) ?? []) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      const at = child.suiteDeferredCommit;
+      if (at?.sha) {
+        let merged = false;
+        try { runGitSync(['-C', root, 'merge-base', '--is-ancestor', at.sha, 'HEAD']); merged = true; } catch { /* not an ancestor, or not in this repository */ }
+        if (!merged) missing.push({ id: child.id, title: child.title, sha: at.sha, branch: at.branch ?? null });
+      }
+      walk(child.id);
+    }
+  };
+  walk(item.id);
+  return missing;
+}
+
+/**
+ * 7ddeaf7c — what a close commit would leave out: unstaged changes and
+ * untracked files (ignored ones excepted). A card deferring from another tree
+ * hands the parent only what is committed, so these would never be tested.
+ */
+function uncommittableChanges(root: string, { staged = true }: { staged?: boolean } = {}): string[] | null {
+  let out: string;
+  // Explicit: a user's status.showUntrackedFiles=no would otherwise hide an untracked file from this check. Null: unreadable.
+  try { out = runGitSync(['-C', root, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']); } catch { return null; }
+  // Porcelain is `XY path`: Y is the worktree side, so anything but a space there (untracked `??` included) is not staged.
+  // With staged: false (after the commit) a staged change counts too: it is not in the commit either.
+  return out.split('\n').filter(l => l.length > 3 && (l[1] !== ' ' || (!staged && l[0] !== ' '))).map(l => l.slice(3));
+}
+
+function deferredUncommittedRefusal(item: any, root: string, loose: string[]) {
+  const SHOWN = 20;
+  return {
+    status: item.status, error: 'DEFERRED_CLOSE_UNCOMMITTED',
+    message: `❌ This card defers its suite run to its parent from another worktree, and the parent's run sees only what this card commits - but ${root} has changes the close commit would leave out: ${loose.slice(0, SHOWN).map(f => `\`${f}\``).join(', ')}${loose.length > SHOWN ? ` and ${loose.length - SHOWN} more` : ''}. Stage what belongs to this card (and remove or ignore the rest), then verify again. Nothing moved.${staysOn(item.status)}`,
+  };
+}
+
+function deferredUnreadableRefusal(item: any, root: string) {
+  return {
+    status: item.status, error: 'DEFERRED_CLOSE_UNCOMMITTED',
+    message: `❌ This card defers its suite run to its parent from another worktree, so the commit it closes on must be read from ${root} - and git could not read it (status or HEAD). Nothing moved; check the worktree, then verify again.${staysOn(item.status)}`,
+  };
+}
+
+/** 7ddeaf7c (review): open deferral obligations that a move of `item`'s subtree out of its project would split. */
+async function obligationsAcrossMove(item: any): Promise<string[]> {
+  const all = await storage.listItems({ projectId: item.projectId, hydrate: false } as any) as any[];
+  const byId = new Map(all.map(c => [c.id, c]));
+  const inside = new Set<string>([item.id]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const c of all) if (c.parentId && inside.has(c.parentId) && !inside.has(c.id)) { inside.add(c.id); grew = true; }
+  }
+  const project: any = await storage.getProject(item.projectId);
+  // Completed, not shelved: a trashed or archived card ran nothing and may come back (review of 7ddeaf7c).
+  const outOfPlay = new Set([Status.TRASHED, Status.ARCHIVED, Status.IDEAS].map(String));
+  const finished = new Set([...finishedStatusesOf(getActiveFlow(project?.flowId, await storage.listFlows()))].filter(x => !outOfPlay.has(x)));
+  const out: string[] = [];
+  for (const c of all) {
+    if (!c.suiteDeferredTo || !c.suiteDeferredCommit?.sha) continue;
+    /*
+     * The obligation is settled only by the card whose own verify RAN the
+     * suite: up the deferral edges past every card that deferred again (a
+     * finished parent that passed it on to its own parent settled nothing).
+     * Every card on that chain must stay on one side of the move, or the
+     * settling card's walk loses the commit.
+     */
+    const chain: any[] = [c];
+    let at: any = byId.get(c.suiteDeferredTo);
+    while (at && !chain.includes(at)) {
+      chain.push(at);
+      if (!(finished.has(String(at.status)) && at.suiteDeferredTo)) break;
+      at = byId.get(at.suiteDeferredTo);
+    }
+    const settler = chain[chain.length - 1];
+    if (settler === c || (finished.has(String(settler.status)) && !settler.suiteDeferredTo)) continue;
+    if (chain.every(x => inside.has(x.id)) || chain.every(x => !inside.has(x.id))) continue;
+    out.push(`[${c.id.substring(0, 8)}] "${c.title}" deferred its suite run from another worktree to [${settler.id.substring(0, 8)}] "${settler.title}", which has not run it yet`);
+  }
+  return out;
+}
+
+/** How unmerged deferred work is named to the agent, in the refusal and the leave plan. */
+const describeUnmerged = (missing: UnmergedWork[]): string =>
+  missing.map(m => `[${m.id.substring(0, 8)}] "${m.title}" (${m.branch ? `branch ${m.branch}, ` : ''}commit ${m.sha.substring(0, 12)})`).join(', ');
+
+function unmergedRefusal(item: any, missing: UnmergedWork[]) {
+  return {
+    status: item.status, error: 'DEFERRED_CHILD_UNMERGED',
+    message: `❌ This card's verify runs the project's suite over everything its children did, and ${missing.length === 1 ? 'a child' : `${missing.length} children`} deferred ${missing.length === 1 ? 'its run' : 'their runs'} to it from another worktree without the work being in this card's tree yet: ${describeUnmerged(missing)}. Merge ${missing.length === 1 ? 'it' : 'them'} into this card's branch (a merge: a squash or a rebase makes new commits, which do not count), then verify again. Nothing was run.${staysOn(item.status)}`,
+  };
 }
 
 /**
@@ -8785,14 +8954,14 @@ export interface LeavePlan {
   /** Why the card will be held instead of advancing, when it will be. */
   held?: string;
   /** Why verify will refuse before running anything: no verify command on the final step, or no tree to run in. */
-  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_NEEDS_APPROVAL' | 'NO_TREE';
+  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_UNREADABLE' | 'DEFERRED_CHILD_UNMERGED' | 'NO_TREE';
   /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
   narrowing: string[];
   /** One line for the agent. */
   advice: string;
 }
 
-async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown }, project: any): Promise<LeavePlan> {
+async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown; verifyAtScope?: unknown }, project: any): Promise<LeavePlan> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -8823,12 +8992,15 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
   // checks reading its entry baseline (the gate's entry-baseline hold). An entry only non-blocking checks
   // read lets the card move without one, and a verify command alone runs wherever it is spawned.
-  // 2a181a8d: an unapproved repository command is refused before it runs - at the close (before the gate),
-  // and in a capture whose suite IS the file's command - so ahead of NO_TREE, and nothing runs.
+  // A repository command holding hidden characters is refused before it runs (#260) - at the close (before
+  // the gate), and in a capture whose suite IS the file's command - so ahead of NO_TREE, and nothing runs.
   const effective = effectiveVerifyCommand(project);
-  const captureNeedsApproval = cap.runs && effective.fromFile && !!effective.command && !!unapprovedFileVerify(project, effective.command);
+  const captureUnreadable = cap.runs && effective.fromFile && !!effective.command && !!unreadableFileVerify(project, effective.command);
+  // 7ddeaf7c: the close a deferred child's unmerged work holds back, as the verify refuses it.
+  const unmerged = final && !toParent && item.id ? await unmergedDeferredWork(item, project) : [];
   const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
-    : (final && !toParent && unapprovedFileVerify(project)) || captureNeedsApproval ? 'COMMAND_NEEDS_APPROVAL'
+    : (final && !toParent && unreadableFileVerify(project)) || captureUnreadable ? 'COMMAND_UNREADABLE'
+    : unmerged.length ? 'DEFERRED_CHILD_UNMERGED'
     : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
   const role = (sorted[index] as any)?.role;
   const narrowing = runs === 'nothing' ? [] : [
@@ -8842,15 +9014,15 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   const smaller = narrowing.includes('affected-tests') ? ' The suite part may run only the tests the change affects, or reuse the last green run of an unchanged tree.'
     : runs === 'suite' ? ' The suite part may reuse the last green run of an unchanged tree.' : '';
   const dontPreRun = ` Don't run the full suite yourself first - run only the tests you are iterating on, then verify.`;
-  // Offered to run BY HAND only when running it needs nobody's say-so: the stored command, or the
-  // repository's once approved. Named here unapproved, it would walk past the approval gate.
+  // Offered to run BY HAND unless it is a repository command holding hidden characters, which never runs (#260).
   const handRunnable = verifyCommand && (verifyCommand === project?.verifyCommand
-    || approvalFor({ key: 'verifyCommand', command: verifyCommand }, (project?.approvedFileCommands ?? []) as string[]).allowed)
+    || !unreadableFileCommand({ key: 'verifyCommand', command: verifyCommand }))
     ? verifyCommand : undefined;
   const parts: string[] = [];
   // Not the command itself: the plan says it is refused, not what to run instead (34ee6b8a).
-  if (refuses === 'COMMAND_NEEDS_APPROVAL') parts.push(`Leaving ${step} runs the repository's own verify command, which nobody on this machine has approved: verify will refuse, and run nothing, until a person approves it on the board (the project's Settings in \`agenfk ui\`). An agent cannot approve it.`);
+  if (refuses === 'COMMAND_UNREADABLE') parts.push(`Leaving ${step} runs the repository's own verify command, which holds characters a screen cannot show faithfully: verify will refuse, and run nothing, until they are removed from .agenfk/project.json.`);
   else if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
+  else if (refuses === 'DEFERRED_CHILD_UNMERGED') parts.push(`Leaving ${step} runs the project's suite over everything this card's children did, but work deferred to it from another worktree is not in this card's tree yet: ${describeUnmerged(unmerged)}. Verify will refuse, and run nothing, until it is merged into this card's branch.`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
     parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (a green of this tree already on record does too; after a partial run, or a tree that moved, the whole command runs)' : ''}.${dontPreRun}${smaller}`);
@@ -8896,7 +9068,7 @@ export interface LeavePrediction {
  */
 async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, project: any): Promise<LeavePrediction> {
   // The step's checks run before the final gate's refusal: a capture is still spent on a verify that then refuses.
-  if (plan.refuses === 'NO_TREE' || plan.refuses === 'COMMAND_NEEDS_APPROVAL' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
+  if (plan.refuses === 'NO_TREE' || plan.refuses === 'COMMAND_UNREADABLE' || plan.refuses === 'DEFERRED_CHILD_UNMERGED' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
   if (plan.runs === 'nothing') return { mode: 'none', advice: 'On this tree it would run nothing.' };
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const sorted = sortedFlowSteps(flow as any);
@@ -9000,7 +9172,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const disabled = disabledChecksOf(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
-  let approval: { message: string; fingerprint?: string; command?: string } | undefined;
+  let unreadable: { message: string; command?: string } | undefined;
   // 961f301d: waiting on a person, the slow checks wait too (see waitsOnPerson).
   const waitingOn = opts?.personFirst ? awaitingPersonCommands(resolved, flow, project) : [];
   const deferToApproval = opts?.personFirst
@@ -9021,8 +9193,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     const lazyOver = await entryCaptureOf(item, sorted, index);
     const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
     if ('error' in out) {
-      if (out.error === 'COMMAND_NEEDS_APPROVAL') {
-        approval = { message: out.message, fingerprint: out.fingerprint, command: out.command };
+      if (out.error === 'COMMAND_UNREADABLE') {
+        unreadable = { message: out.message, command: out.command };
       } else captureError = out.message;
     } else capture = out.record;
     // beae41a0: the suite is done; what follows (command checks, fetches) is the step's checks again.
@@ -9035,7 +9207,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   }
   // Refused before anything else runs: an unapproved repository command is not
   // a failed check, it is a question for the person.
-  if (approval) return { results: [], blocked: true, approval, disabled, step: item.status };
+  if (unreadable) return { results: [], blocked: true, unreadable, disabled, step: item.status };
   const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
   const lastOf = (pred: (r: any) => boolean) => [...records].reverse().find(pred) ?? null;
   const prev = sorted[index - 1];
@@ -9131,7 +9303,10 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     for (const r of outcome.results) {
       // Only the warning that marks a test which cannot fail must be answered: red on a missing
       // symbol is the normal path of TDD, and asking every time trains rubber stamps.
-      if (!ANSWER_REQUIRED.has(r.id) || r.severity !== 'warn' || r.outcome !== 'fail' || r.overridden || r.answer) continue;
+      if (!ANSWER_REQUIRED.has(r.id) || r.severity !== 'warn' || r.outcome !== 'fail') continue;
+      // fe3ca491: it holds the card until answered or passed - the PR lists such a warning, and only such.
+      (r as any).heldUntilAnswered = true;
+      if (r.overridden || r.answer) continue;
       const held = `${r.detail} Answer it before the card leaves this step - say why it is fine, or what you changed: agenfk verify ${item.id} --check-note ${r.id}="<your answer>" --evidence "..." (MCP: validate_progress with checkAnswers).`;
       // A person's pass counts for the failure they saw, not a later, different one.
       const person = overrides[r.id];
@@ -9262,19 +9437,19 @@ async function refuseOnChecks(res: any, item: any, gate: StepGate) {
 
 /**
  * The refusal a close owes when it would run the repository's own
- * verifyCommand (.agenfk/project.json) unapproved, or null (2a181a8d). One
- * definition for the check before the gate and the one at the close, so the
- * two cannot disagree about one command.
+ * verifyCommand (.agenfk/project.json) while it holds characters a screen
+ * cannot show faithfully, or null (#260). One definition for the check before
+ * the gate and the one at the close, so the two cannot disagree about one command.
  */
-export function unapprovedFileVerify(
+export function unreadableFileVerify(
   project: any,
   // The exact string the caller selected to run, when it has one: judged as it will run, never re-read -
   // a file edited between selecting and checking must not pass one command and run another (Codex review).
   declared: unknown = readDeclaredSettings(project?.projectRoot).settings.verifyCommand,
-): { error: 'COMMAND_NEEDS_APPROVAL'; message: string; fingerprint?: string; command: string } | null {
+): { error: 'COMMAND_UNREADABLE'; message: string; command: string } | null {
   if (typeof declared !== 'string') return null;
-  const verdict = approvalFor({ key: 'verifyCommand', command: declared }, ((project?.approvedFileCommands ?? []) as string[]));
-  return verdict.allowed ? null : { error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '', fingerprint: verdict.fingerprint, command: declared };
+  const unreadable = unreadableFileCommand({ key: 'verifyCommand', command: declared });
+  return unreadable ? { error: 'COMMAND_UNREADABLE', message: unreadable.reason, command: declared } : null;
 }
 
 /** A response stand-in that writes a verify reply into a background run. */
@@ -9290,8 +9465,7 @@ function runRecorder(run: ValidateRun) {
       // 5a8d22e6: a named cause and its fix reach whoever follows the run, not only a sync caller.
       if (typeof payload?.error === 'string') (run as any).error = payload.error;
       if (payload && 'fix' in payload) (run as any).fix = payload.fix;
-      // 2a181a8d: a COMMAND_NEEDS_APPROVAL refusal names what to approve - the background caller needs it too.
-      if (typeof payload?.fingerprint === 'string') (run as any).fingerprint = payload.fingerprint;
+      // A COMMAND_UNREADABLE refusal names the command it refused - the background caller needs it too.
       if (typeof payload?.command === 'string') (run as any).command = payload.command;
       // 8024f6c4: a CHILDREN_OPEN refusal lists every open card, not only the ten its message shows.
       if (Array.isArray(payload?.children)) (run as any).children = payload.children;
@@ -9322,6 +9496,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // Reload item so subsequent comment appends don't lose the evidence comment
     const refreshed = await storage.getItem(itemId);
     if (refreshed) Object.assign(item, refreshed);
+  }
+
+  /*
+   * #260: a change of the repository's declared verify command, written on the
+   * open cards. Before the project and this card are read for the rest of the
+   * verify, so every later write starts from a copy that already carries the note.
+   */
+  if (!opts?.gate) {
+    await observeDeclaredVerifyCommand(item.projectId);
+    const noted = await storage.getItem(itemId);
+    if (noted) Object.assign(item, noted);
   }
 
   const project = await storage.getProject(item.projectId);
@@ -9412,19 +9597,22 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
 
   /*
-   * 2a181a8d: a close that would run the repository's own unapproved
-   * verifyCommand is refused HERE, before the gate - otherwise its capture can
-   * run a stored test report's whole suite only for the final check to throw
-   * the run away. Not when the close is deferred to an open parent (verifyAt
-   * 'parent'): that close runs no command, so there is nothing to approve. The
-   * final check below still stands for a gate handed in from the background.
+   * 2a181a8d / #260: a close that would run the repository's own verifyCommand
+   * while it holds characters a screen cannot show faithfully is refused HERE,
+   * before the gate - otherwise its capture can run a stored test report's whole
+   * suite only for the final check to throw the run away. Not when the close is
+   * deferred to an open parent (verifyAt 'parent'): that close runs no command.
+   * The final check below still stands for a gate handed in from the background.
    */
   if (!opts?.gate) {
     const upcoming = sorted[currentFlowStep.index + 1];
     const finalMove = !upcoming || upcoming.name === Status.DONE || isBoundaryStep(upcoming);
-    if (finalMove) {
-      const refusal = unapprovedFileVerify(project);
-      if (refusal && !(await parentToDeferTo(item, activeFlow))) return res.status(400).json(refusal);
+    if (finalMove && !(await parentToDeferTo(item, activeFlow))) {
+      const refusal = unreadableFileVerify(project);
+      if (refusal) return res.status(400).json(refusal);
+      // 7ddeaf7c: and before any capture, a run over a tree missing a deferred child's work.
+      const missing = await unmergedDeferredWork(item, project);
+      if (missing.length) return res.status(422).json(unmergedRefusal(item, missing));
     }
   }
 
@@ -9458,11 +9646,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
         const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers });
-        if (g.approval) {
-          return recorder.status(400).json({
-            error: 'COMMAND_NEEDS_APPROVAL', message: g.approval.message,
-            fingerprint: g.approval.fingerprint, command: g.approval.command,
-          });
+        if (g.unreadable) {
+          return recorder.status(400).json({ error: 'COMMAND_UNREADABLE', message: g.unreadable.message, command: g.unreadable.command });
         }
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
         return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers });
@@ -9480,11 +9665,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       return;
     }
     gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers });
-    if (gate.approval) {
-      return res.status(400).json({
-        error: 'COMMAND_NEEDS_APPROVAL', message: gate.approval.message,
-        fingerprint: gate.approval.fingerprint, command: gate.approval.command,
-      });
+    if (gate.unreadable) {
+      return res.status(400).json({ error: 'COMMAND_UNREADABLE', message: gate.unreadable.message, command: gate.unreadable.command });
     }
     if (gate.blocked) return refuseOnChecks(res, item, gate);
     // The gate may have written a capture and produced records: build the
@@ -9494,6 +9676,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   if (gate) {
     (exitRecord as any).checks = gate.results;
+    // fe3ca491: its checks say whether they held the card (heldUntilAnswered); an older record is judged by the rule.
+    (exitRecord as any).heldMarked = true;
     if (gate.disabled.length) (exitRecord as any).disabled = gate.disabled;
     // d26832d6 #9/#15: a pass says what it judged - every check, soft and warn
     // included, and whether the suite ran - on the reply AND on the card.
@@ -9706,13 +9890,24 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * Gated on the command that would ACTUALLY RUN, not on "the caller passed
    * none": CGLAB-378 ignores a caller command on the final step, so a call
    * carrying one still ends up running the file's command — and that is
-   * exactly the command that needs approval. Not on a close deferred to its
-   * parent: that close runs no command (2a181a8d).
+   * exactly the command the hidden-character check must judge. Not on a close
+   * deferred to its parent: that close runs no command (2a181a8d).
    */
+  if (isFinalStep && !deferTo) {
+    // The command this close runs, as selected - a pull may have landed while the gate ran (review of #260).
+    await observeDeclaredVerifyCommand(item.projectId, fileVerify);
+    const noted = await storage.getItem(itemId);
+    if (noted) Object.assign(item, noted);
+  }
   if (isFinalStep && !deferTo && fileVerify !== null) {
     // The string selected above - the one that runs - not the file as it reads now.
-    const refusal = unapprovedFileVerify(project, fileVerify);
+    const refusal = unreadableFileVerify(project, fileVerify);
     if (refusal) return res.status(400).json(refusal);
+  }
+  if (isFinalStep && !deferTo) {
+    // 7ddeaf7c: asked again here for a gate handed in from the background, which skipped the check above.
+    const missing = await unmergedDeferredWork(item, project);
+    if (missing.length) return res.status(422).json(unmergedRefusal(item, missing));
   }
   const resolvedCommand = isFinalStep ? projectVerify : command;
   const ignoredCommand = isFinalStep && command && command !== projectVerify ? command : undefined;
@@ -9728,18 +9923,66 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     res = closing.res;
     const note = `The project's suite was not run for this card: the flow runs it once, at the top-level card, and [${deferTo.id.substring(0, 8)}] "${deferTo.title}" is still open. Its verify runs the suite over everything its children did, or defers it again to its own parent.`;
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (suite deferred to the parent)\n\n**Step**: ${item.status} → ${nextStatus}\n\n${note}`, timestamp: new Date() };
+    /*
+     * 7ddeaf7c: deferred from ANOTHER tree (verifyAtScope 'project'), the
+     * child's work reaches the parent's run only as a commit merged into the
+     * parent's tree. So the close commit comes FIRST, and the commit it lands
+     * on is written in the same update as DONE - there is no moment the card
+     * is finished without the merge it owes - and the close is refused while
+     * work would be left out of that commit (unstaged or untracked), or when
+     * the commit is not made.
+     */
+    const childRoot = resolveCommitRoot(await withEffectiveWorktree(item), (project as any)?.projectRoot).root;
+    const parentRoot = resolveCommitRoot(await withEffectiveWorktree(deferTo), (project as any)?.projectRoot).root;
+    const crossTree = !!childRoot && !!parentRoot && childRoot !== parentRoot;
+    if (crossTree) {
+      const loose = uncommittableChanges(childRoot!);
+      if (loose === null) return res.status(422).json(deferredUnreadableRefusal(item, childRoot!));
+      if (loose.length) return res.status(422).json(deferredUncommittedRefusal(item, childRoot!, loose));
+    }
     const left = await commitOnLeave(res);
     if (left.refused) return;
     res = left.res;
+    const commits = process.env.NODE_ENV !== 'test' && !process.env.VITEST;
+    let gitResult = crossTree && commits ? await autoGitCommit(item as any, (project as any)?.projectRoot) : undefined;
+    let crossed: ReturnType<typeof crossTreeDeferral> = null;
+    if (crossTree) {
+      if (gitResult && (gitResult.outcome === 'failed' || gitResult.outcome === 'declined')) {
+        return res.status(422).json({ status: item.status, error: 'DEFERRED_CLOSE_UNCOMMITTED', message: `❌ This card defers its suite run to [${deferTo.id.substring(0, 8)}] "${deferTo.title}" from another worktree, so its work must be committed to reach the parent's run - and the close commit was not made: ${gitResult.detail}. Nothing moved; what you staged is still staged.${staysOn(item.status)}` });
+      }
+      crossed = crossTreeDeferral(childRoot, parentRoot, gitResult?.sha);
+      // Review of 7ddeaf7c: no cross-tree close without the commit it owes.
+      if (!crossed) return res.status(422).json(deferredUnreadableRefusal(item, childRoot!));
+      // The commit was awaited (a hook may have run): the card may have moved, work under it reopened,
+      // or a hook left changes out of the commit. Asked again before anything is written.
+      const fresh: any = await storage.getItem(itemId);
+      if (!fresh || fresh.status !== item.status) {
+        return res.status(409).json({ status: fresh?.status ?? item.status, error: 'CARD_MOVED', message: `⚠️ The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while its close commit was made; nothing else was applied. Run verify again.` });
+      }
+      const after = await checkClose(res);
+      if (after.refused) return;
+      res = after.res;
+      // ...and the deferral itself: a move (of the card or its parent) during the commit changes where the obligation lives.
+      const still = await parentToDeferTo(fresh, activeFlow);
+      const rootsNow = still ? [resolveCommitRoot(await withEffectiveWorktree(fresh), (project as any)?.projectRoot).root, resolveCommitRoot(await withEffectiveWorktree(still), (project as any)?.projectRoot).root] : [];
+      if (!still || still.id !== deferTo.id || fresh.projectId !== item.projectId || rootsNow[0] !== childRoot || rootsNow[1] !== parentRoot) {
+        return res.status(409).json({ status: fresh.status, error: 'CARD_MOVED', message: `⚠️ The card or its parent changed (project, parent or worktree) while its close commit was made; nothing else was applied. Run verify again.` });
+      }
+      // Strict only after a commit was made: then nothing may be left staged either. (Under tests none is made.)
+      const left2 = uncommittableChanges(childRoot!, { staged: !gitResult });
+      if (left2 === null) return res.status(422).json(deferredUnreadableRefusal(item, childRoot!));
+      if (left2.length) return res.status(422).json(deferredUncommittedRefusal(item, childRoot!, left2));
+    }
     // The marker the roll-up reads: this parent owes a suite run, whatever its flow says later.
-    const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(isExitStep ? { failureCount: 0 } : {}) } as any);
+    const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(crossed ? { suiteDeferredCommit: crossed } : {}), ...(isExitStep ? { failureCount: 0 } : {}) } as any);
     recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
-    const gitResult = process.env.NODE_ENV !== 'test' && !process.env.VITEST
-      ? await autoGitCommit(updated, (project as any)?.projectRoot)
-      : undefined;
-    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}` });
+    if (!crossTree && commits) gitResult = await autoGitCommit(updated, (project as any)?.projectRoot);
+    const crossNote = crossed
+      ? `\n\nThis card's work is in another worktree (${crossed.branch ? `branch ${crossed.branch}, ` : ''}commit ${crossed.sha.substring(0, 12)}): the parent's verify is refused until that commit is merged into the parent's branch (a merge - a squash or a rebase makes new commits, which do not count).`
+      : '';
+    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}${crossNote}\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}` });
   }
 
   if (isFinalStep && !resolvedCommand) {
@@ -9954,8 +10197,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
   const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
   // f8d0a752: a suite-run slot before the tree is read, so the state recorded is the one the command runs on.
-  const releaseSlot = await suiteSlots.acquire(w => {
-    const line = waitingLine(w);
+  const releaseSlot = await acquireSuiteRun(item.projectId, (w, line) => {
     capture.note(line);
     if (run) appendRunOutput(run, line);
     setRunPhase(run, { state: 'queued', ahead: w.ahead });

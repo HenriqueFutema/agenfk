@@ -1916,7 +1916,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                user two scrollbars and move the rail out of reach. */
             className="min-h-0 flex-1 overflow-hidden"
           >
-            {settingsOpened && <SettingsPanel />}
+            {settingsOpened && <SettingsPanel projectId={activeProjectId} />}
           </div>
 
           {/* Rendered, not conditionally mounted — and more load-bearing here

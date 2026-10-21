@@ -238,6 +238,7 @@ function serializeDefinition(
   description: string,
   steps: FlowStep[],
   verifyAt: 'leaf' | 'parent' = 'leaf',
+  verifyAtScope: 'worktree' | 'project' = 'worktree',
 ): string {
   const canonical = (Array.isArray(steps) ? steps : [])
     .map((s, i) => ({
@@ -258,7 +259,8 @@ function serializeDefinition(
     }))
     .sort((a, b) => a.order - b.order);
   // 281adef0: where the flow runs the suite is part of it; the default is absent.
-  return JSON.stringify({ name, description, steps: canonical, ...(verifyAt === 'parent' ? { verifyAt } : {}) });
+  // 7ddeaf7c: so is how far it reaches; the default is absent.
+  return JSON.stringify({ name, description, steps: canonical, ...(verifyAt === 'parent' ? { verifyAt } : {}), ...(verifyAtScope === 'project' ? { verifyAtScope } : {}) });
 }
 
 // ── Exit criteria summary trigger (CGLAB-109) ─────────────────────────────────
@@ -343,6 +345,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const [description, setDescription] = useState('');
   // 281adef0: 'parent' runs the project's suite once, at the top-level card.
   const [verifyAt, setVerifyAt] = useState<'leaf' | 'parent'>('leaf');
+  // 7ddeaf7c: with 'parent', whether a card in another worktree defers too.
+  const [verifyAtScope, setVerifyAtScope] = useState<'worktree' | 'project'>('worktree');
   const [steps, setSteps] = useState<FlowStep[]>([]);
   const [saved, setSaved] = useState(false);
   // The definition as last persisted, as the editor serialises it. `saved`
@@ -369,6 +373,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       setName(flow.name);
       setDescription(flow.description ?? '');
       setVerifyAt(flow.verifyAt === 'parent' ? 'parent' : 'leaf');
+      setVerifyAtScope(flow.verifyAtScope === 'project' ? 'project' : 'worktree');
       // Filter out platform statuses — they are never part of flow definitions
       const flowSteps = [...flow.steps]
         .filter(s => {
@@ -379,11 +384,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       setSteps(flowSteps);
       // Baseline the dirty check on the SAME canonical shape the save mutation
       // sends, so a round-trip through the editor is not itself a change.
-      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps, flow.verifyAt === 'parent' ? 'parent' : 'leaf'));
+      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps, flow.verifyAt === 'parent' ? 'parent' : 'leaf', flow.verifyAtScope === 'project' ? 'project' : 'worktree'));
     } else {
       setName('');
       setDescription('');
       setVerifyAt('leaf');
+      setVerifyAtScope('worktree');
       const [todo, done] = makeFreshAnchors();
       const blank = makeBlankStep(1);
       done.order = 2;
@@ -507,6 +513,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       name,
       description,
       verifyAt,
+      verifyAtScope,
       // order is authoritative from array position; ids are backfilled so a
       // flow loaded without them (MCP create_flow never sent ids) still
       // satisfies the Hub's id rule.
@@ -515,7 +522,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     return flow?.id
       ? flowClient.updateFlow(flow.id, payload)
       : flowClient.createFlow(payload);
-  }, [flow?.id, name, description, steps, verifyAt, flowClient]);
+  }, [flow?.id, name, description, steps, verifyAt, verifyAtScope, flowClient]);
 
   /**
    * Re-baseline the dirty check after a write.
@@ -534,6 +541,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       savedFlow.description ?? '',
       [...(savedFlow.steps ?? [])].sort((a, b) => a.order - b.order),
       savedFlow.verifyAt === 'parent' ? 'parent' : 'leaf',
+      savedFlow.verifyAtScope === 'project' ? 'project' : 'worktree',
     ));
   }, []);
 
@@ -583,7 +591,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
    * when its serialised definition differs from the one it was loaded with or
    * last saved.
    */
-  const isDirty = persisted === null || serializeDefinition(name, description, steps, verifyAt) !== persisted;
+  const isDirty = persisted === null || serializeDefinition(name, description, steps, verifyAt, verifyAtScope) !== persisted;
 
   // BUG 269eeec8 (a): read the server's `{ error }` body, not Error.message —
   // the latter is only ever "Request failed with status code N".
@@ -780,6 +788,24 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             </span>
           </span>
         </label>
+        {verifyAt === 'parent' && (
+          <label className="ml-6 flex flex-col gap-1 text-body text-slate-700 dark:text-slate-200">
+            <span>Cards that defer to their parent</span>
+            <select
+              data-testid="flow-verify-at-scope"
+              value={verifyAtScope}
+              disabled={isReadOnly}
+              onChange={e => { setVerifyAtScope(e.target.value === 'project' ? 'project' : 'worktree'); setSaved(false); }}
+              className="w-fit rounded-lg border border-slate-200 dark:border-slate-700 bg-canvas px-2 py-1 text-body text-slate-800 dark:text-slate-100 disabled:opacity-60"
+            >
+              <option value="worktree">Only those in the parent's own worktree</option>
+              <option value="project">Any in the project, including other worktrees</option>
+            </select>
+            <span className="text-small text-slate-500 dark:text-slate-400">
+              With "any", the parent's verify waits until every such card's work is merged into its branch. A project can override this.
+            </span>
+          </label>
+        )}
 
         {/* Version — read-only, auto-managed */}
         {flow?.version && (

@@ -103,6 +103,15 @@ describe('flowSync.reconcileHubFlow', () => {
     expect((f as any)?.verifyAt).toBe('leaf');
   });
 
+  it("keeps a hub flow's verifyAtScope, and drops it when the hub does (7ddeaf7c)", async () => {
+    const first = makeFetchSequence([{ status: 200, etag: 'W/"12"', body: { flow: { id: 'remote-scope', name: 'Scope Flow', description: '', verifyAt: 'parent', verifyAtScope: 'project', steps: baseSteps }, hubVersion: 12 } }]);
+    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl: first, emit });
+    expect(((await storage.listFlows()).find(x => x.hubFlowId === 'remote-scope') as any)?.verifyAtScope).toBe('project');
+    const second = makeFetchSequence([{ status: 200, etag: 'W/"13"', body: { flow: { id: 'remote-scope', name: 'Scope Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 13 } }]);
+    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: 'W/"12"', fetchImpl: second, emit });
+    expect(((await storage.listFlows()).find(x => x.hubFlowId === 'remote-scope') as any)?.verifyAtScope).toBe('worktree');
+  });
+
   it('304 with matching ETag → no-op', async () => {
     const fetchImpl = makeFetchSequence([{ status: 304 }]);
     const result = await reconcileHubFlow({

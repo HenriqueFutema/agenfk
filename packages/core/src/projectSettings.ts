@@ -64,6 +64,9 @@ export interface ProjectSettingsContext {
   worktreeRoot: string;
   /** Used only to recognise a project rooted at the home directory. */
   homeDir?: string;
+  /** The flow's verifyAt and verifyAtScope, for the scope row (7ddeaf7c). */
+  flowVerifyAt?: 'leaf' | 'parent';
+  flowVerifyAtScope?: 'worktree' | 'project';
 }
 
 /** Trailing slashes off, in one linear pass: `/\/+$/` is quadratic on a long run of '/' (CodeQL js/polynomial-redos). */
@@ -161,7 +164,33 @@ export function describeProjectSettings(
       // Opt-in, as the server reads it: ensureWorktreeForItem cuts nothing unless this is true.
       value: project.autoWorktree === true ? 'On' : 'Off',
       origin: 'set-here',
-      from: 'The one thing on this page the screen itself owns.',
+      from: 'Set on this page.',
+    },
+    /*
+     * 7ddeaf7c — the two suite settings, plain choices the screen may write
+     * like autoWorktree. The scope reads as the project's own value when it has
+     * one, and as the flow's otherwise.
+     */
+    {
+      key: 'verifyAtScope',
+      label: 'Defer the suite to a parent in',
+      description: "When the flow runs the project's suite once, at the parent: whether a card in another worktree defers to it too. The parent's verify then waits until that card's work is merged into its tree.",
+      value: project.verifyAtScope ?? ctx.flowVerifyAtScope ?? 'worktree',
+      origin: project.verifyAtScope ? 'set-here' : 'inherited',
+      from: project.verifyAtScope
+        ? "Set for this project, over the flow's."
+        : ctx.flowVerifyAtScope ? "From the project's flow." : 'The default: this project and its flow set none.',
+      warning: ctx.flowVerifyAt === 'parent'
+        ? undefined
+        : "The flow runs the suite on every card, so this has no effect until the flow runs it once, at the parent.",
+    },
+    {
+      key: 'exclusiveSuite',
+      label: 'One suite run at a time',
+      description: "Never run two of this project's suites at once, whatever the server-wide limit allows: for suites that share a database or fixed ports. Other projects are not held back.",
+      value: project.exclusiveSuite === true ? 'On' : 'Off',
+      origin: 'set-here',
+      from: 'Set on this page.',
     },
   ] as ProjectSettingRow[]).map(withFile);
 }

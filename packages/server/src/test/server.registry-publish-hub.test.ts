@@ -154,6 +154,14 @@ describe('POST /registry/flows/publish with a hub connection (CGLAB-367)', () =>
     await agent().put(`/flows/${flowId}`).send({ verifyAt: 'leaf' });
   });
 
+  it('sends the flow-level verifyAtScope to the hub (7ddeaf7c)', async () => {
+    publishCalls.length = 0;
+    await agent().put(`/flows/${flowId}`).send({ verifyAt: 'parent', verifyAtScope: 'project' });
+    await agent().post('/registry/flows/publish').send({ flowId });
+    expect(publishCalls[0].body.flow.verifyAtScope).toBe('project');
+    await agent().put(`/flows/${flowId}`).send({ verifyAt: 'leaf', verifyAtScope: 'worktree' });
+  });
+
   it('never runs the laptop\'s gh when the hub publishes', async () => {
     await agent().post('/registry/flows/publish').send({ flowId });
     expect(ghPathTried()).toBe(false);
