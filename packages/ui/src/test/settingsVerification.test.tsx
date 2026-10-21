@@ -26,15 +26,21 @@ vi.mock('../api', () => ({
     signOutGitHub: vi.fn(async () => ({ signedOut: true })),
     getTelemetryConfig: vi.fn(async () => ({ telemetryEnabled: true, installationId: 'i' })),
     setTelemetryConfig: vi.fn(async (enabled: boolean) => ({ telemetryEnabled: enabled })),
+    projectSettings: vi.fn(async () => ({ rows: [
+      { key: 'flow', label: 'Flow', description: 'Steps.', value: 'TDD', origin: 'set-here', from: 'Chosen.' },
+      { key: 'verifyAtScope', label: 'Defer the suite to a parent in', description: 'How far a child reaches.', value: 'worktree', origin: 'inherited', from: 'From the flow.' },
+      { key: 'exclusiveSuite', label: 'One suite run at a time', description: 'For suites sharing a database.', value: 'Off', origin: 'set-here', from: 'Set here.' },
+    ] })),
+    updateProject: vi.fn(async () => ({})),
   },
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 // CGLAB-434: every test here also proves the panel renders on tokens.
 guardTokens();
 
-const renderPanel = () => {
+const renderPanel = (projectId?: string) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={qc}><SettingsPanel /></QueryClientProvider>);
+  render(<QueryClientProvider client={qc}><SettingsPanel projectId={projectId} /></QueryClientProvider>);
 };
 const openVerification = async () => {
   fireEvent.click(await screen.findByRole('button', { name: /Verification/ }));
@@ -75,5 +81,63 @@ describe('Settings: Account (CGLAB-434)', () => {
     renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: /^Account$/ }));
     expect(await screen.findByText('LR')).toBeTruthy();
+  });
+});
+
+/*
+ * 7ddeaf7c — the board in a browser has no project page, so the open project's
+ * suite settings live here too: one panel, in both shells.
+ */
+describe('Settings: Project', () => {
+  it('appears for the open project, with its two suite settings and nothing else of the project\'s', async () => {
+    renderPanel('p1');
+    fireEvent.click(await screen.findByRole('button', { name: /^Project$/ }));
+    expect(await screen.findByTestId('setting-select-verifyAtScope')).toBeTruthy();
+    expect(screen.getByTestId('setting-toggle-exclusiveSuite')).toBeTruthy();
+    expect(screen.queryByTestId('setting-change-flow')).toBeNull();
+    expect(api.projectSettings).toHaveBeenCalledWith('p1');
+  });
+
+  it('saves both through the project', async () => {
+    renderPanel('p1');
+    fireEvent.click(await screen.findByRole('button', { name: /^Project$/ }));
+    fireEvent.change(await screen.findByTestId('setting-select-verifyAtScope'), { target: { value: 'project' } });
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith('p1', { verifyAtScope: 'project' }));
+    fireEvent.click(screen.getByTestId('setting-toggle-exclusiveSuite'));
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith('p1', { exclusiveSuite: true }));
+  });
+
+  it('is not offered with no project open', async () => {
+    renderPanel();
+    await screen.findByRole('button', { name: /Verification/ });
+    expect(screen.queryByRole('button', { name: /^Project$/ })).toBeNull();
+  });
+});
+
+// Review of 7ddeaf7c (Codex #7, #8).
+describe('Settings: Project - saves that fail, and another project', () => {
+  it('a save the server refuses puts the switch back and says it was not saved', async () => {
+    vi.mocked(api.updateProject).mockRejectedValueOnce(Object.assign(new Error('boom'), { response: { data: { error: 'exclusiveSuite must be true or false.' } } }));
+    renderPanel('p1');
+    fireEvent.click(await screen.findByRole('button', { name: /^Project$/ }));
+    const toggle = await screen.findByTestId('setting-toggle-exclusiveSuite');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByTestId('setting-error-exclusiveSuite').textContent).toMatch(/Not saved/));
+    expect(screen.getByTestId('setting-toggle-exclusiveSuite').getAttribute('aria-checked')).toBe('false');
+  });
+
+  it("opening another project shows that project's settings, not the last one's unsaved state", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // p2 first, so its rows are cached and drawn at once when it comes back - the case where a control is reused.
+    const { rerender } = render(<QueryClientProvider client={qc}><SettingsPanel projectId="p2" /></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: /^Project$/ }));
+    await screen.findByTestId('setting-toggle-exclusiveSuite');
+    rerender(<QueryClientProvider client={qc}><SettingsPanel projectId="p1" /></QueryClientProvider>);
+    await waitFor(() => expect(api.projectSettings).toHaveBeenCalledWith('p1'));
+    fireEvent.click(await screen.findByTestId('setting-toggle-exclusiveSuite'));
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith('p1', { exclusiveSuite: true }));
+    rerender(<QueryClientProvider client={qc}><SettingsPanel projectId="p2" /></QueryClientProvider>);
+    await waitFor(() => expect(api.projectSettings).toHaveBeenCalledWith('p2'));
+    await waitFor(() => expect(screen.getByTestId('setting-toggle-exclusiveSuite').getAttribute('aria-checked')).toBe('false'));
   });
 });

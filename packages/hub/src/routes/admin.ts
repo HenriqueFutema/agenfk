@@ -1971,6 +1971,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         steps,
         // 281adef0: where the flow runs the suite travels with it.
         ...(flowData.verifyAt === 'parent' ? { verifyAt: 'parent' } : {}),
+        ...(flowData?.verifyAtScope === 'project' ? { verifyAtScope: 'project' } : {}),
       };
 
       const id = randomUUID();

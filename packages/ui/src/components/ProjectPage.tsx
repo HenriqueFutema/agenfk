@@ -11,6 +11,7 @@ import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { ItemTypeSquare } from './ItemTypeSquare';
 import { Switch } from './ui/switch';
+import { ProjectSuiteControl, hasSuiteControl } from './ProjectSuiteControl';
 import { ItemType } from '../types';
 
 /**
@@ -569,6 +570,9 @@ export function ProjectPage({
                     * lose silently — which is worse than no control. The row
                     * still shows the value and says where it came from.
                     */}
+                  {hasSuiteControl(row) && (
+                    <ProjectSuiteControl key={`${project.id}-${row.key}`} projectId={project.id} row={row} onSaved={refetchSettings} />
+                  )}
                   {hasSwitch(row) && (
                     <Switch
                       data-testid="setting-toggle-autoWorktree"
@@ -603,7 +607,7 @@ export function ProjectPage({
                 </div>
                 <p className="mt-1 text-xs text-ink-tertiary">{row.description}</p>
                 {/* The switch IS the value where there is one; the text repeated under it read as the control. */}
-                {!hasSwitch(row) && (() => {
+                {!hasSwitch(row) && !hasSuiteControl(row) && (() => {
                   /*
                    * A command the repository declares is shown in FULL: it runs as
                    * committed, and truncated, a harmless prefix could hide the rest

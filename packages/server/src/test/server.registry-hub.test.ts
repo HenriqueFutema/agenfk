@@ -197,6 +197,20 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
     expect(res.body.verifyAt).toBe('parent');
   });
 
+  it('keeps the flow-level verifyAtScope of a hub registry flow (7ddeaf7c)', async () => {
+    hubReply = {
+      ok: true, status: 200,
+      body: { repo: 'acme-corp/agenfk-flows', flow: { name: 'Org Scope Flow', description: '', verifyAt: 'parent', verifyAtScope: 'project', steps: [
+        { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+        { name: 'BUILD', label: 'Build', order: 1 },
+        { name: 'DONE', label: 'Done', order: 2, isAnchor: true },
+      ] } },
+    };
+    const res = await agent().post('/registry/flows/install').send({ filename: 'org-scope.json' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.verifyAtScope).toBe('project');
+  });
+
   it('refuses to install when the hub is unreachable', async () => {
     hubReply = { error: 'ECONNREFUSED' };
     const res = await agent().post('/registry/flows/install').send({ filename: 'x.json' });

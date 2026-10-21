@@ -146,7 +146,7 @@ describe('what it never does', () => {
     // A hidden row is how an unset value stays unset. Rows are the checklist.
     const rows = describeProjectSettings({ id: 'p', name: 'bare' } as never, { flowName: null, worktreeRoot: '/wt' });
     expect(rows.map(r => r.key).sort()).toEqual(
-      ['autoWorktree', 'flow', 'projectRoot', 'setupCommand', 'verifyCommand', 'worktreeRoot'].sort(),
+      ['autoWorktree', 'exclusiveSuite', 'flow', 'projectRoot', 'setupCommand', 'verifyAtScope', 'verifyCommand', 'worktreeRoot'].sort(),
     );
   });
 
@@ -199,5 +199,44 @@ describe('settings declared by the repository', () => {
       { flowName: 'TDD Flow', worktreeRoot: '/wt' },
     );
     expect(rows.some(r => r.origin === 'from-file')).toBe(false);
+  });
+});
+
+/*
+ * 7ddeaf7c — the two suite settings the screen owns, beside autoWorktree: how
+ * far verifyAt 'parent' reaches (the project's own value over the flow's), and
+ * whether the project runs one suite at a time.
+ */
+describe('the suite settings', () => {
+  const ctx = { flowName: 'TDD', worktreeRoot: '~/.agenfk-worktrees', flowVerifyAt: 'parent' as const };
+
+  it("shows the flow's scope as inherited when the project sets none", () => {
+    const r = row(describeProjectSettings(project, { ...ctx, flowVerifyAtScope: 'project' }), 'verifyAtScope');
+    expect(r.value).toBe('project');
+    expect(r.origin).toBe('inherited');
+    expect(r.from).toMatch(/flow/i);
+    expect(r.warning).toBeUndefined();
+  });
+
+  it("reads 'worktree' when neither the project nor the flow sets one", () => {
+    const r = row(describeProjectSettings(project, ctx), 'verifyAtScope');
+    expect(r.value).toBe('worktree');
+    expect(r.origin).toBe('inherited');
+  });
+
+  it("shows the project's own scope as set here, over the flow's", () => {
+    const r = row(describeProjectSettings({ ...(project as object), verifyAtScope: 'worktree' } as never, { ...ctx, flowVerifyAtScope: 'project' }), 'verifyAtScope');
+    expect(r.value).toBe('worktree');
+    expect(r.origin).toBe('set-here');
+  });
+
+  it("warns that the scope does nothing while the flow runs the suite at every card", () => {
+    const r = row(describeProjectSettings(project, { ...ctx, flowVerifyAt: 'leaf' }), 'verifyAtScope');
+    expect(r.warning).toMatch(/no effect/i);
+  });
+
+  it('reads one suite at a time as Off until it is turned on', () => {
+    expect(row(describeProjectSettings(project, ctx), 'exclusiveSuite')).toMatchObject({ value: 'Off', origin: 'set-here' });
+    expect(row(describeProjectSettings({ ...(project as object), exclusiveSuite: true } as never, ctx), 'exclusiveSuite').value).toBe('On');
   });
 });

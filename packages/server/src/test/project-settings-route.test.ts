@@ -36,7 +36,7 @@ it('answers with a row per setting, each carrying its origin', async () => {
   expect(res.status).toBe(200);
   const keys = res.body.rows.map((r: any) => r.key).sort();
   expect(keys).toEqual(
-    ['autoWorktree', 'flow', 'projectRoot', 'setupCommand', 'verifyCommand', 'worktreeRoot'].sort(),
+    ['autoWorktree', 'exclusiveSuite', 'flow', 'projectRoot', 'setupCommand', 'verifyAtScope', 'verifyCommand', 'worktreeRoot'].sort(),
   );
   for (const row of res.body.rows) expect(row.origin).toBeTruthy();
 });

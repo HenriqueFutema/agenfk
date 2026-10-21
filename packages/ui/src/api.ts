@@ -700,7 +700,7 @@ export const api = {
    */
   updateProject: async (
     id: string,
-    updates: { name?: string; description?: string; autoWorktree?: boolean },
+    updates: { name?: string; description?: string; autoWorktree?: boolean; verifyAtScope?: 'worktree' | 'project' | null; exclusiveSuite?: boolean },
   ): Promise<unknown> => {
     try {
       const { data } = await axios.put(`${API_URL}/projects/${id}`, updates);

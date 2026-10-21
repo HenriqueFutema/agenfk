@@ -83,6 +83,8 @@ export interface Flow {
   orgAvailable?: boolean;
   /** Where the project's suite runs: every card's final step ('leaf', default) or once at the top-level card ('parent'). */
   verifyAt?: 'leaf' | 'parent';
+  /** 7ddeaf7c: with verifyAt 'parent', whether a card in another worktree defers too ('project') or only one in the parent's tree ('worktree', default). */
+  verifyAtScope?: 'worktree' | 'project';
 }
 
 export interface RegistryFlow {

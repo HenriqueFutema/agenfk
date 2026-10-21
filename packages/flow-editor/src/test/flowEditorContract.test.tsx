@@ -250,4 +250,31 @@ describe('flow editor: verifyAt', () => {
     await waitFor(() => expect(updateFlow).toHaveBeenCalled());
     expect(updateFlow.mock.calls[0][1].verifyAt).toBe('leaf');
   });
+  /*
+   * 7ddeaf7c — how far 'parent' reaches: a parent in the same worktree only
+   * (the default), or any open parent in the project.
+   */
+  it('offers the scope only while the suite runs at the parent, and saves it', async () => {
+    const { updateFlow } = mount(good());
+    await ready();
+    expect(screen.queryByTestId('flow-verify-at-scope')).toBeNull();
+    fireEvent.click(screen.getByTestId('flow-verify-at-parent'));
+    const scope = screen.getByTestId('flow-verify-at-scope') as HTMLSelectElement;
+    expect(scope.value).toBe('worktree');
+    fireEvent.change(scope, { target: { value: 'project' } });
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(updateFlow).toHaveBeenCalled());
+    expect(updateFlow.mock.calls[0][1]).toMatchObject({ verifyAt: 'parent', verifyAtScope: 'project' });
+  });
+
+  it("loads a flow's project scope, and a scope change alone makes the flow dirty", async () => {
+    const { updateFlow } = mount({ ...good(), verifyAt: 'parent', verifyAtScope: 'project' } as any);
+    await ready();
+    const scope = screen.getByTestId('flow-verify-at-scope') as HTMLSelectElement;
+    await waitFor(() => expect(scope.value).toBe('project'));
+    fireEvent.change(scope, { target: { value: 'worktree' } });
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(updateFlow).toHaveBeenCalled());
+    expect(updateFlow.mock.calls[0][1].verifyAtScope).toBe('worktree');
+  });
 });

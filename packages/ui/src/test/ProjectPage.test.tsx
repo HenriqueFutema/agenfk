@@ -898,6 +898,49 @@ describe('the settings tab', () => {
     await waitFor(() => expect(updateProject).toHaveBeenCalledWith('p1', { autoWorktree: true }));
   });
 
+  /*
+   * 7ddeaf7c — how far verifyAt 'parent' reaches, and one suite at a time. Plain
+   * choices, not shell strings, so the screen may write them, as it does
+   * autoWorktree.
+   */
+  const suiteRows = [
+    { key: 'verifyAtScope', label: 'Defer the suite to a parent in', description: 'How far a child reaches.', value: 'worktree', origin: 'inherited', from: "From the flow." },
+    { key: 'exclusiveSuite', label: 'One suite run at a time', description: 'For suites sharing a database.', value: 'Off', origin: 'set-here', from: 'Set here.' },
+  ];
+  const openSuiteSettings = async (rows = suiteRows) => {
+    const updateProject = vi.fn(async () => ({}));
+    (api as unknown as { updateProject: typeof updateProject }).updateProject = updateProject;
+    (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [...settings, ...rows] } as never);
+    open();
+    fireEvent.click(screen.getByTestId('project-tab-settings'));
+    await waitFor(() => screen.getByTestId('setting-verifyAtScope'));
+    return updateProject;
+  };
+
+  it("sets the project's own deferral scope, and clears it back to the flow's", async () => {
+    const updateProject = await openSuiteSettings();
+    const select = screen.getByTestId('setting-select-verifyAtScope') as HTMLSelectElement;
+    // Inherited: the select sits on "the flow's".
+    expect(select.value).toBe('');
+    fireEvent.change(select, { target: { value: 'project' } });
+    await waitFor(() => expect(updateProject).toHaveBeenCalledWith('p1', { verifyAtScope: 'project' }));
+    fireEvent.change(select, { target: { value: '' } });
+    await waitFor(() => expect(updateProject).toHaveBeenLastCalledWith('p1', { verifyAtScope: null }));
+  });
+
+  it("draws a scope the project set as that scope", async () => {
+    await openSuiteSettings([{ ...suiteRows[0], value: 'project', origin: 'set-here' }, suiteRows[1]]);
+    expect((screen.getByTestId('setting-select-verifyAtScope') as HTMLSelectElement).value).toBe('project');
+  });
+
+  it('turns one suite run at a time on, and says so to the server', async () => {
+    const updateProject = await openSuiteSettings();
+    const toggle = screen.getByTestId('setting-toggle-exclusiveSuite');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(updateProject).toHaveBeenCalledWith('p1', { exclusiveSuite: true }));
+  });
+
   it('lets the switch be the value, instead of repeating it as text underneath', async () => {
     await openSettings();
     const row = screen.getByTestId('setting-autoWorktree');

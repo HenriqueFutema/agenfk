@@ -2518,7 +2518,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
       <WhatsNewModal isOpen={isWhatsNewOpen} onClose={() => setIsWhatsNewOpen(false)} />
       <ReadmeModal isOpen={isReadmeOpen} onClose={() => setIsReadmeOpen(false)} />
 
-      {isSettingsOpen && <BoardSettingsDialog onClose={() => setIsSettingsOpen(false)} />}
+      {isSettingsOpen && <BoardSettingsDialog projectId={selectedProjectId} onClose={() => setIsSettingsOpen(false)} />}
       {isFlowEditorOpen && selectedProjectId && (
         <FlowEditorModal
           isOpen={isFlowEditorOpen}

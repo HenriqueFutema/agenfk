@@ -10,14 +10,14 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { suggestTestReport, withTestFiles, quoteArg } from './testReportHint';
-import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
+import { SuiteSlots, suiteRunLimit, waitingLine, projectWaitingLine, type SuiteWait } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2695,6 +2695,8 @@ app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
       flowName: flow?.name ?? DEFAULT_FLOW.name,
       worktreeRoot: defaultWorktreeRoot(),
       homeDir: os.homedir(),
+      flowVerifyAt: flowVerifyAt(flow),
+      ...(flow?.verifyAtScope ? { flowVerifyAtScope: flow.verifyAtScope } : {}),
     }),
     /*
      * The commands the repository declares for this machine to run, shown in
@@ -3085,6 +3087,59 @@ app.get("/settings", asyncHandler(async (_req: any, res: any) => {
  */
 let suiteRunSetting = 0;
 const suiteSlots = new SuiteSlots(() => suiteRunLimit(os.cpus().length, suiteRunSetting));
+/**
+ * 7ddeaf7c: a project with exclusiveSuite runs one suite at a time - its own
+ * line, taken BEFORE the server-wide slot, so a run waiting for its project
+ * holds no server slot and other projects are not held back by it. EVERY run
+ * of a project takes its line (unlimited while the setting is off), so turning
+ * the setting on counts the runs already going. Each wait is reported with the
+ * line that names the setting it waits on.
+ */
+const projectSuiteSlots = new Map<string, SuiteSlots>();
+const projectExclusive = new Map<string, boolean>();
+/** Runs of each project actually going (both slots held), for the re-check after a server slot. */
+const projectRunning = new Map<string, number>();
+const projectSlotsFor = (projectId: string): SuiteSlots => {
+  let slots = projectSuiteSlots.get(projectId);
+  if (!slots) projectSuiteSlots.set(projectId, slots = new SuiteSlots(() => (projectExclusive.get(projectId) ? 1 : Number.MAX_SAFE_INTEGER)));
+  return slots;
+};
+/** A project's setting changed: the line applies it at once (a run waiting when it is turned off starts). */
+function noteProjectExclusive(projectId: string, exclusive: boolean): void {
+  projectExclusive.set(projectId, exclusive);
+  projectSuiteSlots.get(projectId)?.recheck();
+}
+async function acquireSuiteRun(projectId: string | undefined, onWait: (w: SuiteWait, line: string) => void): Promise<() => void> {
+  if (!projectId) return suiteSlots.acquire(w => onWait(w, waitingLine(w)));
+  const project: any = await storage.getProject(projectId);
+  projectExclusive.set(projectId, project?.exclusiveSuite === true);
+  for (;;) {
+    const releaseProject = await projectSlotsFor(projectId).acquire(w => onWait(w, projectWaitingLine(w)));
+    let releaseServer: () => void;
+    try { releaseServer = await suiteSlots.acquire(w => onWait(w, waitingLine(w))); }
+    catch (e) { releaseProject(); throw e; }
+    /*
+     * Admitted to the project's line while it was unlimited, then the setting
+     * was turned on while this waited for a server slot: another run of the
+     * project may be going. Both slots go back and it queues again, now
+     * behind that run (review of 7ddeaf7c).
+     */
+    if (projectExclusive.get(projectId) && (projectRunning.get(projectId) ?? 0) > 0) {
+      releaseServer();
+      releaseProject();
+      continue;
+    }
+    projectRunning.set(projectId, (projectRunning.get(projectId) ?? 0) + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      projectRunning.set(projectId, (projectRunning.get(projectId) ?? 1) - 1);
+      releaseServer();
+      releaseProject();
+    };
+  }
+}
 async function loadSuiteRunSetting(): Promise<void> {
   try { suiteRunSetting = (await storage.getSettings()).maxConcurrentSuiteRuns ?? 0; } catch { /* automatic */ }
 }
@@ -3164,20 +3219,33 @@ app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
   // no execution semantics: the worst a caller can do is turn worktree
   // creation on or off. projectRoot and verifyCommand stay out — those are a
   // cwd and a shell string.
-  const updates: Partial<{ name: string; description: string; autoWorktree: boolean }> = {};
+  // 7ddeaf7c: verifyAtScope and exclusiveSuite join it on the same grounds - a
+  // choice between two values and a switch, neither of which runs anything.
+  const updates: Partial<{ name: string; description: string; autoWorktree: boolean; verifyAtScope: 'worktree' | 'project' | undefined; exclusiveSuite: boolean }> = {};
   if (typeof req.body?.name === 'string') updates.name = req.body.name;
   if (typeof req.body?.description === 'string') updates.description = req.body.description;
   if (typeof req.body?.autoWorktree === 'boolean') updates.autoWorktree = req.body.autoWorktree;
+  if (req.body && 'verifyAtScope' in req.body) {
+    const scopeProblem = verifyAtScopeError(req.body.verifyAtScope);
+    if (scopeProblem) return res.status(400).json({ error: scopeProblem });
+    // null clears the project's own value: the flow's applies again.
+    updates.verifyAtScope = req.body.verifyAtScope ?? undefined;
+  }
+  if (req.body?.exclusiveSuite !== undefined) {
+    if (typeof req.body.exclusiveSuite !== 'boolean') return res.status(400).json({ error: 'exclusiveSuite must be true or false.' });
+    updates.exclusiveSuite = req.body.exclusiveSuite;
+  }
   // tmuxByDefault deliberately does NOT belong here. It was project-scoped for
   // one commit; the decision changed to installation-wide, and it now lives at
   // PUT /settings. Accepting it in both places would give one preference two
   // sources of truth, so whichever the UI read, the other would silently
   // disagree — worse than either home alone.
   if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
+    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree, verifyAtScope, exclusiveSuite. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
   }
   try {
     const updated = await storage.updateProject(req.params.id, updates);
+    if (typeof updates.exclusiveSuite === 'boolean') noteProjectExclusive(req.params.id, updates.exclusiveSuite);
     io.emit('items_updated');
     res.json(updated);
   } catch (error) {
@@ -4842,10 +4910,16 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   const running: VerifyPhase = !lazy ? { state: 'running', kind: 'whole' }
     : lazy.related ? { state: 'running', kind: 'affected', files: lazy.changed.length } : { state: 'running', kind: 'tests-only', files: lazy.ran.length };
   // f8d0a752: inside the report lock, so a card waiting on the lock holds no suite-run slot.
-  const record = await withReportLock(lockKey, () => suiteSlots.run(() => { opts?.onPhase?.(running); return runAndRead(item, root, setting, command, cleanSha, opts, lazy); }, w => {
-    opts?.onOutput?.(waitingLine(w));
-    opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
-  }), opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
+  const record = await withReportLock(lockKey, async () => {
+    const release = await acquireSuiteRun(item.projectId, (w, line) => {
+      opts?.onOutput?.(line);
+      opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
+    });
+    try {
+      opts?.onPhase?.(running);
+      return await runAndRead(item, root, setting, command, cleanSha, opts, lazy);
+    } finally { release(); }
+  }, opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
   if (record === null) return LAZY_FALLBACK;
   // The card may have moved while the command ran: a record for a step it
   // no longer occupies (or was rolled back over) must not be written.
@@ -6160,12 +6234,12 @@ const limitBoardRoutes = rateLimit({
 });
 
 app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
-  const { name, description, version, steps, verifyAt } = req.body;
+  const { name, description, version, steps, verifyAt, verifyAtScope } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
   const stepsError = flowStepsError(steps);
   if (stepsError) return res.status(400).json({ error: stepsError });
-  const verifyAtProblem = verifyAtError(verifyAt);
+  const verifyAtProblem = verifyAtError(verifyAt) ?? verifyAtScopeError(verifyAtScope);
   if (verifyAtProblem) return res.status(400).json({ error: verifyAtProblem });
 
   // Always force `source = 'local'` on REST-driven creation. The reconciler
@@ -6181,6 +6255,7 @@ app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
     updatedAt: new Date(),
     source: 'local',
     ...(verifyAt ? { verifyAt } : {}),
+    ...(verifyAtScope ? { verifyAtScope } : {}),
   };
 
   const created = await storage.createFlow(flow);
@@ -6202,8 +6277,8 @@ app.put("/flows/:id", limitFlowWrites, asyncHandler(async (req: any, res: any) =
     return res.status(409).json({ error: HUB_MANAGED_FLOW_MSG });
   }
   try {
-    const { name, description, version, steps, verifyAt } = req.body;
-    const verifyAtProblem = verifyAtError(verifyAt);
+    const { name, description, version, steps, verifyAt, verifyAtScope } = req.body;
+    const verifyAtProblem = verifyAtError(verifyAt) ?? verifyAtScopeError(verifyAtScope);
     if (verifyAtProblem) return res.status(400).json({ error: verifyAtProblem });
     // Only validate steps when the caller is actually replacing them — a
     // rename-only PUT must keep working.
@@ -6221,6 +6296,7 @@ app.put("/flows/:id", limitFlowWrites, asyncHandler(async (req: any, res: any) =
     if (version !== undefined) updates.version = version;
     if (steps !== undefined) updates.steps = normalizeSteps(merged);
     if (verifyAt !== undefined && verifyAt !== null) updates.verifyAt = verifyAt;
+    if (verifyAtScope !== undefined && verifyAtScope !== null) updates.verifyAtScope = verifyAtScope;
 
     const updated = await storage.updateFlow(req.params.id, updates);
     io.emit('flow:updated', { flowId: updated.id });
@@ -6377,6 +6453,7 @@ app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any
         description: body.flow?.description,
         steps: hubSteps,
         ...(flowVerifyAt(body.flow) === 'parent' ? { verifyAt: 'parent' as const } : {}),
+        ...(body.flow?.verifyAtScope === 'project' ? { verifyAtScope: 'project' as const } : {}),
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -6418,6 +6495,7 @@ app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any
       description: flowData.description,
       steps,
       ...(flowVerifyAt(flowData) === 'parent' ? { verifyAt: 'parent' as const } : {}),
+      ...(flowData?.verifyAtScope === 'project' ? { verifyAtScope: 'project' as const } : {}),
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -6503,6 +6581,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
             description: flow.description ?? '',
             version: (flow as any).version || '1.0.0',
             ...(flowVerifyAt(flow) === 'parent' ? { verifyAt: 'parent' } : {}),
+            ...(flow?.verifyAtScope === 'project' ? { verifyAtScope: 'project' } : {}),
             // The registry's fields only: local step ids and cosmetics stay here.
             steps: [...flow.steps].sort((a: any, b: any) => a.order - b.order).map((st: any) => ({
               name: st.name,
@@ -6663,6 +6742,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
         author: ghUser,
         version,
         ...(flowVerifyAt(flow) === 'parent' ? { verifyAt: 'parent' } : {}),
+        ...(flow?.verifyAtScope === 'project' ? { verifyAtScope: 'project' } : {}),
         steps: flow.steps
           .sort((a: any, b: any) => a.order - b.order)
           .map((s: any) => ({
@@ -7862,6 +7942,16 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
     return res.status(404).json({ error: "Target project not found" });
   }
 
+  /*
+   * 7ddeaf7c (review): a merge owed across the move would be lost - the
+   * parent's verify looks for it in its own project. Refused while open, in
+   * either direction; owed inside the moved subtree, it moves with it.
+   */
+  const across = await obligationsAcrossMove(item as any);
+  if (across.length) {
+    return res.status(409).json({ error: 'DEFERRED_OBLIGATION_OPEN', message: `Not moved: ${across.join('; ')}. The parent's verify looks for that merge in its own project, so moving now would drop it. Close the parent first (merge the work, then verify it), or move them together.` });
+  }
+
   const sourceProjectId = item.projectId;
   const movedCount = await moveToProjectRecursively(req.params.id, targetProjectId);
 
@@ -8446,7 +8536,7 @@ function deferredToCommand(flow: { steps: any[] }, status: string, project: any,
  * The roll-up never walks such a parent onto its exit step (syncParentStatus),
  * so its own final verify - the one run - always happens.
  */
-async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unknown }): Promise<any | null> {
+async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unknown; verifyAtScope?: unknown }): Promise<any | null> {
   if (flowVerifyAt(flow) !== 'parent' || !item?.parentId) return null;
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
@@ -8457,12 +8547,157 @@ async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unkno
   const parentStatus = String(parent.status).toUpperCase();
   if (parentStatus === 'DONE' || INACTIVE_STATUSES.has(parentStatus) || parent.status === sorted[sorted.length - 1]?.name) return null;
   if (activeValidateRunByItem.has(parent.id)) return null;
-  // The parent's verify tests the PARENT's tree: a child whose work lives in another one runs its own.
+  // The parent's verify tests the PARENT's tree: a child whose work lives in another one runs its own -
+  // unless the scope is 'project' (7ddeaf7c), and the other tree is a checkout of the same repository,
+  // so that the child's close commit can be merged into the parent's (unmergedDeferredWork holds the parent until it is).
   const project: any = await storage.getProject(item.projectId);
   const childRoot = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const parentRoot = resolveCommitRoot(await withEffectiveWorktree(parent), project?.projectRoot).root;
-  if (!childRoot || childRoot !== parentRoot) return null;
+  if (!childRoot || !parentRoot) return null;
+  if (childRoot !== parentRoot && (effectiveVerifyAtScope(flow, project) !== 'project' || !sameRepository(childRoot, parentRoot))) return null;
   return parent;
+}
+
+/** A card that deferred its suite run from another tree, by the commit it closed on (7ddeaf7c). */
+type UnmergedWork = { id: string; title: string; sha: string; branch: string | null };
+
+/** Whether two checkouts share one repository (the same git common dir), so a commit made in one is reachable from the other. */
+function sameRepository(a: string, b: string): boolean {
+  const commonDir = (root: string): string | null => {
+    try { return fs.realpathSync(path.resolve(root, runGitSync(['-C', root, 'rev-parse', '--git-common-dir']).trim())); } catch { return null; }
+  };
+  const ca = commonDir(a);
+  return ca !== null && ca === commonDir(b);
+}
+
+/**
+ * 7ddeaf7c — what a close deferred to a parent in ANOTHER tree leaves behind:
+ * the commit the child closed on, and its branch, so the parent's verify can
+ * tell whether that work has been merged into the tree it tests. Null when the
+ * two share a tree: the parent's run sees the child's work as it stands.
+ */
+function crossTreeDeferral(childRoot: string | null, parentRoot: string | null, committed?: string | null): { sha: string; root: string; branch: string | null } | null {
+  if (!childRoot || !parentRoot || childRoot === parentRoot) return null;
+  // The close commit's own sha when it made one: HEAD could have moved since.
+  const sha = committed || readHead(childRoot, gitRun);
+  if (!sha) return null;
+  let branch: string | null = null;
+  try { branch = runGitSync(['-C', childRoot, 'rev-parse', '--abbrev-ref', 'HEAD']).trim() || null; } catch { /* detached or unreadable */ }
+  return { sha, root: childRoot, branch: branch === 'HEAD' ? null : branch };
+}
+
+/**
+ * 7ddeaf7c — the deferred work the card's own suite run would miss: every card
+ * that deferred its run to this one (directly, or through a card that deferred
+ * in turn) from another tree, whose close commit is not reachable from this
+ * card's HEAD. The parent's verify tests the parent's tree; until that work is
+ * merged there, a green would cover a tree without it.
+ */
+async function unmergedDeferredWork(item: any, project: any): Promise<UnmergedWork[]> {
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  if (!root) return [];
+  const missing: UnmergedWork[] = [];
+  // By whom each card deferred TO, not by its parent now: a card re-parented or detached after it deferred still owes the merge.
+  const byTarget = new Map<string, any[]>();
+  for (const other of await storage.listItems({ projectId: item.projectId, hydrate: false } as any) as any[]) {
+    if (!other.suiteDeferredTo) continue;
+    const list = byTarget.get(other.suiteDeferredTo);
+    if (list) list.push(other); else byTarget.set(other.suiteDeferredTo, [other]);
+  }
+  const seen = new Set<string>();
+  const walk = (targetId: string): void => {
+    for (const child of byTarget.get(targetId) ?? []) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      const at = child.suiteDeferredCommit;
+      if (at?.sha) {
+        let merged = false;
+        try { runGitSync(['-C', root, 'merge-base', '--is-ancestor', at.sha, 'HEAD']); merged = true; } catch { /* not an ancestor, or not in this repository */ }
+        if (!merged) missing.push({ id: child.id, title: child.title, sha: at.sha, branch: at.branch ?? null });
+      }
+      walk(child.id);
+    }
+  };
+  walk(item.id);
+  return missing;
+}
+
+/**
+ * 7ddeaf7c — what a close commit would leave out: unstaged changes and
+ * untracked files (ignored ones excepted). A card deferring from another tree
+ * hands the parent only what is committed, so these would never be tested.
+ */
+function uncommittableChanges(root: string, { staged = true }: { staged?: boolean } = {}): string[] | null {
+  let out: string;
+  // Explicit: a user's status.showUntrackedFiles=no would otherwise hide an untracked file from this check. Null: unreadable.
+  try { out = runGitSync(['-C', root, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']); } catch { return null; }
+  // Porcelain is `XY path`: Y is the worktree side, so anything but a space there (untracked `??` included) is not staged.
+  // With staged: false (after the commit) a staged change counts too: it is not in the commit either.
+  return out.split('\n').filter(l => l.length > 3 && (l[1] !== ' ' || (!staged && l[0] !== ' '))).map(l => l.slice(3));
+}
+
+function deferredUncommittedRefusal(item: any, root: string, loose: string[]) {
+  const SHOWN = 20;
+  return {
+    status: item.status, error: 'DEFERRED_CLOSE_UNCOMMITTED',
+    message: `❌ This card defers its suite run to its parent from another worktree, and the parent's run sees only what this card commits - but ${root} has changes the close commit would leave out: ${loose.slice(0, SHOWN).map(f => `\`${f}\``).join(', ')}${loose.length > SHOWN ? ` and ${loose.length - SHOWN} more` : ''}. Stage what belongs to this card (and remove or ignore the rest), then verify again. Nothing moved.${staysOn(item.status)}`,
+  };
+}
+
+function deferredUnreadableRefusal(item: any, root: string) {
+  return {
+    status: item.status, error: 'DEFERRED_CLOSE_UNCOMMITTED',
+    message: `❌ This card defers its suite run to its parent from another worktree, so the commit it closes on must be read from ${root} - and git could not read it (status or HEAD). Nothing moved; check the worktree, then verify again.${staysOn(item.status)}`,
+  };
+}
+
+/** 7ddeaf7c (review): open deferral obligations that a move of `item`'s subtree out of its project would split. */
+async function obligationsAcrossMove(item: any): Promise<string[]> {
+  const all = await storage.listItems({ projectId: item.projectId, hydrate: false } as any) as any[];
+  const byId = new Map(all.map(c => [c.id, c]));
+  const inside = new Set<string>([item.id]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const c of all) if (c.parentId && inside.has(c.parentId) && !inside.has(c.id)) { inside.add(c.id); grew = true; }
+  }
+  const project: any = await storage.getProject(item.projectId);
+  // Completed, not shelved: a trashed or archived card ran nothing and may come back (review of 7ddeaf7c).
+  const outOfPlay = new Set([Status.TRASHED, Status.ARCHIVED, Status.IDEAS].map(String));
+  const finished = new Set([...finishedStatusesOf(getActiveFlow(project?.flowId, await storage.listFlows()))].filter(x => !outOfPlay.has(x)));
+  const out: string[] = [];
+  for (const c of all) {
+    if (!c.suiteDeferredTo || !c.suiteDeferredCommit?.sha) continue;
+    /*
+     * The obligation is settled only by the card whose own verify RAN the
+     * suite: up the deferral edges past every card that deferred again (a
+     * finished parent that passed it on to its own parent settled nothing).
+     * Every card on that chain must stay on one side of the move, or the
+     * settling card's walk loses the commit.
+     */
+    const chain: any[] = [c];
+    let at: any = byId.get(c.suiteDeferredTo);
+    while (at && !chain.includes(at)) {
+      chain.push(at);
+      if (!(finished.has(String(at.status)) && at.suiteDeferredTo)) break;
+      at = byId.get(at.suiteDeferredTo);
+    }
+    const settler = chain[chain.length - 1];
+    if (settler === c || (finished.has(String(settler.status)) && !settler.suiteDeferredTo)) continue;
+    if (chain.every(x => inside.has(x.id)) || chain.every(x => !inside.has(x.id))) continue;
+    out.push(`[${c.id.substring(0, 8)}] "${c.title}" deferred its suite run from another worktree to [${settler.id.substring(0, 8)}] "${settler.title}", which has not run it yet`);
+  }
+  return out;
+}
+
+/** How unmerged deferred work is named to the agent, in the refusal and the leave plan. */
+const describeUnmerged = (missing: UnmergedWork[]): string =>
+  missing.map(m => `[${m.id.substring(0, 8)}] "${m.title}" (${m.branch ? `branch ${m.branch}, ` : ''}commit ${m.sha.substring(0, 12)})`).join(', ');
+
+function unmergedRefusal(item: any, missing: UnmergedWork[]) {
+  return {
+    status: item.status, error: 'DEFERRED_CHILD_UNMERGED',
+    message: `❌ This card's verify runs the project's suite over everything its children did, and ${missing.length === 1 ? 'a child' : `${missing.length} children`} deferred ${missing.length === 1 ? 'its run' : 'their runs'} to it from another worktree without the work being in this card's tree yet: ${describeUnmerged(missing)}. Merge ${missing.length === 1 ? 'it' : 'them'} into this card's branch (a merge: a squash or a rebase makes new commits, which do not count), then verify again. Nothing was run.${staysOn(item.status)}`,
+  };
 }
 
 /**
@@ -8716,14 +8951,14 @@ export interface LeavePlan {
   /** Why the card will be held instead of advancing, when it will be. */
   held?: string;
   /** Why verify will refuse before running anything: no verify command on the final step, or no tree to run in. */
-  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_UNREADABLE' | 'NO_TREE';
+  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_UNREADABLE' | 'DEFERRED_CHILD_UNMERGED' | 'NO_TREE';
   /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
   narrowing: string[];
   /** One line for the agent. */
   advice: string;
 }
 
-async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown }, project: any): Promise<LeavePlan> {
+async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown; verifyAtScope?: unknown }, project: any): Promise<LeavePlan> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -8758,8 +8993,11 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   // the gate), and in a capture whose suite IS the file's command - so ahead of NO_TREE, and nothing runs.
   const effective = effectiveVerifyCommand(project);
   const captureUnreadable = cap.runs && effective.fromFile && !!effective.command && !!unreadableFileVerify(project, effective.command);
+  // 7ddeaf7c: the close a deferred child's unmerged work holds back, as the verify refuses it.
+  const unmerged = final && !toParent && item.id ? await unmergedDeferredWork(item, project) : [];
   const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
     : (final && !toParent && unreadableFileVerify(project)) || captureUnreadable ? 'COMMAND_UNREADABLE'
+    : unmerged.length ? 'DEFERRED_CHILD_UNMERGED'
     : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
   const role = (sorted[index] as any)?.role;
   const narrowing = runs === 'nothing' ? [] : [
@@ -8781,6 +9019,7 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   // Not the command itself: the plan says it is refused, not what to run instead (34ee6b8a).
   if (refuses === 'COMMAND_UNREADABLE') parts.push(`Leaving ${step} runs the repository's own verify command, which holds characters a screen cannot show faithfully: verify will refuse, and run nothing, until they are removed from .agenfk/project.json.`);
   else if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
+  else if (refuses === 'DEFERRED_CHILD_UNMERGED') parts.push(`Leaving ${step} runs the project's suite over everything this card's children did, but work deferred to it from another worktree is not in this card's tree yet: ${describeUnmerged(unmerged)}. Verify will refuse, and run nothing, until it is merged into this card's branch.`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
     parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (a green of this tree already on record does too; after a partial run, or a tree that moved, the whole command runs)' : ''}.${dontPreRun}${smaller}`);
@@ -8826,7 +9065,7 @@ export interface LeavePrediction {
  */
 async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, project: any): Promise<LeavePrediction> {
   // The step's checks run before the final gate's refusal: a capture is still spent on a verify that then refuses.
-  if (plan.refuses === 'NO_TREE' || plan.refuses === 'COMMAND_UNREADABLE' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
+  if (plan.refuses === 'NO_TREE' || plan.refuses === 'COMMAND_UNREADABLE' || plan.refuses === 'DEFERRED_CHILD_UNMERGED' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
   if (plan.runs === 'nothing') return { mode: 'none', advice: 'On this tree it would run nothing.' };
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const sorted = sortedFlowSteps(flow as any);
@@ -9362,9 +9601,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (!opts?.gate) {
     const upcoming = sorted[currentFlowStep.index + 1];
     const finalMove = !upcoming || upcoming.name === Status.DONE || isBoundaryStep(upcoming);
-    if (finalMove) {
+    if (finalMove && !(await parentToDeferTo(item, activeFlow))) {
       const refusal = unreadableFileVerify(project);
-      if (refusal && !(await parentToDeferTo(item, activeFlow))) return res.status(400).json(refusal);
+      if (refusal) return res.status(400).json(refusal);
+      // 7ddeaf7c: and before any capture, a run over a tree missing a deferred child's work.
+      const missing = await unmergedDeferredWork(item, project);
+      if (missing.length) return res.status(422).json(unmergedRefusal(item, missing));
     }
   }
 
@@ -9654,6 +9896,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const refusal = unreadableFileVerify(project, fileVerify);
     if (refusal) return res.status(400).json(refusal);
   }
+  if (isFinalStep && !deferTo) {
+    // 7ddeaf7c: asked again here for a gate handed in from the background, which skipped the check above.
+    const missing = await unmergedDeferredWork(item, project);
+    if (missing.length) return res.status(422).json(unmergedRefusal(item, missing));
+  }
   const resolvedCommand = isFinalStep ? projectVerify : command;
   const ignoredCommand = isFinalStep && command && command !== projectVerify ? command : undefined;
   const commandNote = ignoredCommand ? ignoredCommandNote(ignoredCommand, projectVerify) : undefined;
@@ -9668,18 +9915,66 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     res = closing.res;
     const note = `The project's suite was not run for this card: the flow runs it once, at the top-level card, and [${deferTo.id.substring(0, 8)}] "${deferTo.title}" is still open. Its verify runs the suite over everything its children did, or defers it again to its own parent.`;
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (suite deferred to the parent)\n\n**Step**: ${item.status} → ${nextStatus}\n\n${note}`, timestamp: new Date() };
+    /*
+     * 7ddeaf7c: deferred from ANOTHER tree (verifyAtScope 'project'), the
+     * child's work reaches the parent's run only as a commit merged into the
+     * parent's tree. So the close commit comes FIRST, and the commit it lands
+     * on is written in the same update as DONE - there is no moment the card
+     * is finished without the merge it owes - and the close is refused while
+     * work would be left out of that commit (unstaged or untracked), or when
+     * the commit is not made.
+     */
+    const childRoot = resolveCommitRoot(await withEffectiveWorktree(item), (project as any)?.projectRoot).root;
+    const parentRoot = resolveCommitRoot(await withEffectiveWorktree(deferTo), (project as any)?.projectRoot).root;
+    const crossTree = !!childRoot && !!parentRoot && childRoot !== parentRoot;
+    if (crossTree) {
+      const loose = uncommittableChanges(childRoot!);
+      if (loose === null) return res.status(422).json(deferredUnreadableRefusal(item, childRoot!));
+      if (loose.length) return res.status(422).json(deferredUncommittedRefusal(item, childRoot!, loose));
+    }
     const left = await commitOnLeave(res);
     if (left.refused) return;
     res = left.res;
+    const commits = process.env.NODE_ENV !== 'test' && !process.env.VITEST;
+    let gitResult = crossTree && commits ? await autoGitCommit(item as any, (project as any)?.projectRoot) : undefined;
+    let crossed: ReturnType<typeof crossTreeDeferral> = null;
+    if (crossTree) {
+      if (gitResult && (gitResult.outcome === 'failed' || gitResult.outcome === 'declined')) {
+        return res.status(422).json({ status: item.status, error: 'DEFERRED_CLOSE_UNCOMMITTED', message: `❌ This card defers its suite run to [${deferTo.id.substring(0, 8)}] "${deferTo.title}" from another worktree, so its work must be committed to reach the parent's run - and the close commit was not made: ${gitResult.detail}. Nothing moved; what you staged is still staged.${staysOn(item.status)}` });
+      }
+      crossed = crossTreeDeferral(childRoot, parentRoot, gitResult?.sha);
+      // Review of 7ddeaf7c: no cross-tree close without the commit it owes.
+      if (!crossed) return res.status(422).json(deferredUnreadableRefusal(item, childRoot!));
+      // The commit was awaited (a hook may have run): the card may have moved, work under it reopened,
+      // or a hook left changes out of the commit. Asked again before anything is written.
+      const fresh: any = await storage.getItem(itemId);
+      if (!fresh || fresh.status !== item.status) {
+        return res.status(409).json({ status: fresh?.status ?? item.status, error: 'CARD_MOVED', message: `⚠️ The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while its close commit was made; nothing else was applied. Run verify again.` });
+      }
+      const after = await checkClose(res);
+      if (after.refused) return;
+      res = after.res;
+      // ...and the deferral itself: a move (of the card or its parent) during the commit changes where the obligation lives.
+      const still = await parentToDeferTo(fresh, activeFlow);
+      const rootsNow = still ? [resolveCommitRoot(await withEffectiveWorktree(fresh), (project as any)?.projectRoot).root, resolveCommitRoot(await withEffectiveWorktree(still), (project as any)?.projectRoot).root] : [];
+      if (!still || still.id !== deferTo.id || fresh.projectId !== item.projectId || rootsNow[0] !== childRoot || rootsNow[1] !== parentRoot) {
+        return res.status(409).json({ status: fresh.status, error: 'CARD_MOVED', message: `⚠️ The card or its parent changed (project, parent or worktree) while its close commit was made; nothing else was applied. Run verify again.` });
+      }
+      // Strict only after a commit was made: then nothing may be left staged either. (Under tests none is made.)
+      const left2 = uncommittableChanges(childRoot!, { staged: !gitResult });
+      if (left2 === null) return res.status(422).json(deferredUnreadableRefusal(item, childRoot!));
+      if (left2.length) return res.status(422).json(deferredUncommittedRefusal(item, childRoot!, left2));
+    }
     // The marker the roll-up reads: this parent owes a suite run, whatever its flow says later.
-    const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(isExitStep ? { failureCount: 0 } : {}) } as any);
+    const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(crossed ? { suiteDeferredCommit: crossed } : {}), ...(isExitStep ? { failureCount: 0 } : {}) } as any);
     recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
-    const gitResult = process.env.NODE_ENV !== 'test' && !process.env.VITEST
-      ? await autoGitCommit(updated, (project as any)?.projectRoot)
-      : undefined;
-    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}` });
+    if (!crossTree && commits) gitResult = await autoGitCommit(updated, (project as any)?.projectRoot);
+    const crossNote = crossed
+      ? `\n\nThis card's work is in another worktree (${crossed.branch ? `branch ${crossed.branch}, ` : ''}commit ${crossed.sha.substring(0, 12)}): the parent's verify is refused until that commit is merged into the parent's branch (a merge - a squash or a rebase makes new commits, which do not count).`
+      : '';
+    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}${crossNote}\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}` });
   }
 
   if (isFinalStep && !resolvedCommand) {
@@ -9894,8 +10189,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
   const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
   // f8d0a752: a suite-run slot before the tree is read, so the state recorded is the one the command runs on.
-  const releaseSlot = await suiteSlots.acquire(w => {
-    const line = waitingLine(w);
+  const releaseSlot = await acquireSuiteRun(item.projectId, (w, line) => {
     capture.note(line);
     if (run) appendRunOutput(run, line);
     setRunPhase(run, { state: 'queued', ahead: w.ahead });

@@ -2262,7 +2262,7 @@ program
 
 program
   .command('update-project <id>')
-  .description('Update a project\'s name, description, verify command, or project root (MCP fallback: update_project)')
+  .description('Update a project\'s name, description, verify command, project root, or suite settings (MCP fallback: update_project)')
   .option('--name <name>', 'New project name')
   .option('--description <text>', 'New project description')
   .option('--verify-command <cmd>', 'Project-level verification command')
@@ -2275,9 +2275,30 @@ program
   .option('--test-report-related-command <cmd>', 'The runner\'s related-tests command with {files} (e.g. "npx vitest related --run {files}"): a step that changed code runs only the tests it affects; "none" clears it')
   .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing. The final step skips the verify command for them too: do not cover files that command checks (a markdown lint, prettier --check)')
   .option('--test-report <none>', 'Pass "none" to clear the test report setting')
+  .option('--verify-at-scope <scope>', 'With the flow\'s verifyAt "parent": "project" lets a card in another worktree defer its suite run to its parent (whose verify then waits until that work is merged), "worktree" only one in the parent\'s tree; "none" goes back to the flow\'s setting')
+  .option('--exclusive-suite <on|off>', 'Run at most one of this project\'s suites at a time (for suites that share a database or fixed ports); other projects are not held back')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
+      // 7ddeaf7c: plain choices, so they go on the open route with name and description.
+      if (options.verifyAtScope !== undefined) {
+        const scope = String(options.verifyAtScope);
+        if (!['worktree', 'project', 'none'].includes(scope)) {
+          console.error(chalk.red(`--verify-at-scope must be worktree, project or none, not "${scope}".`));
+          process.exit(1);
+          return;
+        }
+        updates.verifyAtScope = scope === 'none' ? null : scope;
+      }
+      if (options.exclusiveSuite !== undefined) {
+        const value = String(options.exclusiveSuite);
+        if (value !== 'on' && value !== 'off') {
+          console.error(chalk.red(`--exclusive-suite must be on or off, not "${value}".`));
+          process.exit(1);
+          return;
+        }
+        updates.exclusiveSuite = value === 'on';
+      }
       const wantsTestReport = options.testReport !== undefined || options.testReportFormat !== undefined
         || options.testReportCommand !== undefined || options.testReportPath !== undefined
         || options.testReportSurface !== undefined || options.testReportReuseIgnore !== undefined
@@ -2287,7 +2308,7 @@ program
       if (options.verifyCommand === undefined && options.projectRoot === undefined
           && options.setupCommand === undefined && !wantsTestReport
           && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root, --test-report-*.'));
+        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root, --test-report-*, --verify-at-scope, --exclusive-suite.'));
         process.exit(1);
         return;
       }

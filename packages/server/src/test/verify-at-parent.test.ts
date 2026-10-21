@@ -48,8 +48,8 @@ const STEPS = [s('TODO', 0, { isAnchor: true }), s('WORK', 1), s('DONE', 2, { is
  * through Git Bash's /usr/bin on PATH) and does not expand `$$`, so on Windows every run
  * wrote the same file and "ran exactly once" could not fail (#208 branch review).
  */
-async function project(verifyAt?: string, { command = true, steps = STEPS, delayMs = 0 }: { command?: boolean; steps?: unknown[]; delayMs?: number } = {}) {
-  const f = await agent().post('/flows').send({ name: `vap-${++seq}`, steps, ...(verifyAt ? { verifyAt } : {}) });
+async function project(verifyAt?: string, { command = true, steps = STEPS, delayMs = 0, flowExtra = {}, projectExtra = {} }: { command?: boolean; steps?: unknown[]; delayMs?: number; flowExtra?: Record<string, unknown>; projectExtra?: Record<string, unknown> } = {}) {
+  const f = await agent().post('/flows').send({ name: `vap-${++seq}`, steps, ...(verifyAt ? { verifyAt } : {}), ...flowExtra });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-vap-'));
   dirs.push(dir);
@@ -60,7 +60,7 @@ async function project(verifyAt?: string, { command = true, steps = STEPS, delay
   const p = await agent().post('/projects').send({ name: `vap-${++seq}` });
   const mark = `require('fs').writeFileSync(require('path').join(${JSON.stringify(runs)}, 'run-' + process.pid + '-' + Date.now()), '')`;
   const verifyCommand = nodeCommand(delayMs ? `setTimeout(() => { ${mark}; }, ${delayMs});` : `${mark};`);
-  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, ...(command ? { verifyCommand } : {}) } as never);
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, ...(command ? { verifyCommand } : {}), ...projectExtra } as never);
   return { pid: p.body.id as string, runCount: () => fs.readdirSync(runs).length, flowId: f.body.id as string, dir };
 }
 async function card(projectId: string, status = 'WORK', extra: Record<string, unknown> = {}) {
@@ -251,5 +251,286 @@ describe("verifyAt: 'parent' - round-2 review (281adef0)", () => {
     expect((await validate(child)).status).toBe(200);
     expect((await get(child)).status).toBe('CHECK');
     expect((await get(parent)).status).toBe('CHECK');
+  });
+});
+
+/*
+ * 7ddeaf7c — verifyAtScope: how far 'parent' reaches. Under 'worktree' (the
+ * default, the behaviour above) a child defers only to a parent in its own
+ * tree. Under 'project' a child in ANOTHER worktree defers too - and since the
+ * parent's verify tests the parent's tree, that verify is refused until the
+ * child's work has been merged into it. Nothing lands untested either way.
+ */
+describe('verifyAtScope', () => {
+  /** A worktree of the project's repo on its own branch, with one commit of the child's work in it. */
+  function childWorktree(dir: string, branch: string) {
+    const wt = `${dir}-${branch}`;
+    dirs.push(wt);
+    execSync(`git worktree add -q -b ${branch} ${JSON.stringify(wt)}`, { cwd: dir });
+    execSync('echo work > child.txt && git add child.txt && git commit -qm "child work"', { cwd: wt, shell: posixShell() });
+    return wt;
+  }
+  const plan = async (id: string) => (await agent().get(`/items/${id}/leave-plan`)).body;
+
+  it('is stored on POST and changed on PUT, and a PUT that does not name it keeps it', async () => {
+    const f = await agent().post('/flows').send({ name: `vap-${++seq}`, steps: STEPS, verifyAt: 'parent', verifyAtScope: 'project' });
+    expect(f.status, JSON.stringify(f.body)).toBe(201);
+    expect(f.body.verifyAtScope).toBe('project');
+    const kept = await agent().put(`/flows/${f.body.id}`).send({ name: `renamed-${++seq}` });
+    expect(kept.body.verifyAtScope).toBe('project');
+    const u = await agent().put(`/flows/${f.body.id}`).send({ verifyAtScope: 'worktree' });
+    expect(u.status).toBe(200);
+    expect(u.body.verifyAtScope).toBe('worktree');
+  });
+
+  it('refuses a scope it does not know', async () => {
+    const f = await agent().post('/flows').send({ name: `vap-${++seq}`, steps: STEPS, verifyAt: 'parent', verifyAtScope: 'repo' });
+    expect(f.status).toBe(400);
+    expect(f.body.error).toMatch(/'worktree' or 'project'/);
+  });
+
+  it("'project': a child in another worktree closes WITHOUT running the suite, deferred to its parent", async () => {
+    const { pid, dir, runCount } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const wt = childWorktree(dir, 'scope-a');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    const res = await validate(child);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await get(child)).status).toBe('DONE');
+    expect(res.body.message).toMatch(/deferred/);
+    expect(res.body.message).toContain(parent.slice(0, 8));
+    expect(runCount(), 'the suite ran for a child').toBe(0);
+  });
+
+  it("'project': the parent's verify is REFUSED while the child's work is not merged into its tree, naming the child and its branch", async () => {
+    const { pid, dir, runCount } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const wt = childWorktree(dir, 'scope-b');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    const refused = await validate(parent);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.error).toBe('DEFERRED_CHILD_UNMERGED');
+    expect(refused.body.message).toContain(child.slice(0, 8));
+    expect(refused.body.message).toContain('scope-b');
+    expect((await get(parent)).status).toBe('WORK');
+    expect(runCount(), 'the suite ran over a tree without the child in it').toBe(0);
+    // Merged: the one run covers it.
+    execSync('git merge -q --no-edit scope-b', { cwd: dir });
+    const ok = await validate(parent);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect((await get(parent)).status).toBe('DONE');
+    expect(runCount()).toBe(1);
+  });
+
+  it("'project': a merge taken before the child's last commit does not count - the check is on the commit the child closed on", async () => {
+    const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const wt = childWorktree(dir, 'scope-c');
+    execSync('git merge -q --no-edit scope-c', { cwd: dir });
+    // Merged BEFORE the child's last commit, which is the one it closes on.
+    execSync('echo more > more.txt && git add more.txt && git commit -qm "more child work"', { cwd: wt, shell: posixShell() });
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    expect((await validate(parent)).status).toBe(422);
+  });
+
+  it('the leave plan says the parent\'s verify will refuse until the child is merged', async () => {
+    const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const wt = childWorktree(dir, 'scope-d');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    const p = await plan(parent);
+    expect(p.refuses).toBe('DEFERRED_CHILD_UNMERGED');
+    expect(p.advice).toContain(child.slice(0, 8));
+    expect(p.advice).toContain('scope-d');
+  });
+
+  // Review of 7ddeaf7c (Codex #1): the parent's run sees only what the child COMMITS.
+  it("'project': a child with unstaged or untracked work is refused - the close commit would leave it out - and nothing moves", async () => {
+    const { pid, dir, runCount } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const wt = childWorktree(dir, 'scope-h');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    fs.writeFileSync(path.join(wt, 'child.txt'), 'changed, not staged');
+    const unstaged = await validate(child);
+    expect(unstaged.status, JSON.stringify(unstaged.body)).toBe(422);
+    expect(unstaged.body.error).toBe('DEFERRED_CLOSE_UNCOMMITTED');
+    expect(unstaged.body.message).toContain('child.txt');
+    expect((await get(child)).status).toBe('WORK');
+    execSync('git checkout -- child.txt', { cwd: wt });
+    fs.writeFileSync(path.join(wt, 'new.txt'), 'untracked');
+    const untracked = await validate(child);
+    expect(untracked.status).toBe(422);
+    expect(untracked.body.message).toContain('new.txt');
+    // Staged, it goes into the close commit: the close goes through.
+    execSync('git add new.txt', { cwd: wt });
+    expect((await validate(child)).status).toBe(200);
+    expect(runCount()).toBe(0);
+  });
+
+  // Review of 7ddeaf7c, second pass: git config must not hide untracked work from the refusal.
+  it("'project': an untracked file is seen even with status.showUntrackedFiles=no", async () => {
+    const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const wt = childWorktree(dir, 'scope-j');
+    execSync('git config status.showUntrackedFiles no', { cwd: dir });
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    fs.writeFileSync(path.join(wt, 'hidden.txt'), 'untracked');
+    const res = await validate(child);
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.message).toContain('hidden.txt');
+  });
+
+  // Review of 7ddeaf7c, second pass: a move to another project would take the child out of its parent's walk.
+  it("'project': moving a child that owes a merge to another project is refused while its parent is open", async () => {
+    const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const elsewhere = await project('parent');
+    const wt = childWorktree(dir, 'scope-k');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    const moved = await agent().post(`/items/${child}/move`).send({ targetProjectId: elsewhere.pid });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(409);
+    expect(moved.body.error).toBe('DEFERRED_OBLIGATION_OPEN');
+    expect((await validate(parent)).status).toBe(422);
+    // Moved together with its parent, the obligation travels with them.
+    expect((await agent().post(`/items/${parent}/move`).send({ targetProjectId: elsewhere.pid })).status).toBe(200);
+  });
+
+  // Review of 7ddeaf7c, third pass: a parent that passed the run on to ITS parent settled nothing.
+  it("'project': moving a child is refused while the run it deferred was passed on up and not run yet", async () => {
+    const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const elsewhere = await project('parent');
+    const wt = childWorktree(dir, 'scope-l');
+    const top = await card(pid);
+    const mid = await card(pid, 'WORK', { parentId: top });
+    const child = await card(pid, 'WORK', { parentId: mid });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    // mid shares top's tree: it closes by deferring again, running nothing.
+    execSync('git merge -q --no-edit scope-l', { cwd: dir });
+    const midClose = await validate(mid);
+    expect(midClose.status, JSON.stringify(midClose.body)).toBe(200);
+    expect(midClose.body.message).toMatch(/deferred/);
+    const moved = await agent().post(`/items/${child}/move`).send({ targetProjectId: elsewhere.pid });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(409);
+    expect(moved.body.message).toContain(top.slice(0, 8));
+  });
+
+  // Review of 7ddeaf7c, fourth pass: archiving the parent ran nothing - and it may be restored.
+  it("'project': an archived parent has not settled the merge: the child still may not move away", async () => {
+    const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const elsewhere = await project('parent');
+    const wt = childWorktree(dir, 'scope-n');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    await storage.updateItem(parent, { status: 'ARCHIVED' } as any);
+    expect((await agent().post(`/items/${child}/move`).send({ targetProjectId: elsewhere.pid })).status).toBe(409);
+  });
+
+  it("'project': once the card that runs the suite has run it, on a flow whose last step is not called DONE, the child may move", async () => {
+    const steps = [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })];
+    const { pid, dir } = await project('parent', { steps, flowExtra: { verifyAtScope: 'project' } });
+    const elsewhere = await project('parent');
+    const wt = childWorktree(dir, 'scope-m');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    execSync('git merge -q --no-edit scope-m', { cwd: dir });
+    expect((await validate(parent)).status).toBe(200);
+    expect((await get(parent)).status).toBe('END');
+    expect((await agent().post(`/items/${child}/move`).send({ targetProjectId: elsewhere.pid })).status).toBe(200);
+  });
+
+  // Review of 7ddeaf7c (Codex #3): the obligation follows whom the child deferred TO, not its parent now.
+  it("'project': moving the child under another parent after it deferred does not drop the merge its first parent owes", async () => {
+    const { pid, dir } = await project('parent', { flowExtra: { verifyAtScope: 'project' } });
+    const wt = childWorktree(dir, 'scope-i');
+    const parent = await card(pid);
+    const other = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    await storage.updateItem(child, { parentId: other } as any);
+    const refused = await validate(parent);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.message).toContain(child.slice(0, 8));
+  });
+
+  it("'worktree' said explicitly behaves as before: a child in another worktree runs its own", async () => {
+    const { pid, dir, runCount } = await project('parent', { flowExtra: { verifyAtScope: 'worktree' } });
+    const wt = childWorktree(dir, 'scope-e');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    const res = await validate(child);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.message).not.toMatch(/deferred/);
+    expect(runCount()).toBe(1);
+  });
+
+  it("the project's own scope wins over the flow's: 'project' on the project defers a worktree child on a 'worktree' flow", async () => {
+    const { pid, dir, runCount } = await project('parent', { projectExtra: { verifyAtScope: 'project' } });
+    const wt = childWorktree(dir, 'scope-f');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    const res = await validate(child);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.message).toMatch(/deferred/);
+    expect(runCount()).toBe(0);
+  });
+
+  it("...and 'worktree' on the project keeps a worktree child running its own on a 'project' flow", async () => {
+    const { pid, dir, runCount } = await project('parent', { flowExtra: { verifyAtScope: 'project' }, projectExtra: { verifyAtScope: 'worktree' } });
+    const wt = childWorktree(dir, 'scope-g');
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    await storage.updateItem(child, { worktreePath: wt } as any);
+    expect((await validate(child)).status).toBe(200);
+    expect(runCount()).toBe(1);
+  });
+
+  it("scope means nothing under verifyAt 'leaf': a child runs its own", async () => {
+    const { pid, runCount } = await project(undefined, { flowExtra: { verifyAtScope: 'project' } });
+    const parent = await card(pid);
+    const child = await card(pid, 'WORK', { parentId: parent });
+    expect((await validate(child)).status).toBe(200);
+    expect(runCount()).toBe(1);
+  });
+});
+
+describe('project settings: verifyAtScope and exclusiveSuite through PUT /projects/:id', () => {
+  it('stores both, clears the scope with null, and reads them back', async () => {
+    const p = await agent().post('/projects').send({ name: `vap-${++seq}` });
+    const u = await agent().put(`/projects/${p.body.id}`).send({ verifyAtScope: 'project', exclusiveSuite: true });
+    expect(u.status, JSON.stringify(u.body)).toBe(200);
+    let got = (await agent().get(`/projects/${p.body.id}`)).body;
+    expect(got.verifyAtScope).toBe('project');
+    expect(got.exclusiveSuite).toBe(true);
+    expect((await agent().put(`/projects/${p.body.id}`).send({ verifyAtScope: null, exclusiveSuite: false })).status).toBe(200);
+    got = (await agent().get(`/projects/${p.body.id}`)).body;
+    expect(got.verifyAtScope ?? null).toBeNull();
+    expect(got.exclusiveSuite).toBe(false);
+  });
+
+  it('refuses values it does not know', async () => {
+    const p = await agent().post('/projects').send({ name: `vap-${++seq}` });
+    const bad = await agent().put(`/projects/${p.body.id}`).send({ verifyAtScope: 'repo' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toMatch(/'worktree' or 'project'/);
+    expect((await agent().put(`/projects/${p.body.id}`).send({ exclusiveSuite: 'yes' })).status).toBe(400);
   });
 });
