@@ -300,7 +300,8 @@ describe('exclusiveSuite: one suite run at a time in the project', { timeout: 60
     it(`two ${kind === 'capture' ? 'captures' : 'final-step verifies'} in an exclusive project do not overlap, while another project's run is not held back`, async () => {
       await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
       try {
-        const t = await exclusiveProject(kind, true);
+        // A's runs long enough that the git work before B's run, slow under a loaded full-suite run, cannot outlast A's first one.
+        const t = await exclusiveProject(kind, true, { A: RUN_MS * 5 });
         const rs = await Promise.all([...t.sameProject, t.otherProject].map(id => runVerify(kind, id)));
         for (const r of rs) expect(r.status, JSON.stringify(r.body)).toBe(200);
         const a = t.intervals('A');
