@@ -78,10 +78,10 @@ First release candidate for 2.0.0. Its release notes are the `2.0.0` section bel
 - `agenfk flow install` accepts community-registry flows again (#252).
 - `agenfk hub deadletter requeue` and surfaced refusals (#223).
 
-## [2.0.0] — Unreleased
+## [2.0.0] — 2026-10-22
 
-Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12` and `2.0.0-beta.1`
-through `2.0.0-beta.46`. 2.0 moves workflow enforcement into the server. A card moves forward only through
+Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12`, `2.0.0-beta.1`
+through `2.0.0-beta.46`, and `2.0.0-rc.1` through `2.0.0-rc.4`. 2.0 moves workflow enforcement into the server. A card moves forward only through
 `agenfk verify`, each step carries a role and checks the server runs from recorded evidence, and the final step
 runs the project's own verify command. The line also brings the desktop app, a board served from the API's own
 port, project ids kept out of version control, and hub-side flow adherence.
@@ -285,7 +285,12 @@ Not changed: storage is still the built-in `node:sqlite`.
   (`--test-report-related-command`), Markdown edits no test names skip the suite, the close stands on a green
   already on record, siblings share runs, and suite runs are queued server-wide (`maxConcurrentSuiteRuns`).
 - `agenfk verify --plan` and the gatekeeper say what leaving a step will run before it runs.
-- `verifyAt: parent` runs the suite once at the top-level card.
+- `verifyAt: parent` runs the suite once at the top-level card. With `verifyAtScope: project` (on the flow, or
+  `agenfk update-project <id> --verify-at-scope project`) a card in another worktree defers too; the parent's
+  verify then waits until its close commit is merged into the parent's branch (`DEFERRED_CHILD_UNMERGED`).
+- `agenfk update-project <id> --exclusive-suite on` runs one of a project's suites at a time, for suites that
+  share a database or fixed ports, without holding other projects back.
+- A PR's "Warnings the checks raised" lists only the warnings that held a card.
 - A failed verify command leaves the card where it is instead of rolling it back.
 - `agenfk update <id> --worktree <path>|none|inherit` chooses where a card runs; verify and the close commit
   run in the card's worktree.
@@ -318,6 +323,9 @@ Not changed: storage is still the built-in `node:sqlite`.
 - One visual system with the hub and flow editor, neutral dark mode, visible focus, AA contrast.
 - Created and updated dates on cards, a date filter, Settings in the browser board, drill-down into any card
   with children.
+- The board fits the window: columns share the width down to a 120px floor, so an 8-step flow fits 1,280px; a
+  compact mode fits it in 1,024px. The board remembers compact mode and which side columns are expanded.
+- A Project section in Settings, in the browser and the desktop app, for the open project's suite settings.
 
 **Installer and CLI**
 - Two-line upgrades, one-line `up`/`down`/`restart`/`kill`; step-by-step logs behind `--debuglog`.
