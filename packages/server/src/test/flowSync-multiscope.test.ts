@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
+import { removeTestDb } from './helpers/testDb';
 import { reconcileProjectFlow, runFlowSyncTick } from '../hub/flowSync';
 
 const baseSteps = [
@@ -52,8 +53,8 @@ describe('reconcileProjectFlow + per-project polling', () => {
     emit = vi.fn();
   });
 
-  afterEach(() => {
-    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+  afterEach(async () => {
+    await removeTestDb(dbPath, () => storage.shutdown());
   });
 
   it('binds each project to its effective flow', async () => {

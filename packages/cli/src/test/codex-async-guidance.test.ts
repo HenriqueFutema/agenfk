@@ -17,7 +17,9 @@ import { readFileSync } from 'fs';
 import path from 'path';
 
 const ROOT = path.resolve(__dirname, '../../../..');
-const bundle = readFileSync(path.join(ROOT, 'codexrules', 'AGENTS.md'), 'utf8');
+// LF-normalised: a Windows checkout (core.autocrlf) gives CRLF, and the heading
+// parser below is line-anchored.
+const bundle = readFileSync(path.join(ROOT, 'codexrules', 'AGENTS.md'), 'utf8').replace(/\r\n/g, '\n');
 
 /** Return the body of the section whose heading matches `re` (up to the next heading of same-or-higher level). */
 function sectionBody(markdown: string, re: RegExp): string | null {

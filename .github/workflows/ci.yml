@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # beta too (#249): betas are cut from the beta line, and a direct push
+    # there used to get no CI result at all.
+    branches: [main, beta]
   # No `branches:` filter on pull_request, deliberately. That filter matches the
   # PR's BASE branch, so it silently skipped every PR stacked on another PR's
   # branch — the mid-stack layers got no CI at all while the bottom one looked
@@ -23,7 +25,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build & Test
+    name: Linux · build + full suite (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -42,6 +44,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+        env:
+          # CI type-checks and tests the desktop package but never launches it,
+          # so skip Electron's ~275 MB prebuilt binary download.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
       - name: Build
         run: npm run build
@@ -52,28 +58,41 @@ jobs:
       - name: Test
         run: npm test
 
+      # THE UI SPECS (BUG 66dee896) run inside `npm test` above: the root
+      # vitest config carries packages/ui as its own project, under its own
+      # config (jsdom, react plugin, setup file), since 4ac25844 - the same run
+      # every agenfk gate reads, so a card can no longer break a board spec
+      # and pass.
+
       - name: Home-integrity verify (item 9c297075)
         run: node scripts/home-integrity.mjs verify
 
-  # Issue #201 — Windows coverage without paying for it in wall-clock time.
+  # Issue #208 — the WHOLE suite on Windows (it replaced the #201 subset run).
   #
-  # Independent of `build-and-test` (no `needs:`), so both start together and the
-  # workflow takes as long as the slower one. It builds only the packages whose
-  # code touches paths / child processes / installers (no vite UI builds) and runs
-  # the curated subset in vitest.windows.config.ts, under a HOME sandbox with a
-  # space and accents so the characters that broke real Windows users are hit on
-  # every run. `*.xplat.test.ts` specs are shared with the Linux job.
+  # Independent of `build-and-test` (no `needs:`), so both start together. A
+  # full local run on a managed Windows box takes over an hour; eight shards keep
+  # it near the Linux job's time (four took ~20 min: ~2.5 min of setup each plus
+  # an eighth of ~57 min of tests, the heaviest shard ~25% over the mean), and
+  # fail-fast is off so one red shard still reports the others. Each shard uploads its vitest JSON report, read per file.
   #
-  # Advisory (`continue-on-error`) while the subset proves stable; remove that
-  # line, then mark this job as a required check, once it has.
-  windows-compat:
-    name: Windows compat
+  # Under a HOME sandbox with a space and accents (#201), so the characters that
+  # broke real Windows users are hit on every run, and with the home-integrity
+  # check proving the run never touched the runner's real HOME. Git Bash, which
+  # is what Claude Code uses to run hooks on Windows.
+  #
+  # `npm run test:windows` (vitest.windows.config.ts) stays as a quick local
+  # subset; CI runs everything.
+  windows-full:
+    name: Windows · full suite (${{ matrix.shard }}/8)
     runs-on: windows-latest
-    continue-on-error: true
     defaults:
       run:
-        # Git Bash, which is what Claude Code uses to run hooks on Windows.
         shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
 
     steps:
       - name: Checkout
@@ -87,17 +106,50 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
-      - name: Build (platform-sensitive packages only)
-        run: npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server
+      - name: Build
+        run: npm run build
 
       - name: Home-integrity snapshot
         run: node scripts/home-integrity.mjs snapshot
 
-      - name: Test (Windows subset)
-        run: npm run test:windows
+      # Under a NATIVE Windows PATH: Git's usr\bin (MSYS touch, sleep, cat...) removed.
+      # The server runs verify commands through cmd.exe with the PATH it was started
+      # with; from PowerShell, cmd or the desktop app that has no coreutils, so a spec
+      # leaning on them must fail here too, not only for users (#208). git.exe and
+      # bash.exe (Git's cmd and bin dirs) stay.
+      - name: Test (shard ${{ matrix.shard }}/8)
+        shell: pwsh
+        run: |
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch '\\usr\\bin\\?$' }) -join ';'
+          npx vitest run --shard=${{ matrix.shard }}/8 --reporter=default --reporter=json --outputFile.json=vitest-windows-${{ matrix.shard }}.json
         env:
           AGENFK_TEST_UNICODE_HOME: '1'
 
       - name: Home-integrity verify
         run: node scripts/home-integrity.mjs verify
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vitest-windows-${{ matrix.shard }}
+          path: vitest-windows-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+
+  # "Windows compat" is a required status check on main's "Protect main branch"
+  # ruleset. It used to run the #201 subset; it now runs no tests and passes only
+  # when every windows-full shard did, so the required check means "the whole
+  # suite is green on Windows" and the ruleset needs no change. always(): a
+  # failed or cancelled shard must still produce a (red) result here, never a
+  # skipped one.
+  windows-compat:
+    name: Windows compat
+    needs: [windows-full]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every Windows shard passed
+        run: test "${{ needs.windows-full.result }}" = success

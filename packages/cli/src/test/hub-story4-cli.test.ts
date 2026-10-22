@@ -58,6 +58,20 @@ const HUB_CONFIG = path.join(AGENFK_DIR, 'hub.json');
 const VERIFY_TOKEN = path.join(AGENFK_DIR, 'verify-token');
 const AUDIT = path.join(AGENFK_DIR, 'hub-audit.jsonl');
 
+/**
+ * Make the audit append fail for real. POSIX: a directory the user cannot
+ * write. Windows ignores those bits (#208) but refuses to write a read-only file.
+ */
+function blockAuditWrites(): () => void {
+  if (process.platform !== 'win32') {
+    fs.chmodSync(AGENFK_DIR, 0o500);
+    return () => fs.chmodSync(AGENFK_DIR, 0o700);
+  }
+  if (!fs.existsSync(AUDIT)) fs.writeFileSync(AUDIT, '');
+  fs.chmodSync(AUDIT, 0o444);
+  return () => fs.chmodSync(AUDIT, 0o600);
+}
+
 const ORIGINAL = { url: 'https://hub.stg.example.com', token: 'tok-stg', orgId: 'staging' };
 
 function seed(): void {
@@ -377,12 +391,12 @@ describe('(c) repoint --carry-over gating', () => {
       if (url.includes('/internal/hub/reload')) return { status: 200, data: { changed: true } };
       return { status: 200, data: { ok: true, rewritten: 4 } };
     });
-    fs.chmodSync(AGENFK_DIR, 0o500);
+    const restore = blockAuditWrites();
     try {
       await expect(run(makeProgram(), repointArgs(['--carry-over', '--yes', '--no-restart']))).rejects.toThrow('exit 1');
       expect(errSpy.mock.calls.flat().join(' ')).toMatch(/REWRITE SUCCEEDED \(4 event\(s\)\) BUT THE AUDIT LINE FAILED TO WRITE/);
     } finally {
-      fs.chmodSync(AGENFK_DIR, 0o700);
+      restore();
     }
   });
 

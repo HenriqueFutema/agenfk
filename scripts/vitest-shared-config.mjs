@@ -62,11 +62,19 @@ export function sharedTest(
     // run serially: under load, bcrypt/AES-GCM in hub setup hooks and mocked
     // axios calls in upgrade-tier specs would otherwise trip the lower ceiling
     // on different files run-to-run, producing pseudo-random failures.
-    testTimeout: 30000,
-    hookTimeout: 30000,
+    // Doubled on Windows (#208): every git call and child process there costs
+    // several times what it does on POSIX, and the git-heavy server specs run
+    // 20-25s alone - a loaded run pushed them over 30s. A hang still fails.
+    testTimeout: process.platform === 'win32' ? 60000 : 30000,
+    hookTimeout: process.platform === 'win32' ? 60000 : 30000,
     // Repairs `localStorage` for jsdom specs — Node's own undefined global
     // clobbers jsdom's. See vitest.setup.ts.
     setupFiles: ['./vitest.setup.ts'],
+    // Deletes the HOME sandbox above once the run is over - with the server
+    // suite's sqlite databases in it (scripts/vitest-sandbox-teardown.mjs).
+    // Absolute: globalSetup resolves against the config's own root, and
+    // packages/hub-ui runs this config from its package directory.
+    globalSetup: [path.join(ROOT, 'scripts/vitest-sandbox-teardown.mjs')],
     include: opts.include,
     exclude: [
       '**/dist/**',

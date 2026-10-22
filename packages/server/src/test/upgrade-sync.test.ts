@@ -17,7 +17,7 @@ import { readUpgradeState, writeUpgradeState } from '../hub/upgradeState';
 
 let dbDir: string;
 beforeEach(() => { dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-upgrade-sync-')); });
-afterEach(() => { fs.rmSync(dbDir, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(dbDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 interface RecordedEvent { type: string; payload: any }
 

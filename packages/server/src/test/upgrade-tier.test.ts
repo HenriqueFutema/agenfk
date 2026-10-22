@@ -6,12 +6,30 @@
  *
  * All tests are intentionally failing until the feature is implemented.
  */
+import { removeTestDb, testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, clearReleaseCache } from '../server';
+import { app, initStorage, closeStorage, clearReleaseCache } from '../server';
 import { buildUpgradeNotice } from '../mcpUpgradeNotice';
 import * as fs from 'fs';
 import * as path from 'path';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -21,18 +39,18 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./upgrade-tier-test-db.sqlite');
+const TEST_DB = testDbPath('upgrade-tier-test-db.sqlite');
 const CLI_PKG_PATH = path.resolve(__dirname, '../../../cli/package.json');
 const SERVER_PATH = path.resolve(__dirname, '../server.ts');
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  await removeTestDb(TEST_DB, closeStorage);
   await initStorage();
 });
 
-afterAll(() => {
-  if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+afterAll(async () => {
+  await removeTestDb(TEST_DB, closeStorage);
 });
 
 afterEach(() => {
@@ -99,7 +117,7 @@ describe('GET /releases/latest — upgradeTier in response', () => {
     axios.get.mockResolvedValueOnce({
       data: { name: '@agenfk/cli', version: '1.2.3' }
     });
-    const res = await request(app).get('/releases/latest');
+    const res = await agent().get('/releases/latest');
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('upgradeTier');
     expect(res.body.upgradeTier).toBe('optional');
@@ -116,10 +134,12 @@ describe('GET /releases/latest — upgradeTier in response', () => {
         html_url: 'https://github.com/example/repo/releases/tag/v2.0.0',
       }
     });
+    // The release list (BUG 022b229a): latest is one candidate beside it.
+    axios.get.mockResolvedValueOnce({ data: [] });
     axios.get.mockResolvedValueOnce({
       data: { name: '@agenfk/cli', version: '2.0.0', agenfkUpgradeTier: 'mandatory' }
     });
-    const res = await request(app).get('/releases/latest');
+    const res = await agent().get('/releases/latest');
     expect(res.status).toBe(200);
     expect(res.body.upgradeTier).toBe('mandatory');
   });
@@ -135,10 +155,12 @@ describe('GET /releases/latest — upgradeTier in response', () => {
         html_url: 'https://github.com/example/repo/releases/tag/v1.5.0',
       }
     });
+    // The release list (BUG 022b229a): latest is one candidate beside it.
+    axios.get.mockResolvedValueOnce({ data: [] });
     axios.get.mockResolvedValueOnce({
       data: { name: '@agenfk/cli', version: '1.5.0', agenfkUpgradeTier: 'recommended' }
     });
-    const res = await request(app).get('/releases/latest');
+    const res = await agent().get('/releases/latest');
     expect(res.status).toBe(200);
     expect(res.body.upgradeTier).toBe('recommended');
   });
@@ -156,45 +178,14 @@ describe('GET /releases/latest — upgradeTier in response', () => {
     });
     // Second call fails (network error)
     axios.get.mockRejectedValueOnce(new Error('Network Error'));
-    const res = await request(app).get('/releases/latest');
+    const res = await agent().get('/releases/latest');
     expect(res.status).toBe(200);
     expect(res.body.upgradeTier).toBe('optional');
   });
 });
 
-// ── Story 4: ReleaseReminder.tsx — source analysis ───────────────────────────
-
-const RELEASE_REMINDER_PATH = path.resolve(__dirname, '../../../ui/src/components/ReleaseReminder.tsx');
-const readReleaseReminder = () =>
-  fs.existsSync(RELEASE_REMINDER_PATH) ? fs.readFileSync(RELEASE_REMINDER_PATH, 'utf8') : '';
-
-describe('ReleaseReminder.tsx — ReleaseInfo interface', () => {
-  it('should include upgradeTier in the ReleaseInfo interface', () => {
-    expect(readReleaseReminder()).toMatch(/upgradeTier/);
-  });
-
-  it('should type upgradeTier as "mandatory" | "recommended"', () => {
-    const src = readReleaseReminder();
-    expect(src).toMatch(/mandatory/);
-    expect(src).toMatch(/recommended/);
-  });
-});
-
-describe('ReleaseReminder.tsx — mandatory tier styling (source)', () => {
-  it('should apply red styling for mandatory tier', () => {
-    expect(readReleaseReminder()).toMatch(/mandatory.*red|red.*mandatory/i);
-  });
-
-  it('should hide or disable the Dismiss button for mandatory tier', () => {
-    expect(readReleaseReminder()).toMatch(/isMandatory.*[Dd]ismiss|[Dd]ismiss.*isMandatory|!isMandatory/i);
-  });
-});
-
-describe('ReleaseReminder.tsx — recommended tier styling (source)', () => {
-  it('should apply yellow/amber styling for recommended tier', () => {
-    expect(readReleaseReminder()).toMatch(/recommended.*yellow|yellow.*recommended|amber.*recommended|recommended.*amber/i);
-  });
-});
+// ── Story 4: ReleaseReminder tiers are pinned by rendered tests in
+// packages/ui/src/test/components.test.tsx (CGLAB-434), not by source greps.
 
 // ── Story 3: MCP response augmentation ───────────────────────────────────────
 
@@ -296,13 +287,16 @@ describe('GET /releases/latest — hub-only releases are never the framework ver
     const axios = (await import('axios')).default as any;
     axios.get
       .mockResolvedValueOnce({ data: { tag_name: 'v3.0.0', name: 'n', body: '', published_at: '2026-09-11T00:00:00Z', html_url: 'h', prerelease: false } })
+      .mockResolvedValueOnce({ data: [] })
       .mockResolvedValueOnce({ data: { agenfkUpgradeTier: 'recommended' } });
 
     const res = await request(app).get('/releases/latest');
     expect(res.body.tagName).toBe('v3.0.0');
     expect(res.body.upgradeTier).toBe('recommended');
-    // No second GitHub query for a healthy response.
-    expect(axios.get.mock.calls.filter((c: any[]) => String(c[0]).includes('api.github.com'))).toHaveLength(1);
+    // Exactly latest + the list. This used to pin ONE query for a healthy
+    // response; BUG 022b229a makes the list a candidate every time, because a
+    // healthy latest can still be an older line's hotfix (picked by date).
+    expect(axios.get.mock.calls.filter((c: any[]) => String(c[0]).includes('api.github.com'))).toHaveLength(2);
   });
 });
 

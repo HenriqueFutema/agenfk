@@ -77,6 +77,12 @@ const SCHEMA_SQLITE = `
     validate_passes INTEGER NOT NULL DEFAULT 0,
     validate_fails INTEGER NOT NULL DEFAULT 0,
     prs_opened INTEGER NOT NULL DEFAULT 0,
+    -- CGLAB-613: flow adherence rolled up from the stamped step.transitioned
+    -- payloads CGLAB-612 emits. judged = the event named a flowRevision;
+    -- compliant = both statuses were steps of that revision. Additive, 0 on
+    -- old rows, so a historical day stays out of both sides of the score.
+    transitions_judged INTEGER NOT NULL DEFAULT 0,
+    transitions_compliant INTEGER NOT NULL DEFAULT 0,
     -- '' means "this hub's own data". A child hub's id here keeps a group's
     -- series apart without a separate table or a WHERE clause on every
     -- existing query.
@@ -89,6 +95,9 @@ const SCHEMA_SQLITE = `
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
+    -- Display name as the identity provider reports it. Nullable: password
+    -- invites carry no name, and an IdP may withhold the claim.
+    name TEXT,
     password_hash TEXT,
     provider TEXT NOT NULL,
     provider_subject TEXT,
@@ -387,6 +396,35 @@ const SCHEMA_SQLITE = `
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Admin recovery (STORY a44f3697): the token a boot mints for the admin
+  -- AGENFK_HUB_RESET_ADMIN_EMAIL names. Only its sha256 is kept; single-use,
+  -- expires_at an ISO timestamp. See packages/hub/src/auth/adminRecovery.ts.
+  CREATE TABLE IF NOT EXISTS admin_recovery_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+
+  -- Config audit log (STORY a89af514): who changed which setting, when, from
+  -- where, before -> after. Append-only, kept forever; secrets never stored.
+  -- See packages/hub/src/services/configAudit.ts.
+  CREATE TABLE IF NOT EXISTS config_audit (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    actor_user_id TEXT,
+    actor_email TEXT,
+    source TEXT NOT NULL,
+    ip TEXT,
+    area TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT,
+    before_json TEXT,
+    after_json TEXT,
+    link TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_config_audit_org_at ON config_audit(org_id, at, id);
+
   -- People hidden by an admin (CGLAB-31), keyed on events.user_key
   -- (lowercased git email). Membership removes the person from selection
   -- surfaces (installation lists, upgrade targeting, admin actions) and
@@ -467,6 +505,18 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_user_key_aliases_merge ON user_key_aliases(merge_id);
 
+  -- A federation parent's record of child-hub developers' names (BUG 4159631f).
+  -- They have no installation here; the name comes from the forwarded actor,
+  -- recorded at /v1/federation/deliver and only for a keep-policy row.
+  CREATE TABLE IF NOT EXISTS child_people (
+    org_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    git_name TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (org_id, child_hub_id, user_key)
+  );
+
   CREATE TABLE IF NOT EXISTS hidden_users (
     org_id TEXT NOT NULL,
     user_key TEXT NOT NULL,
@@ -531,6 +581,52 @@ const SCHEMA_SQLITE = `
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (org_id, model)
   );
+
+
+  -- Hub-centralized JIRA (CGLAB-412). org_jira is the org's Atlassian OAuth
+  -- app, registered once by an admin; the secret is an AES-GCM blob
+  -- (crypto.ts). Each installation connects its OWN JIRA identity:
+  -- jira_connections is keyed by the installation's hub api key (its sha256),
+  -- so a relay call uses the caller's token and JIRA's own permissions apply
+  -- per person. token_enc holds {access_token, refresh_token}; NULL with a
+  -- last_error once the grant died. jira_oauth_pending holds a flow between
+  -- start and completion: the state, then the exchanged token awaiting the
+  -- starting key's redemption of a one-time completion code. Timestamps are
+  -- ISO TEXT written by the app, identical in both dialects.
+  CREATE TABLE IF NOT EXISTS org_jira (
+    org_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    client_secret_enc TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS jira_connections (
+    key_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    token_enc TEXT,
+    cloud_id TEXT,
+    cloud_url TEXT,
+    account_email TEXT,
+    connected_at TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jira_connections_org ON jira_connections(org_id);
+
+  CREATE TABLE IF NOT EXISTS jira_oauth_pending (
+    state TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    return_to TEXT NOT NULL,
+    completion_hash TEXT,
+    token_enc TEXT,
+    cloud_id TEXT,
+    cloud_url TEXT,
+    account_email TEXT,
+    claimed_at TEXT,
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jira_oauth_pending_completion ON jira_oauth_pending(completion_hash);
 `;
 
 class SqliteAdapter implements HubDb {
@@ -610,6 +706,15 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // delivered each event, so the admin Recent Events view can show "this
   // event was emitted by version X" and surface stuck-process drift.
   if (!have.has('reporting_version')) raw.exec("ALTER TABLE events ADD COLUMN reporting_version TEXT");
+
+  // users.name — every hub that predates the display-name fix has a users
+  // table without it. Without this backfill the sidebar keeps showing the
+  // raw UUID on exactly the deployments that already have users. (BUG
+  // f44b1128 / CGLAB-354.)
+  const userCols = raw.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('name')) {
+    raw.exec("ALTER TABLE users ADD COLUMN name TEXT");
+  }
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)
   // so /v1/projects shows one chip per repo. Idempotent — rows already at the
@@ -828,6 +933,10 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const rdCols = raw.prepare("PRAGMA table_info(rollups_daily)").all() as Array<{ name: string }>;
   const rdHave = new Set(rdCols.map(c => c.name));
   if (!rdHave.has('prs_opened')) raw.exec("ALTER TABLE rollups_daily ADD COLUMN prs_opened INTEGER NOT NULL DEFAULT 0");
+  // rollups_daily.transitions_judged / transitions_compliant — CGLAB-613 flow
+  // adherence. NOT NULL DEFAULT 0 so existing rows stay out of both sides.
+  if (!rdHave.has('transitions_judged')) raw.exec("ALTER TABLE rollups_daily ADD COLUMN transitions_judged INTEGER NOT NULL DEFAULT 0");
+  if (!rdHave.has('transitions_compliant')) raw.exec("ALTER TABLE rollups_daily ADD COLUMN transitions_compliant INTEGER NOT NULL DEFAULT 0");
 
   // flows.org_available — org-available flag.
   const flowCols = raw.prepare("PRAGMA table_info(flows)").all() as Array<{ name: string }>;

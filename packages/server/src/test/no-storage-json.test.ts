@@ -48,10 +48,10 @@ describe('storage-json removal', () => {
     expect(content).not.toContain('"packages/storage-json/src"');
   });
 
-  it('package-dist.mjs should not include storage-json', () => {
-    const script = path.join(ROOT, 'scripts/package-dist.mjs');
-    const content = fs.readFileSync(script, 'utf8');
-    expect(content).not.toContain('storage-json');
+  it('the dist manifest should not include storage-json', async () => {
+    // package-dist.mjs packs scripts/dist-manifest.mjs's list since #232.
+    const { DIST_INCLUDE } = await import('../../../../scripts/dist-manifest.mjs');
+    expect(DIST_INCLUDE.filter((p: string) => p.includes('storage-json'))).toEqual([]);
   });
 
   it('cli package.json should not depend on @agenfk/storage-json', () => {

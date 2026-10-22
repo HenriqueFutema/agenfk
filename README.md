@@ -29,6 +29,7 @@ Welcome to **AgEnFK**, a high-reliability, measurable, and visual framework desi
 - [GitHub Issues Sync](#github-issues-sync)
 - [Corporate Hub](#corporate-hub)
 - [Architecture Deep Dive](#architecture-deep-dive)
+- [Release Channels (`beta` and `main`)](docs/RELEASES.md)
 - [Custom Workflow Flows](#custom-workflow-flows)
 - [Quick Start](#quick-start)
 - [Operation Modes](#operation-modes)
@@ -72,7 +73,7 @@ Once the implementation is complete, the agent moves the card to **REVIEW** and 
 
 ### 4. Test verification
 
-The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card is automatically moved back to IN_PROGRESS and the agent fixes the issues — no manual intervention needed.
+The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card does not reach DONE: it stays on TEST and the agent fixes the issues and verifies again — no manual intervention needed.
 
 ### 5. Done
 
@@ -122,7 +123,7 @@ This will:
 >
 > Your choice is persisted in `~/.agenfk/config.json` and honored on every upgrade, so you only need to pass the flag once. You can also flip it later per-platform with `agenfk integration install <platform> --with-mcp` / `--no-mcp`. When MCP tools are present, agents may use them interchangeably with the CLI — the CLI commands remain the canonical, equivalent path.
 
-> **Requirements**: Node.js 22.5+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
+> **Requirements**: Node.js 22.12+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
 
 **To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup. A default (no `--with-mcp`) upgrade cleanly unregisters any stale agenfk MCP server, so you never end up in a half-state.
 
@@ -135,13 +136,13 @@ After installation, complete the setup:
     ```bash
     agenfk up
     ```
-    This launches the API server on `http://localhost:3000` and the Kanban UI (typically `http://localhost:5173`).
+    This launches the server on `http://localhost:3000`, which serves both the API and the Kanban board. The
+    board starts, stops and restarts with it (an upgrade's restart included).
 
-    To access the dashboard through a reverse proxy or tunnel, publish the UI
-    origin only (for example, `https://agenfk.example.com` → `localhost:5173`).
-    The dashboard uses same-origin API and WebSocket URLs, and the bundled Vite
-    preview server proxies those requests to the local API. Protect remote
-    access with authentication; the dashboard can modify workflow data.
+    To access the dashboard through a reverse proxy or tunnel, publish that one
+    origin (for example, `https://agenfk.example.com` → `localhost:3000`). The
+    dashboard uses same-origin API and WebSocket URLs. Protect remote access
+    with authentication; the dashboard can modify workflow data.
 
     Allow the public hostname when starting or restarting the services:
 
@@ -222,15 +223,17 @@ Paused integrations are tracked in `~/.agenfk/config.json` under `pausedIntegrat
 
 > **Supported platform IDs:** `claude`, `opencode`, `cursor`, `codex`, `gemini`. You can also use the alias `claude-code` for `claude`.
 >
-> **Note on [pi](https://pi.dev):** pi's native extension is managed by the main installer (and removed by `agenfk uninstall`), not by the `agenfk integration` / `pause` / `resume` commands. To remove just the pi extension, delete `~/.pi/agent/extensions/agenfk.ts`; re-run the installer to restore it.
+> **Note on [pi](https://pi.dev):** pi's native extension is managed by the main installer (and removed by the uninstaller, `node ~/.agenfk-system/scripts/uninstall.mjs`), not by the `agenfk integration` / `pause` / `resume` commands. To remove just the pi extension, delete `~/.pi/agent/extensions/agenfk.ts`; re-run the installer to restore it.
 
 ### Uninstalling AgEnFK
 
 To fully remove AgEnFK from your system:
 
 ```bash
-agenfk uninstall
+node ~/.agenfk-system/scripts/uninstall.mjs
 ```
+
+(or `/agenfk-uninstall` from your AI client).
 
 This removes:
 - All slash commands and skills from Claude Code, Opencode, and Gemini CLI
@@ -242,7 +245,13 @@ This removes:
 - The `~/.agenfk-system` framework files
 - The `agenfk` CLI symlink from `~/.local/bin`
 
-Your project data (`~/.agenfk/db.sqlite`, `~/.agenfk/config.json`) is **not** deleted by default, so you can reinstall later without losing your boards and history.
+Your data is **not** deleted by default, so you can reinstall later without losing your boards and history. That covers the board database (`~/.agenfk-system/.agenfk/` on a default install, or wherever `dbPath` in `~/.agenfk/config.json` points), the automatic backups in `~/.agenfk/backup/`, your hub enrolment (`~/.agenfk/hub.json`), `installation-id` and `config.json`. Only runtime files (the verify token, server port, active-work notes) are removed from `~/.agenfk`.
+
+To delete your data as well, pass `--purge-data` to the uninstall script:
+
+```bash
+node ~/.agenfk-system/scripts/uninstall.mjs --purge-data
+```
 
 **To uninstall only a specific editor integration** (leaving all others intact):
 
@@ -262,7 +271,13 @@ agenfk skills uninstall --project  # remove project-scoped rules & skills
 
 AgEnFK supports managing multiple distinct projects from a single unified backend.
 
-*   **Local Linking**: Each local repository is linked to a database project via a `.agenfk/project.json` file.
+*   **Local Linking**: Each local repository is linked to a database project by `agenfk init`, which writes the project id to `.agenfk/local.json`. That id is a row in *this machine's* database, so the file is git-ignored (`agenfk init` adds the rule). A fresh clone links with `agenfk init --project <id>`.
+*   **Shared settings**: `.agenfk/project.json` carries what the repository declares for everyone (`verifyCommand`, `flow`, `setupCommand`, ...) and is committed. It never holds the project id; re-running `agenfk init` in a repository whose `project.json` still does moves it into `local.json` (when this machine's server has that project). A git worktree has no `local.json` of its own and uses its main checkout's.
+    To commit `project.json` while keeping the rest of `.agenfk/` (the database, test reports, `local.json`) out of git, ignore the directory's contents rather than the directory, since a `!` rule cannot re-include a file under an ignored directory:
+    ```
+    .agenfk/*
+    !.agenfk/project.json
+    ```
 *   **Automatic Context Switching**: When an AI Agent or a developer (via the `agenfk` CLI, or MCP when enabled) starts working on a task, the API server automatically detects the project context and broadcasts an event via WebSockets.
 *   **Reactive Dashboard**: The Web UI instantly and automatically switches its Kanban view to the active project being worked on, keeping the developer perfectly in sync with the agent's actions.
 *   **Cross-Browser Drag & Drop**: Easily reorganize priorities with robust drag-and-drop card reordering that syncs instantly via WebSockets and optimistic UI updates.
@@ -336,7 +351,7 @@ AgEnFK ships an optional self-hosted **Corporate Hub** (`packages/hub` + `packag
     *   **Magic-link invite** — admin generates one (or several) invites in **Admin → API keys**; each rendered command is fully self-contained: `agenfk hub join https://hub.acme.com <token>`. No env-var dance, no pre-existing config required.
 *   **Invite-required SSO**. Google Workspace and Microsoft Entra (Azure AD) OIDC sign-in are supported, but a successful IdP handshake on its own does **not** create a hub user. An admin must have already invited that email. Un-invited emails get a 403 even when the email allowlist passes; the allowlist remains as a defense-in-depth gate. The first SSO sign-in for a password-invited user upgrades their row in place (provider flips from `password` → `google`/`entra`, same id and role). Admins can pre-create SSO-only invitees from a single **Auth method** toggle on the invite form.
 *   **Org isolation**. Every event, item, user, and api-key is scoped by `org_id`. A staging org and a production org can run on the same hub instance without bleeding into each other. The hub also supports an atomic **org rename** (`POST /v1/admin/orgs/rename` plus the `agenfk hub repoint` CLI on each spoke) for zero-touch staging→prod migration.
-*   **Leak-proof tenancy boundary**. The `orgId` stamp on each event is enforced on both sides: the hub answers ingest with **per-event rejection reasons** (`org_mismatch`, `foreign_installation`, …), and a spoke never even queues another org's events for delivery — stale-stamped rows stay put and surface via `agenfk hub status`. Hub refusals are preserved in a local **deadletter file** (`agenfk hub deadletter`) instead of being deleted, and the only way to move queued events across org stamps is `agenfk hub carry-over` — explicit, confirmed, and audited. See [`HUB_ARCHITECTURE.md`](./HUB_ARCHITECTURE.md) §5.6.
+*   **Leak-proof tenancy boundary**. The `orgId` stamp on each event is enforced on both sides: the hub answers ingest with **per-event rejection reasons** (`org_mismatch`, `foreign_installation`, …), and a spoke never even queues another org's events for delivery — stale-stamped rows stay put and surface via `agenfk hub status`. Hub refusals are preserved in a local **deadletter file** (`agenfk hub deadletter`) instead of being deleted, stay visible (`agenfk hub status`, the CLI banner, the board) until they are dealt with, and can be sent again with their original ids and dates once the cause is fixed (`agenfk hub deadletter requeue`, which checks the hub binding first). The only way to move queued events across org stamps is `agenfk hub carry-over` — explicit, confirmed, and audited. See [`HUB_ARCHITECTURE.md`](./HUB_ARCHITECTURE.md) §5.6.
 *   **Hub-managed workflow flows**. Define a flow once in **Admin → Flows**, assign it at org / project / installation scope, and every spoke reconciles to that definition on its next poll (per-project ETag-cached). Local writes to a hub-sourced flow are refused so the central definition stays canonical. Project-scoped overrides win over org-default; installation-scoped overrides win over both — useful for piloting a new flow with one team before rolling it out fleet-wide.
 *   **Fleet upgrade orchestration**. Admins issue an upgrade directive against a target version (sourced from a fleet-floor-filtered list of public GitHub releases) and a chosen scope (org-wide or specific installations). Each spoke polls, runs `agenfk upgrade --version <x>`, reports the on-disk outcome, and the **Admin → Upgrades** page renders rollout state with auto-refresh and per-installation reporting versions. Single-pending guard, downgrade confirmation, and an audit log keep the rollout safe.
 *   **Storage** is SQLite by default (single binary, no external deps) and **Postgres** for enterprise rollouts (`AGENFK_HUB_DB=postgres` with `AGENFK_HUB_PG_URL=postgres://…`). Both backends share the same async `HubDb` interface and run identical test suites under pg-mem.
@@ -518,7 +533,7 @@ The `agenfk` CLI commands (and the optional MCP tools) all talk to the API serve
 
 ### Can I use AgEnFK across multiple projects?
 
-Yes. Projects are independent records in the database. You can switch between them freely — the Kanban board shows all projects, and the CLI and MCP tools all accept a `--project` flag or read from a local `.agenfk/project.json` file.
+Yes. Projects are independent records in the database. You can switch between them freely — the Kanban board shows all projects, and the CLI and MCP tools all accept a `--project` flag or read the id from the git-ignored `.agenfk/local.json`.
 
 ---
 

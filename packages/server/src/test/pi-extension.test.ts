@@ -10,6 +10,8 @@ import activate, {
   envModel,
   resolveModelSource,
   preferredModelArg,
+  resolveHookRuntime,
+  gateTargetPath,
 } from '../../../../bin/agenfk-pi-extension.ts';
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -262,7 +264,7 @@ describe('readPiSessionModel (the transcript records the model that answered)', 
     } finally {
       if (saved === undefined) delete process.env.PI_SESSION_FILE;
       else process.env.PI_SESSION_FILE = saved;
-      fsp.rmSync(dir, { recursive: true, force: true });
+      fsp.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -608,7 +610,7 @@ describe('activate(): model detection uses env + transcript, not settings.json a
     } finally {
       if (saved === undefined) delete process.env.PI_SESSION_FILE;
       else process.env.PI_SESSION_FILE = saved;
-      fsp.rmSync(dir, { recursive: true, force: true });
+      fsp.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
@@ -643,6 +645,7 @@ function makeDeps(overrides: any = {}) {
   return {
     gatekeeperVerdict: vi.fn().mockReturnValue(null),
     enforcerVerdict: vi.fn().mockReturnValue(null),
+    readVerdict: vi.fn().mockReturnValue(null),
     prReminder: vi.fn().mockReturnValue(null),
     // Stubbed so activate() tests never read the real ~/.pi/agent/settings.json.
     readDefaultModel: () => null,
@@ -850,5 +853,117 @@ describe("buildDirective 'pi' case", () => {
     // @ts-ignore — .mjs has no .d.ts
     const { buildDirective } = await import('../../../../bin/agenfk-pr-hook.mjs');
     expect(buildDirective('pi', 'hello')).toEqual({ message: 'hello' });
+  });
+});
+
+// ── The hook runtime is not process.execPath on every host ───────────────────
+//
+// pi runs under Node, so process.execPath is the Node binary the hooks need.
+// The omp fork is a Bun standalone: process.execPath is the HOST binary, so
+// spawning it re-enters the host and times out, and every mutating tool slips
+// through. Resolve node explicitly, and on a Bun host never fall back to the
+// host binary (null = the callers fail closed).
+
+describe('resolveHookRuntime (a real runtime, not process.execPath)', () => {
+  const only = (...cmds: string[]) => (cmd: string) => cmds.includes(cmd);
+
+  it('prefers AGENFK_NODE when it answers', () => {
+    expect(resolveHookRuntime({ AGENFK_NODE: '/opt/node' }, {}, only('/opt/node', 'node'))).toBe('/opt/node');
+  });
+
+  it('ignores a broken AGENFK_NODE and falls back to node on PATH', () => {
+    expect(resolveHookRuntime({ AGENFK_NODE: '/gone' }, {}, only('node'))).toBe('node');
+  });
+
+  it('never returns the host binary on a Bun host without node', () => {
+    expect(resolveHookRuntime({}, { bun: '1.4.3' }, only())).toBeNull();
+  });
+
+  it('uses plain bun on a Bun host when node is absent', () => {
+    expect(resolveHookRuntime({}, { bun: '1.4.3' }, only('bun'))).toBe('bun');
+  });
+
+  it('keeps process.execPath on a Node host (pi)', () => {
+    expect(resolveHookRuntime({}, {}, only())).toBe(process.execPath);
+  });
+});
+
+describe('gateTargetPath (a device is not a file)', () => {
+  it('reads path, file_path and notebook_path', () => {
+    expect(gateTargetPath({ path: 'a.ts' })).toBe('a.ts');
+    expect(gateTargetPath({ file_path: 'b.ts' })).toBe('b.ts');
+    expect(gateTargetPath({ notebook_path: 'c.ipynb' })).toBe('c.ipynb');
+  });
+
+  it('skips the xd://ast_edit device and uses the real target', () => {
+    expect(gateTargetPath({ path: 'xd://ast_edit', paths: ['note.txt'] })).toBe('note.txt');
+  });
+
+  it('unwraps local:// and ignores empty/non-string entries', () => {
+    expect(gateTargetPath({ paths: ['local://note.txt'] })).toBe('note.txt');
+    expect(gateTargetPath({ paths: [42, '  ', 'real.ts'] })).toBe('real.ts');
+  });
+
+  it('returns undefined when there is no real path', () => {
+    expect(gateTargetPath({ path: 'xd://ast_edit' })).toBeUndefined();
+    expect(gateTargetPath(undefined)).toBeUndefined();
+  });
+});
+
+describe('activate(): the host\'s extra mutating tools are gated too', () => {
+  it('blocks ast_edit through the real path, not the xd:// device', async () => {
+    const { pi, fire } = makeFakePi();
+    const gatekeeperVerdict = vi.fn().mockReturnValue({ decision: 'block', reason: 'no active task' });
+    activate(pi as any, makeDeps({ gatekeeperVerdict }));
+
+    const result = await fire('tool_call', { toolName: 'ast_edit', input: { paths: ['note.txt'] } }, {});
+
+    expect(gatekeeperVerdict).toHaveBeenCalledWith('note.txt');
+    expect(result).toEqual({ block: true, reason: 'no active task' });
+  });
+
+  it('gates apply_patch, str_replace and write alike', async () => {
+    const { pi, fire } = makeFakePi();
+    const gatekeeperVerdict = vi.fn().mockReturnValue({ decision: 'block', reason: 'x' });
+    activate(pi as any, makeDeps({ gatekeeperVerdict }));
+
+    await fire('tool_call', { toolName: 'apply_patch', input: { path: 'a.ts' } }, {});
+    await fire('tool_call', { toolName: 'str_replace', input: { path: 'b.ts' } }, {});
+    await fire('tool_call', { toolName: 'write', input: { path: 'c.ts' } }, {});
+
+    expect(gatekeeperVerdict.mock.calls.map((c) => c[0])).toEqual(['a.ts', 'b.ts', 'c.ts']);
+  });
+
+  it('leaves a non-mutating tool alone', async () => {
+    const { pi, fire } = makeFakePi();
+    const gatekeeperVerdict = vi.fn().mockReturnValue({ decision: 'block', reason: 'x' });
+    activate(pi as any, makeDeps({ gatekeeperVerdict }));
+
+    expect(await fire('tool_call', { toolName: 'read', input: { path: 'a.ts' } }, {})).toBeUndefined();
+    expect(gatekeeperVerdict).not.toHaveBeenCalled();
+  });
+});
+
+// ── BUG ec325925: pi's read tool goes through the enforcer too ───────────────
+//
+// pi delegated only bash to agenfk-mcp-enforcer, so its `read` tool could open
+// .agenfk/db.sqlite directly - the one bypass the hook exists to stop.
+
+describe('activate(): pi read tool and the database files', () => {
+  it('blocks a read the enforcer refuses', async () => {
+    const { pi, fire } = makeFakePi();
+    const readVerdict = vi.fn().mockReturnValue({ decision: 'block', reason: 'Direct reads of AgenFK database files are forbidden.' });
+    activate(pi as any, makeDeps({ readVerdict }));
+
+    const result = await fire('tool_call', { toolName: 'read', input: { path: '/repo/.agenfk/db.sqlite' } }, {});
+
+    expect(readVerdict).toHaveBeenCalledWith('/repo/.agenfk/db.sqlite');
+    expect(result).toEqual({ block: true, reason: 'Direct reads of AgenFK database files are forbidden.' });
+  });
+
+  it('lets an ordinary read through', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps({ readVerdict: vi.fn().mockReturnValue(null) }));
+    expect(await fire('tool_call', { toolName: 'read', input: { path: '/repo/src/index.ts' } }, {})).toBeUndefined();
   });
 });

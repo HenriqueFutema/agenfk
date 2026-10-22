@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { SEMVER_TAG_RE } from '../util/semver.js';
 import { forwardEvents } from '../services/federation/forwarding.js';
+import { recomputeBackdatedDays, utcDayOf } from '../rollup.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { HubEvent } from '@agenfk/core';
@@ -12,21 +13,17 @@ import { isOnboardingKeyLabel } from '../util/keyLabel.js';
 
 
 /**
- * The hostname this request actually arrived on. Behind a proxy the real name
- * is in X-Forwarded-Host; req.headers.host is the internal one. Same precedence
- * as publicHubUrl in routes/connect.ts.
+ * The hostname this request actually arrived on: the Host header, which the
+ * proxy preserves. X-Forwarded-Host is NOT read - the production ALB never sets
+ * it, so every hop in it, first or last, was written by the client, and a
+ * repoint report could name the target host without having reached it.
  */
 function requestHost(req: Request): string | null {
-  // X-Forwarded-Host is client-controlled unless a proxy overwrites it, and a
-  // proxy APPENDS — so the leftmost element is whatever the caller supplied and
-  // the rightmost is the last hop that actually handled the request. Taking [0]
-  // would trust exactly the attacker-chosen value.
-  const fwdRaw = req.headers['x-forwarded-host'] as string | undefined;
-  const hops = fwdRaw ? fwdRaw.split(',').map(h => h.trim()).filter(Boolean) : [];
-  const host = (hops.length ? hops[hops.length - 1] : undefined)
-    || (req.headers.host as string | undefined)
-    || null;
-  return host ? host.split(':')[0].toLowerCase() : null;
+  const host = (req.headers.host as string | undefined) || null;
+  if (!host) return null;
+  // Parsed, not split on ':' - an IPv6 literal ("[::1]:4000") is all colons.
+  // Same normalisation as the campaign's allowed_host (URL.hostname).
+  try { return new URL(`http://${host}`).hostname.toLowerCase(); } catch { return null; }
 }
 
 export { sanitizeRemoteUrl } from '../util/remoteUrl.js';
@@ -129,7 +126,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
   const requireKey = requireApiKey(ctx.db);
 
   router.get('/ping', requireKey, (req: Request, res: Response) => {
-    res.json({ ok: true, orgId: req.hubApiKey!.orgId });
+    // installationId: the machine a bound key belongs to (null for an org-wide
+    // key). `agenfk hub deadletter requeue` checks it before resending (#223):
+    // a bound key refuses every event from any other installation.
+    res.json({ ok: true, orgId: req.hubApiKey!.orgId, installationId: req.hubApiKey!.installationId ?? null });
   });
 
   // Fleet poll endpoint (Story 2 of EPIC 541c12b3 — remote upgrade).
@@ -236,6 +236,9 @@ export function eventsRouter(ctx: HubServerContext): Router {
     // forwardEvents is a no-op and nothing is queued.
     const forwardable: Array<Record<string, unknown>> = [];
     const rejections: EventRejection[] = [];
+    // Days of the events actually stored (not skipped, not refused), for the
+    // backdated rollup repair after the transaction (#223).
+    const ingestedDays = new Set<string>();
     // Best-effort eventId for events that fail isValidEvent: they may lack it
     // entirely, which is often the very reason they are invalid.
     const eventIdOf = (ev: any): string | null =>
@@ -394,6 +397,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
         // local insert ignored is not news for the parent either.
         forwardable.push({ ...e, userKey });
         ingested++;
+        ingestedDays.add(utcDayOf(e.occurredAt));
         await ctx.db.run(UPSERT_INSTALLATION_SQL, [
           e.installationId, e.orgId, now, now,
           e.actor.osUser ?? null, e.actor.gitName ?? null, e.actor.gitEmail ?? null,
@@ -546,6 +550,18 @@ export function eventsRouter(ctx: HubServerContext): Router {
         + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
       );
     }
+    // Roll up the past days this batch stored (#223). The timer only rolls up
+    // from the latest rolled-up day forward, so an event dated before it — an
+    // outbox catching up after days offline, or a deadletter requeue resending
+    // refused events with their original occurredAt — would count in totals and
+    // the PR overview but never in the per-day series. After the transaction:
+    // the events are stored either way, and a failure here only warns.
+    try {
+      await recomputeBackdatedDays(ctx.db, orgId, ingestedDays);
+    } catch (err) {
+      console.warn('[ROLLUP] stored backdated events but could not roll up their days:', (err as Error).message);
+    }
+
     // Federation (CGLAB-184). Deliberately AFTER the ingest transaction and
     // outside it: queueing for the parent is a side effect of having stored an
     // event, never a condition of storing it.
