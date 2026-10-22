@@ -2,6 +2,24 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-rc.4] — 2026-10-22
+
+Fourth release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.3` (#262, PR #263; #264, PR #265):
+
+- **The board fits the window.** Step columns share the width down to a 120px floor (was 180px), so an 8-step flow
+  fits a 1,280px window instead of scrolling sideways below ~1,800px.
+- **Compact board mode.** A toggle next to Settings, in the browser and the desktop app, narrows columns to a 96px
+  floor and tightens the cards. An 8-step flow then fits 1,024px. Desktop layout only; the stacked mobile layout
+  keeps its cards.
+- **The board remembers its layout** per viewer: which side columns (Ideas, Paused, Blocked, Archived) are expanded,
+  and whether compact mode is on. They still start collapsed.
+- **Narrow columns stay readable.** Below 170px a column header hides its step icon so the title keeps its room, and
+  card rows wrap instead of running past the card's edge.
+- **Fixed: `exclusiveSuite` could let two suites run at once** when the setting was turned on while a run was
+  starting. A project read that was in flight across the change wrote the old value over it. A change to the
+  setting now wins.
+
 ## [2.0.0-rc.3] — 2026-10-21
 
 Third release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
