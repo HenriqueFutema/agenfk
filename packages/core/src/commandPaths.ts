@@ -201,30 +201,103 @@ const operatorLen = (command: string, at: number): number => {
   return (c === '&' || c === '|') && command[at + 1] === c ? 2 : 1;
 };
 
+/** A word's visible text: its own characters, with the quote characters out. */
+const visibleOf = (word: Word, command: string): string => word.src.map((at) => command[at]).join('');
+
 /**
- * The path a word names, in the ORIGINAL string, or null when the word names
- * none. A path is the whole word, or the part of a word after the first `=`, for
- * `--config=/repo/vitest.config.ts`.
+ * A redirection in front of a path: `<`, `>`, `>>`, `2>`, `&>`. The shell opens
+ * the file that follows, so `bash </opt/tools/check.sh` names a file exactly as
+ * `bash /opt/tools/check.sh` does (Codex review of RFC-002).
+ */
+const REDIRECTION = /^\d*(?:&?>>?|<)/;
+
+interface Piece {
+  start: number;
+  end: number;
+  text: string;
+  quoted: boolean;
+  /** A quote character sits INSIDE the piece (`/work/app/"scripts/x.js"`): no splice can keep it a valid word. */
+  embeddedQuote: boolean;
+}
+
+/**
+ * The parts of a word that may name a file: the whole word, the part after a
+ * redirection, and the part after the first `=` (`--config=/repo/vitest.config.ts`).
  *
  * `start` and `end` bracket the path's characters only: a quote around them is
  * not one of them, because the replacement moves the path and leaves the quoting
  * where it is — `bash "/repo/run all.sh"` has to come back with its quotes, or it
  * is two arguments and not one.
  */
-function pathPart(word: Word, command: string): { start: number; end: number; text: string; quoted: boolean } | null {
-  // The word's visible text: its own characters, with the quote characters out.
-  const visible = word.src.map((at) => command[at]).join('');
+function pieces(word: Word, command: string): Piece[] {
+  const visible = visibleOf(word, command);
+  const from = new Set<number>([0]);
+  const redir = REDIRECTION.exec(visible);
+  if (redir) from.add(redir[0].length);
   const eq = firstEquals(visible);
-  const candidates = eq < 0 ? [0] : [0, eq + 1];
-  for (const from of candidates) {
-    const text = visible.slice(from);
-    if (!looksLikePath(text)) continue;
-    const first = word.src[from];
+  if (eq >= 0) from.add(eq + 1);
+  const out: Piece[] = [];
+  for (const at of from) {
+    const first = word.src[at];
     const last = word.src[visible.length - 1];
     if (first === undefined || last === undefined) continue;
-    return { start: first, end: last + 1, text, quoted: word.quoted };
+    out.push({
+      start: first, end: last + 1, text: visible.slice(at), quoted: word.quoted,
+      embeddedQuote: /["']/.test(command.slice(first, last + 1)),
+    });
+  }
+  return out;
+}
+
+/** The path a word names, in the ORIGINAL string, or null when the word names none. */
+function pathPart(word: Word, command: string): Piece | null {
+  for (const p of pieces(word, command)) if (looksLikePath(p.text)) return p;
+  return null;
+}
+
+/**
+ * Where a relative path ends up, counted in directories below the repository
+ * root, starting from `depth` (where an earlier `cd` left the shell). Negative
+ * means it climbed out: `../tools/check.sh` from the root names a file beside
+ * the checkout, which no other clone has — the same machine-specific file an
+ * absolute path would name, written without a single `/` up front.
+ */
+function depthAfter(text: string, depth: number): number {
+  let d = depth;
+  for (const seg of text.split(SEPARATORS)) {
+    if (seg === '..') { d -= 1; if (d < 0) return d; } else if (seg && seg !== '.') d += 1;
+  }
+  return d;
+}
+
+/** The relative piece of a word that climbs out of the checkout, or null. */
+function climbingPiece(word: Word, command: string, depth: number): string | null {
+  for (const p of pieces(word, command)) {
+    if (looksLikePath(p.text) || p.text.includes('://') || !p.text.split(SEPARATORS).includes('..')) continue;
+    if (depthAfter(p.text, depth) < 0) return p.text;
   }
   return null;
+}
+
+/**
+ * Walk the command's words, tracking how deep a relative `cd` moved the shell
+ * below the root, and hand each word with that depth. A `cd` into a relative
+ * directory is itself checked for climbing; any other `cd` leaves the depth as
+ * it was, which only ever refuses more, never less.
+ */
+function* wordsWithDepth(command: string): Generator<{ word: Word; depth: number }> {
+  let depth = 0;
+  let prev: string | null = null;
+  for (const word of words(command)) {
+    const visible = visibleOf(word, command);
+    const isCdTarget = prev === 'cd';
+    yield { word, depth };
+    if (isCdTarget && !looksLikePath(visible) && !visible.includes('://')) {
+      const next = depthAfter(visible, depth);
+      if (next >= 0) depth = next;
+    }
+    prev = visible;
+  }
 }
 
 /** Offset of the first `=` in the visible text, or -1. */
@@ -299,9 +372,19 @@ export function normalizeCommandPaths(command: string, checkoutRoot: string | nu
   // whole command away, so a caller never gets a half-rewritten command.
   const refused: string[] = [];
   const replace: Array<{ start: number; end: number; from: string; to: string }> = [];
-  for (const word of words(command)) {
+  for (const { word, depth } of wordsWithDepth(command)) {
+    const climbing = climbingPiece(word, command, depth);
+    if (climbing) { refused.push(climbing); continue; }
     const part = pathPart(word, command);
     if (!part) continue;
+
+    // A quote INSIDE the path (`/work/app/"scripts/x.js"`) cannot survive a
+    // splice that moves only the path's characters: the opening quote would go
+    // with them and leave the closing one unmatched. Refused, not guessed at.
+    if (part.embeddedQuote) {
+      refused.push(part.text);
+      continue;
+    }
 
     // With no checkout there is nothing to make the path relative to.
     if (root === null || rootPlatform === null) {
@@ -382,7 +465,11 @@ export function normalizeCommandPaths(command: string, checkoutRoot: string | nu
  */
 export function machineSpecificPaths(command: string): string[] {
   const refused: string[] = [];
-  for (const word of words(command)) {
+  for (const { word, depth } of wordsWithDepth(command)) {
+    // A relative path that climbs above the root names a file beside the
+    // checkout, which is as machine-specific as an absolute one.
+    const climbing = climbingPiece(word, command, depth);
+    if (climbing) { refused.push(climbing); continue; }
     // `pathPart` is the shared judgement of which words are paths at all — a URL
     // and `/dev/null` are not, on either side. Everything left is a filesystem
     // path, and a filesystem path with no checkout to be relative to belongs to

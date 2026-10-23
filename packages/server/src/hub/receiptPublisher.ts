@@ -139,12 +139,24 @@ function reportOf(
   maxReportGzBytes: number,
 ): Record<string, unknown> | undefined {
   if (typeof logPath !== 'string' || !logPath) return undefined;
+  // The size first: a multi-gigabyte log refused on its size is never read into
+  // this process, which serves every other request while it reads.
+  let size: number;
+  try {
+    const st = fs.statSync(logPath);
+    if (!st.isFile()) return undefined;
+    size = st.size;
+  } catch {
+    return undefined;
+  }
+  if (size > maxReportBytes) return { omitted: 'over_cap', bytes: size };
   let plain: Buffer;
   try {
     plain = fs.readFileSync(logPath);
   } catch {
     return undefined;
   }
+  // The log may have grown between the stat and the read.
   if (plain.length > maxReportBytes) {
     // Say so, with the size, and send nothing — and do not spend a gzip on a
     // log already refused on its plain size.
@@ -208,6 +220,10 @@ async function publishOne(
     if (typeof body_?.id !== 'string' || !body_.id) {
       return { kind: 'pending', error: `Hub acknowledged ${res.status} without naming a receipt` };
     }
+    // An answer naming ANOTHER receipt acknowledged nothing we sent.
+    if (body_.id !== receipt.id) {
+      return { kind: 'pending', error: `Hub acknowledged ${res.status} naming a different receipt` };
+    }
     return {
       kind: 'acked',
       reusable: body_.reusable === true,
@@ -248,7 +264,22 @@ function refusalComment(receiptId: string, answer: Extract<HubAnswer, { kind: 'r
  * must not lose it. Only the `publication` of each receipt we touched is carried
  * over; everything else on the freshly-read card stands.
  */
-export async function publishPendingReceipts(args: PublishPendingReceiptsArgs): Promise<PublishReceiptsResult> {
+/**
+ * The pass in flight, if any. The close path and the polling tick both publish,
+ * and two overlapping passes would each write back what their own requests
+ * heard — an older 500 landing after a newer ack would undo the ack. So passes
+ * run one after another in this process: the next starts from the card the
+ * previous one wrote.
+ */
+let passInFlight: Promise<unknown> = Promise.resolve();
+
+export function publishPendingReceipts(args: PublishPendingReceiptsArgs): Promise<PublishReceiptsResult> {
+  const pass = passInFlight.catch(() => undefined).then(() => publishPass(args));
+  passInFlight = pass;
+  return pass;
+}
+
+async function publishPass(args: PublishPendingReceiptsArgs): Promise<PublishReceiptsResult> {
   const maxReportBytes = args.maxReportBytes ?? DEFAULT_MAX_REPORT_BYTES;
   const maxReportGzBytes = args.maxReportGzBytes ?? DEFAULT_MAX_REPORT_GZ_BYTES;
   const result: PublishReceiptsResult = { acked: 0, rejected: 0, pending: 0 };
@@ -313,8 +344,11 @@ export async function publishPendingReceipts(args: PublishPendingReceiptsArgs): 
       if (!current) return; // closed or deleted while we were talking; nothing to remember it for
       const cur: any = current;
       const currentReceipts: any[] = Array.isArray(cur[array]) ? cur[array] : [];
+      // A settled receipt stays settled: whatever wrote `acked` or `rejected`
+      // meanwhile heard the hub more recently than a `pending` we hold.
+      const settled = (r: any) => r?.publication?.state === 'acked' || r?.publication?.state === 'rejected';
       const merged = currentReceipts.map((r: any) =>
-        r && updates.has(r.id) ? { ...r, publication: updates.get(r.id) } : r,
+        r && updates.has(r.id) && !settled(r) ? { ...r, publication: updates.get(r.id) } : r,
       );
       const write: Record<string, unknown> = { [array]: merged };
       if (comments.length) {

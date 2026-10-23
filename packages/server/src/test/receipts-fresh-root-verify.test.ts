@@ -347,6 +347,58 @@ describe('in receipts mode the root card final gate runs the command, and the pa
       'the card says nothing about the receipt the run did not earn').toBe(true);
   });
 
+  // Codex review of RFC-002: a project in a SUBDIRECTORY of the repository. The
+  // receipt names the whole repository's tree, so a change beside the project
+  // that lands during the close (here a pre-commit hook staging a sibling
+  // package) is content no run tested. Posix only: the hook is a shell script.
+  const subdirProject = async (withHook: boolean) => {
+    const dir = makeRepo({ 'app/tests/a.test.js': 'test', 'app/src.js': 'export const a = 1;\n', 'app/.gitignore': 'report.*\n', 'sibling/x.txt': 'one\n' });
+    if (withHook) {
+      const hook = path.join(dir, '.git', 'hooks', 'pre-commit');
+      fs.writeFileSync(hook, '#!/bin/sh\necho hooked >> sibling/x.txt && git add sibling/x.txt\n', { mode: 0o755 });
+    }
+    const app = path.join(dir, 'app');
+    const suite = counted('suite');
+    const pid = await project(await finalOnly(), reported(app, suite.command));
+    await inReceiptsMode(pid, suite.command, 'shadow');
+    const id = await card(pid, 'FINAL');
+    // Staged work of the card's own, so the close makes a commit (and the hook runs).
+    fs.writeFileSync(path.join(app, 'src.js'), 'export const a = 2;\n');
+    git(dir, 'git add app/src.js');
+    return { dir, id };
+  };
+  /**
+   * The close commit is switched off under Vitest (server.ts reads NODE_ENV and
+   * VITEST when the close runs). These two tests are ABOUT what lands in that
+   * commit, so they lift the switch for the one validate and put it back.
+   */
+  const validateWithCloseCommit = async (id: string) => {
+    const saved = { NODE_ENV: process.env.NODE_ENV, VITEST: process.env.VITEST };
+    delete process.env.NODE_ENV; delete process.env.VITEST;
+    try { return await validate(id); } finally {
+      if (saved.NODE_ENV !== undefined) process.env.NODE_ENV = saved.NODE_ENV;
+      if (saved.VITEST !== undefined) process.env.VITEST = saved.VITEST;
+    }
+  };
+
+  it.skipIf(process.platform === 'win32')('CONTROL - a project in a subdirectory gets its receipt when nothing beside it moves', async () => {
+    const { id } = await subdirProject(false);
+    const res = await validateWithCloseCommit(id);
+    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
+    expect(receiptsOf(await read(id)), JSON.stringify(commentsOf(await read(id)).slice(-2))).toHaveLength(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('no receipt when content beside a subdirectory project changed during the close', async () => {
+    const { dir, id } = await subdirProject(true);
+    const res = await validateWithCloseCommit(id);
+    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
+    // The hook really did land its change in the commit the receipt would name.
+    expect(fs.readFileSync(path.join(dir, 'sibling/x.txt'), 'utf8')).toContain('hooked');
+    expect(execSync('git status --porcelain', { cwd: dir, encoding: 'utf8' }).trim()).toBe('');
+    expect(receiptsOf(await read(id))).toHaveLength(0);
+    expect(commentsOf(await read(id)).map((c: any) => c.content).join('\n')).toMatch(/No verification receipt/);
+  });
+
   it('a failing run closes nothing and makes no receipt', async () => {
     const dir = makeRepo();
     const suite = countedButFailing('suite');

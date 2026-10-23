@@ -719,6 +719,11 @@ const SCHEMA_SQLITE = `
   CREATE INDEX IF NOT EXISTS idx_receipts_repo
     ON receipts(org_id, remote_url, kind, content_tree);
 
+  CREATE INDEX IF NOT EXISTS idx_receipts_card
+    ON receipts(org_id, remote_url, kind, card_id, received_at);
+  CREATE INDEX IF NOT EXISTS idx_receipts_recent
+    ON receipts(org_id, remote_url, received_at);
+
   -- CI read tokens (RFC-002). A ci_ token is what a CI job presents to read
   -- receipts, and nothing else: it lives in its own table so that no route
   -- taking an installation's api key can ever accept one (it cannot write

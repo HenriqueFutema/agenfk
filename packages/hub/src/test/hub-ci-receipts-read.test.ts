@@ -455,6 +455,18 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub CI read tokens and receipts 
       expect(one.body.producerAllowed).toBe(false);
     });
 
+    it('says when the evidence itself was made, which is not when the hub received it', async () => {
+      // A receipt that waited offline arrives late: its run finished long before.
+      await publish(verification({ execution: { ...verification().execution, finishedAt: '2020-01-02T03:04:05.000Z' } }));
+      await publish(review(['general'], { review: { ...review(['general']).review, recordedAt: '2020-02-03T04:05:06.000Z' } }));
+      const { token } = await mint({ repo: REPO_HTTPS });
+      const v = await lookup(token, { repo: REPO_HTTPS, kind: 'verification', tree: TREE });
+      expect(v.body.receipts[0].evidenceAt).toBe('2020-01-02T03:04:05.000Z');
+      expect(v.body.receipts[0].receivedAt > '2026').toBe(true);
+      const rv = await lookup(token, { repo: REPO_HTTPS, kind: 'review', tree: TREE });
+      expect(rv.body.receipts[0].evidenceAt).toBe('2020-02-03T04:05:06.000Z');
+    });
+
     it('says a receipt published without a report has none', async () => {
       await publish(verification(), false);
       const { token } = await mint({ repo: REPO_HTTPS });

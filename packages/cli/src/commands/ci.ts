@@ -124,6 +124,8 @@ interface Candidate {
   installationId: string;
   producerAllowed: boolean;
   receivedAt: string;
+  /** When the evidence was made (the run's finish, the review's record); null when the receipt cannot say. */
+  evidenceAt?: string | null;
   lenses?: string[];
   report: { available: boolean; bytes: number | null };
 }
@@ -137,16 +139,27 @@ interface Lookup {
 
 class HubError extends Error {}
 
-async function hubGet(hubUrl: string, token: string, pathAndQuery: string, timeoutMs: number): Promise<Response> {
+/**
+ * GET one hub path and read its WHOLE body under one deadline. The deadline
+ * covers the body as well as the headers: a hub that answers 200 and then
+ * stalls would otherwise hold CI forever (Codex review).
+ */
+async function hubGet<T>(hubUrl: string, token: string, pathAndQuery: string, timeoutMs: number, read: (res: Response) => Promise<T>): Promise<T> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const where = pathAndQuery.split('?')[0];
   try {
     const res = await fetch(`${hubUrl.replace(/\/+$/, '')}${pathAndQuery}`, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
       signal: ctl.signal,
     });
-    if (!res.ok) throw new HubError(`the hub answered ${res.status} for ${pathAndQuery.split('?')[0]}`);
-    return res;
+    if (!res.ok) throw new HubError(`the hub answered ${res.status} for ${where}`);
+    try {
+      return await read(res);
+    } catch (e) {
+      if (ctl.signal.aborted) throw e;
+      throw new HubError(`the hub's answer for ${where} could not be read`);
+    }
   } catch (e) {
     if (e instanceof HubError) throw e;
     throw new HubError(ctl.signal.aborted ? `the hub did not answer within ${timeoutMs} ms` : `the hub could not be reached: ${(e as Error).message}`);
@@ -155,15 +168,8 @@ async function hubGet(hubUrl: string, token: string, pathAndQuery: string, timeo
   }
 }
 
-/** Read the whole body under the same deadline as the request. */
-async function hubJson<T>(hubUrl: string, token: string, p: string, timeoutMs: number): Promise<T> {
-  const res = await hubGet(hubUrl, token, p, timeoutMs);
-  try {
-    return await res.json() as T;
-  } catch {
-    throw new HubError(`the hub's answer for ${p.split('?')[0]} is not JSON`);
-  }
-}
+const hubJson = <T>(hubUrl: string, token: string, p: string, timeoutMs: number): Promise<T> =>
+  hubGet(hubUrl, token, p, timeoutMs, async (res) => (await res.json()) as T);
 
 const isLookup = (v: any): v is Lookup =>
   !!v && typeof v === 'object' && !!v.settings && typeof v.settings.receiptsMode === 'string' && Array.isArray(v.receipts);
@@ -219,15 +225,21 @@ export interface CiCheckOptions extends CiContext {
   now?: Date;
 }
 
+const isRevision = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v > 0;
+
 /** Why `c` cannot stand in for this step, or null when it can. Checked in this order. */
 function disqualify(c: Candidate, opts: CiCheckOptions, settings: Lookup['settings'], now: Date): CiReason | null {
   if (c.kind !== opts.kind || c.contentTree !== opts.tree) return 'tree_mismatch';
-  if (opts.kind === 'verification' && (c.commandRevision === null || c.commandRevision !== settings.revision)) return 'command_revision_changed';
+  // Both revisions must BE revisions: two missing ones are not equal (Codex review).
+  if (opts.kind === 'verification'
+    && !(isRevision(c.commandRevision) && isRevision(settings.revision) && c.commandRevision === settings.revision)) return 'command_revision_changed';
   if (opts.kind === 'review' && !(c.lenses ?? []).includes(opts.lens as string)) return 'lens_not_covered';
   if (c.reusable !== true) return 'not_reusable';
   if (c.producerAllowed !== true) return 'producer_not_allowed';
   if (opts.maxAgeDays != null) {
-    const age = now.getTime() - Date.parse(c.receivedAt);
+    // From when the evidence was MADE: a receipt that waited offline for weeks
+    // reaches the hub "new" and is still weeks old (Codex review).
+    const age = now.getTime() - Date.parse(c.evidenceAt ?? '');
     if (!Number.isFinite(age) || age > opts.maxAgeDays * 864e5) return 'stale';
   }
   if (opts.kind === 'verification' && !c.report?.available) return 'report_unavailable';
@@ -256,13 +268,18 @@ function choose(candidates: Candidate[], opts: CiCheckOptions, settings: Lookup[
 async function fetchEvidence(c: Candidate, opts: CiCheckOptions): Promise<{ files: string[]; receipt: any }> {
   const id = encodeURIComponent(c.id);
   const full = await hubJson<any>(opts.hubUrl, opts.token, `/v1/ci/receipts/${id}`, opts.timeoutMs);
+  // The detail must BE this receipt, of this kind, and a review must carry its
+  // findings: a 200 with anything else is evidence nobody downloaded (Codex review).
+  const receipt = full?.receipt;
+  if (!receipt || receipt.id !== c.id || receipt.kind !== opts.kind) throw new EvidenceError();
+  if (opts.kind === 'review' && !Array.isArray(receipt.review?.findings)) throw new EvidenceError();
   fs.mkdirSync(opts.reportDir, { recursive: true });
   const safe = c.id.replace(/[^A-Za-z0-9._-]/g, '_');
   const files: string[] = [];
   if (opts.kind === 'verification') {
     let log: string;
     try {
-      log = await (await hubGet(opts.hubUrl, opts.token, `/v1/ci/receipts/${id}/report`, opts.timeoutMs)).text();
+      log = await hubGet(opts.hubUrl, opts.token, `/v1/ci/receipts/${id}/report`, opts.timeoutMs, (res) => res.text());
     } catch {
       throw new EvidenceError();
     }
@@ -271,10 +288,10 @@ async function fetchEvidence(c: Candidate, opts: CiCheckOptions): Promise<{ file
     files.push(file);
   } else {
     const file = path.join(opts.reportDir, `${safe}.findings.json`);
-    fs.writeFileSync(file, JSON.stringify(full?.receipt?.review?.findings ?? [], null, 2));
+    fs.writeFileSync(file, JSON.stringify(receipt.review.findings, null, 2));
     files.push(file);
   }
-  return { files, receipt: full?.receipt ?? null };
+  return { files, receipt };
 }
 
 class EvidenceError extends Error {}
@@ -328,13 +345,17 @@ function summaryMarkdown(r: CiCheckResult, match: Candidate | null, receipt: any
 
 function writeOutputs(r: CiCheckResult, opts: CiCheckOptions, markdown: string): void {
   if (opts.githubOutput) {
+    // One line per output: a value carrying a newline (a receipt id from the
+    // hub, say) would otherwise start a line of its own and forge another
+    // output, `run=false` included (Codex review).
+    const oneLine = (v: unknown) => String(v ?? '').replace(/[\r\n]+/g, ' ');
     const lines = [
       `run=${r.outcome === 'reuse' ? 'false' : 'true'}`,
       `decision=${r.outcome}`,
       `reason=${r.reason}`,
-      `receipt-id=${r.receiptId ?? ''}`,
+      `receipt-id=${oneLine(r.receiptId)}`,
       `would-reuse=${r.wouldReuse}`,
-      `mode=${r.mode ?? ''}`,
+      `mode=${oneLine(r.mode)}`,
     ];
     fs.appendFileSync(opts.githubOutput, lines.join('\n') + '\n');
   }

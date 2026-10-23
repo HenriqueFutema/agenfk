@@ -202,6 +202,39 @@ describe('hub receiptPublisher.publishPendingReceipts', () => {
     expect(zlib.gunzipSync(Buffer.from(calls[0].body.report.data, 'base64')).toString()).toBe(LOG_TEXT);
   });
 
+  // Codex review of RFC-002: an answer naming ANOTHER receipt acknowledges nothing.
+  it('a 2xx naming a different receipt id is NOT an acknowledgement of this one', async () => {
+    const rcpt = receipt();
+    await seed([rcpt]);
+    const { fetchImpl } = makeHubFetch(() => ({ status: 201, body: { id: 'someone-else', stored: 'new', reusable: true, reason: null } }));
+    const result = await publishPendingReceipts(args(fetchImpl));
+    expect(result).toMatchObject({ acked: 0, pending: 1 });
+    expect((await published())[0].publication.state).toBe('pending');
+  });
+
+  // Codex review of RFC-002: the close path and the polling tick both publish.
+  // Overlapping, an older 500 landing after a newer ack must not undo the ack.
+  it('two publishes at once never overlap, and an ack is never undone by a later failure', async () => {
+    const rcpt = receipt();
+    await seed([rcpt]);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let call = 0;
+    const fetchImpl = vi.fn(async () => {
+      call += 1;
+      const mine = call;
+      inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
+      // The first request is slow and fails; any later one succeeds at once.
+      if (mine === 1) await new Promise(r => setTimeout(r, 60));
+      inFlight -= 1;
+      const status = mine === 1 ? 500 : 201;
+      return { status, ok: status < 300, headers: { get: () => null }, json: async () => (status === 201 ? { id: rcpt.id, reusable: true, reason: null } : {}) } as any;
+    }) as unknown as FetchLike;
+    await Promise.all([publishPendingReceipts(args(fetchImpl)), publishPendingReceipts(args(fetchImpl))]);
+    expect(maxInFlight, 'the two passes ran one after the other').toBe(1);
+    expect((await published())[0].publication.state).toBe('acked');
+  });
+
   it('an acked receipt is never published again', async () => {
     const rcpt = receipt();
     await seed([rcpt]);

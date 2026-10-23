@@ -230,6 +230,33 @@ describe('Admin → Repositories: one repository', () => {
   });
 });
 
+// Codex review: `reusable` is decided when a receipt arrives; the allowlist is
+// read NOW. A receipt from a producer removed since is one CI refuses.
+describe('Admin → Repositories: a producer removed since', () => {
+  it('shows its receipts as not reusable, saying why', async () => {
+    hubAnswers({ '/v1/admin/repos/receipts': { receipts: [{ ...RECEIPTS[0], producerAllowed: false }] } });
+    renderAt(detailUrl);
+    const table = await screen.findByRole('table', { name: /recent receipts/i });
+    const row = (await within(table).findByText('Ship receipts')).closest('tr')!;
+    expect(within(row).queryByText('Reusable')).not.toBeInTheDocument();
+    expect(within(row).getByText('Not reusable')).toBeInTheDocument();
+    expect(within(row).getByText(/no longer an allowed producer/i)).toBeInTheDocument();
+  });
+
+  it('refreshes the receipts after the allowlist changes', async () => {
+    hubAnswers();
+    put.mockResolvedValue({ data: repoRow({ producers: [] }) });
+    renderAt(detailUrl);
+    const producers = await screen.findByRole('region', { name: /producers/i });
+    await within(producers).findByText(/alice@acme.test/);
+    const receiptReads = () => get.mock.calls.filter(([u]) => String(u).startsWith('/v1/admin/repos/receipts')).length;
+    await waitFor(() => expect(receiptReads()).toBe(1));
+    fireEvent.click(within(producers).getByRole('button', { name: /remove producer alice@acme.test/i }));
+    await answerConfirm(true);
+    await waitFor(() => expect(receiptReads()).toBe(2));
+  });
+});
+
 describe('Admin → API keys: CI tokens', () => {
   it('issues a read-only CI token for one repository, and shows it once', async () => {
     hubAnswers();

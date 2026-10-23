@@ -258,3 +258,53 @@ describe('machineSpecificPaths() — the hub’s view, with no checkout', () => 
     expect(machineSpecificPaths('curl https://example.com/x > /dev/null')).toEqual([]);
   });
 });
+
+// Codex review of RFC-002: three ways a command reached outside the checkout, or
+// came back broken, without a single absolute path being written.
+describe('relative paths that climb out of the checkout', () => {
+  it('refuses a `..` that leaves the repository root, on both sides of the rule', () => {
+    for (const command of ['bash ../tools/check.sh', 'bash ./scripts/../../other/verify.sh', 'node --config=../x.json run', 'bash ..']) {
+      const r = normalizeCommandPaths(command, ROOT);
+      expect(r.ok, command).toBe(false);
+      expect(machineSpecificPaths(command).length, command).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps a `..` that stays inside the checkout', () => {
+    for (const command of ['bash scripts/../verify.sh', 'node ./a/b/../c.js']) {
+      expect(normalizeCommandPaths(command, ROOT)).toMatchObject({ ok: true, command });
+      expect(machineSpecificPaths(command), command).toEqual([]);
+    }
+  });
+
+  it('measures a `..` from the directory a `cd` moved to, so a monorepo command is not refused', () => {
+    const command = 'cd packages/a && node ../../scripts/x.js';
+    expect(normalizeCommandPaths(command, ROOT)).toMatchObject({ ok: true, command });
+    expect(machineSpecificPaths(command)).toEqual([]);
+    expect(normalizeCommandPaths('cd packages/a && node ../../../x.js', ROOT).ok).toBe(false);
+  });
+});
+
+describe('redirections name paths too', () => {
+  it('rewrites an in-checkout redirection target and refuses an outside one', () => {
+    expect(normalizeCommandPaths('npm test >/work/app/out.log', ROOT)).toMatchObject({ ok: true, command: 'npm test >./out.log' });
+    expect(normalizeCommandPaths('bash </opt/tools/check.sh', ROOT).ok).toBe(false);
+    expect(machineSpecificPaths('bash </opt/tools/check.sh')).toEqual(['/opt/tools/check.sh']);
+    expect(machineSpecificPaths('npm test 2>/tmp/err.log')).toEqual(['/tmp/err.log']);
+  });
+
+  it('still leaves device redirections alone', () => {
+    expect(machineSpecificPaths('npm test >/dev/null 2>&1')).toEqual([]);
+  });
+});
+
+describe('a path with a quote inside it', () => {
+  it('is refused rather than spliced into an unmatched quote', () => {
+    const r = normalizeCommandPaths('node /work/app/"scripts/verify.js"', ROOT);
+    expect(r.ok).toBe(false);
+  });
+
+  it('a path quoted whole is still rewritten, quotes kept', () => {
+    expect(normalizeCommandPaths('bash "/work/app/run all.sh"', ROOT)).toMatchObject({ ok: true, command: 'bash "./run all.sh"' });
+  });
+});

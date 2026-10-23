@@ -55,6 +55,9 @@ export const DEFAULT_REPORT_MAX_BYTES = 32 * 1024 * 1024;
 /** A receipt id is minted by the client and is the row's primary key. Bounded. */
 export const MAX_RECEIPT_ID_LENGTH = 64;
 
+/** What a receipt id may be made of: what a uuid or a short dotted name holds. */
+const RECEIPT_ID_CHARS = /^[A-Za-z0-9._:-]+$/;
+
 /**
  * A git remote names a host. `sanitizeRemoteUrl` is a CANONICISER, not a
  * validator: whatever does not parse it comes back lower-cased and stripped,
@@ -172,6 +175,12 @@ function validId(input: unknown): string {
   if (typeof input !== 'string' || !input.trim()) throw new ReceiptError('invalid_receipt', 'receipt.id is required');
   if (input.length > MAX_RECEIPT_ID_LENGTH) {
     throw new ReceiptError('invalid_receipt', `receipt.id is longer than ${MAX_RECEIPT_ID_LENGTH} characters`);
+  }
+  // The id travels into CI: GITHUB_OUTPUT lines, step summaries, file names. A
+  // newline in it could forge another output line (`run=false`), so ids are
+  // the characters clients actually mint and nothing else (Codex review).
+  if (!RECEIPT_ID_CHARS.test(input)) {
+    throw new ReceiptError('invalid_receipt', 'receipt.id may hold only letters, digits and . _ : -');
   }
   return input;
 }
@@ -312,6 +321,17 @@ export async function storeReceipt(
     throw new ReceiptError('invalid_receipt', `receipt.kind must be one of ${RECEIPT_KINDS.join(', ')}`);
   }
   if (rcpt.version !== 1) throw new ReceiptError('invalid_receipt', 'receipt.version must be 1');
+  // A review CI may stand in for has to say what it covered and what it found:
+  // a receipt with no findings list would let a step skip on a review whose
+  // outcome nobody can read (Codex review). An empty list is a clean review.
+  if (kind === 'review') {
+    const review = rcpt.review as { findings?: unknown; lenses?: unknown } | undefined;
+    if (!review || typeof review !== 'object') throw new ReceiptError('invalid_receipt', 'a review receipt needs receipt.review');
+    if (!Array.isArray(review.findings)) throw new ReceiptError('invalid_receipt', 'receipt.review.findings must be a list');
+    if (!Array.isArray(review.lenses) || review.lenses.length === 0 || !review.lenses.every(l => typeof l === 'string' && l)) {
+      throw new ReceiptError('invalid_receipt', 'receipt.review.lenses must name at least one lens');
+    }
+  }
 
   // The report is validated before anything is written: a request whose log is
   // not a log wrote no receipt, rather than a receipt with a broken attachment.

@@ -214,6 +214,44 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub receipts store (%s)', (backe
   });
 
   // ── a first receipt ──────────────────────────────────────────────────────
+  // Codex review of RFC-002.
+  describe('POST /v1/receipts — what a receipt must be', () => {
+    it('refuses an id with characters CI output cannot carry safely (a newline could forge a step output)', async () => {
+      for (const id of ['r\nrun=false', 'r\rx', 'a b', 'r;x', 'r"x']) {
+        const r = await post(keyA, body(receipt({ id })));
+        expect(r.status, JSON.stringify({ id, body: r.body })).toBe(400);
+        expect(r.body.code).toBe('invalid_receipt');
+      }
+      expect(await rows()).toHaveLength(0);
+    });
+
+    it('takes the ids clients mint: uuids and short dotted names', async () => {
+      for (const id of [randomUUID(), 'rcpt-1', 'vr_01JB4K.a:b']) {
+        const r = await post(keyA, body(receipt({ id })));
+        expect(r.status, JSON.stringify({ id, body: r.body })).toBe(201);
+      }
+    });
+
+    const reviewReceipt = (review: Record<string, unknown> | undefined) => {
+      const { execution: _e, ...rest } = receipt({ kind: 'review' });
+      return review === undefined ? rest : { ...rest, review };
+    };
+    const goodReview = { recordId: 'rec-1', lenses: ['general'], findings: [{ title: 't', state: 'fixed' }], independence: { outcome: 'pass' } };
+
+    it('refuses a review receipt with no findings list, or no lenses: a review CI could reuse must say what it found and covered', async () => {
+      for (const review of [undefined, { ...goodReview, findings: undefined }, { ...goodReview, findings: 'none' }, { ...goodReview, lenses: [] }, { ...goodReview, lenses: undefined }]) {
+        const r = await post(keyA, body(reviewReceipt(review as any), null));
+        expect(r.status, JSON.stringify({ review, body: r.body })).toBe(400);
+        expect(r.body.code).toBe('invalid_receipt');
+      }
+    });
+
+    it('takes a review receipt whose findings list is empty: a clean review found nothing', async () => {
+      const r = await post(keyA, body(reviewReceipt({ ...goodReview, findings: [] }), null));
+      expect(r.status, JSON.stringify(r.body)).toBe(201);
+    });
+  });
+
   describe('POST /v1/receipts — a first receipt', () => {
     it('stores it as new and reusable, with the key\'s installation and the canonical repo', async () => {
       const rcpt = receipt();

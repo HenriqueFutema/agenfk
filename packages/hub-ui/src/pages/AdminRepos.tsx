@@ -6,7 +6,7 @@ import { api } from '../api';
 import { apiErrorText } from '../apiError';
 import { Badge, Callout, QueryError, buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
 import {
-  MODE_HELP, MODE_LABEL, notReusableWords, repoQuery, revisionAuthor, utc,
+  MODE_HELP, MODE_LABEL, notReusableWords, receiptStanding, repoQuery, revisionAuthor, utc,
   type ReceiptView, type ReceiptsMode, type RepoView, type RevisionView,
 } from './repoSettingsText';
 
@@ -268,7 +268,12 @@ function ProducersCard({ settings }: { settings: RepoView }) {
   const set = useMutation({
     mutationFn: async (v: { installationId: string; allowed: boolean }) =>
       (await api.put('/v1/admin/repos/producers', { repo: settings.remoteUrl, ...v })).data as RepoView,
-    onSuccess: () => { setAdding(''); qc.invalidateQueries({ queryKey: ['admin-repos'] }); },
+    onSuccess: () => {
+      setAdding('');
+      qc.invalidateQueries({ queryKey: ['admin-repos'] });
+      // Whether a receipt can be reused depends on the allowlist NOW.
+      qc.invalidateQueries({ queryKey: ['admin-repo-receipts', settings.remoteUrl] });
+    },
   });
   const byId = new Map((Array.isArray(installations.data) ? installations.data : []).map(i => [i.id, i]));
   const nameOf = (id: string) => byId.get(id)?.gitEmail ?? byId.get(id)?.osUser ?? id;
@@ -335,7 +340,9 @@ function RecentReceipts({ repo }: { repo: string }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-border-soft">
-            {(receipts.data ?? []).map(r => (
+            {(receipts.data ?? []).map(r => {
+              const standing = receiptStanding(r);
+              return (
               <tr key={r.id}>
                 <td className="px-5 py-2.5 text-small text-ink-tertiary tabular-nums">{utc(r.receivedAt)}</td>
                 <td className="px-2 py-2.5 text-small">
@@ -347,17 +354,18 @@ function RecentReceipts({ repo }: { repo: string }) {
                 </td>
                 <td className="px-2 py-2.5 font-mono text-small text-ink-tertiary">{r.installationId}</td>
                 <td className="px-5 py-2.5 text-small">
-                  {r.reusable
+                  {standing.reusable
                     ? <Badge tone="ok">Reusable</Badge>
                     : (
                       <span className="inline-flex flex-wrap items-center gap-1.5">
                         <Badge tone="danger">Not reusable</Badge>
-                        <span className="text-ink-secondary">{notReusableWords(r.notReusableReason)}</span>
+                        <span className="text-ink-secondary">{notReusableWords(standing.reason)}</span>
                       </span>
                     )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {receipts.data?.length === 0 && (
               <tr><td colSpan={5} className="px-5 py-6 text-center text-body text-ink-tertiary">No receipts yet. They arrive when a root card closes in Shadow or Enforce.</td></tr>
             )}

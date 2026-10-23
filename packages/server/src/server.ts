@@ -10717,7 +10717,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
           // -state test above: a dirty tree can still be certified by a run that
           // left it as it found it, and a tree the run moved cannot be certified
           // whatever else did or did not move with it.
-          if (verifiedSha && filesNow && filesBeforeRun && filesNow.hash === filesBeforeRun.hash) {
+          //
+          // And the content BESIDE the project, for a project in a subdirectory:
+          // the receipt names the whole repository's tree, so a change there that
+          // landed during the close (a pre-commit hook staging a sibling package)
+          // is content no run tested (Codex review of RFC-002).
+          const besideUnchanged = outsideNow !== null && outsideNow === outsideBeforeRun;
+          if (verifiedSha && filesNow && filesBeforeRun && filesNow.hash === filesBeforeRun.hash && besideUnchanged) {
             try {
               const actor = resolveActor(gateRoot);
               let gitTree: string | null = null;
@@ -10748,6 +10754,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
             } catch (e: any) {
               console.error(`[validate] verification receipt failed for ${itemId}: ${e?.message || e}`);
             }
+          } else if (verifiedSha && !besideUnchanged && filesNow && filesBeforeRun && filesNow.hash === filesBeforeRun.hash) {
+            await noteNoReceipt(itemId, 'content beside the project changed during the close, so the commit holds files the run never tested');
           } else if (verifiedSha) {
             await noteNoReceipt(itemId, 'the tree changed while the verify command ran, so the run did not certify the tree the card closed on');
           } else {

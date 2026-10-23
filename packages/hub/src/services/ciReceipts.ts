@@ -53,6 +53,11 @@ export const STATUS_FOR_CI_ERROR: Record<CiError['code'], number> = {
 const MAX_LABEL_LENGTH = 100;
 /** How many candidates one lookup returns. CI reads the newest; the rest are context. */
 const MAX_CANDIDATES = 50;
+/**
+ * How many rows one lookup reads, before the lens filter. Bounded in SQL so a
+ * card or tree with thousands of receipts costs the same as one with fifty.
+ */
+const MAX_SCANNED = 200;
 /** Same rule the server applies when a review is recorded with lenses. */
 const LENS_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** A git tree id: sha1 (40 hex) or sha256 (64 hex). */
@@ -214,11 +219,21 @@ function summaryOf(row: ReceiptListRow, body: any, producers: ReadonlySet<string
     // was written, and an admin who removed the producer since has said its
     // receipts no longer stand in for anything.
     producerAllowed: producers.has(row.installation_id),
+    // When the evidence was MADE: the run's finish, the review's record. Not
+    // when the hub received it - a receipt that waited offline for weeks is
+    // weeks old when it arrives, and --max-age asks about the evidence.
+    evidenceAt: evidenceAtOf(row.kind, body),
     receivedAt: row.received_at instanceof Date ? row.received_at.toISOString() : String(row.received_at),
     ...(row.kind === 'review' ? { lenses: lensesOf(body) } : {}),
     // The declared size even when the report was not kept: "too big" says how big.
     report: { available, bytes: intOrNull(row.report_bytes) },
   };
+}
+
+function evidenceAtOf(kind: string, body: any): string | null {
+  const at = kind === 'review' ? body?.review?.recordedAt : body?.execution?.finishedAt;
+  if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) return null;
+  return at;
 }
 
 const lensesOf = (body: any): string[] =>
@@ -293,7 +308,8 @@ export async function lookupReceipts(db: HubDb, token: CiTokenContext, q: Lookup
     const rows = await db.all<ReceiptListRow>(
       `SELECT ${RECEIPT_COLUMNS} FROM receipts
         WHERE org_id = ? AND remote_url = ? AND kind = ? AND ${column} = ?
-        ORDER BY received_at DESC, id DESC`,
+        ORDER BY received_at DESC, id DESC
+        LIMIT ${MAX_SCANNED}`,
       [token.orgId, remoteUrl, kind, value],
     );
     return rows

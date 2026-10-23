@@ -98,6 +98,7 @@ const candidate = (tree: string, over: Record<string, any> = {}) => ({
   installationId: 'inst-alice',
   producerAllowed: true,
   receivedAt: new Date().toISOString(),
+  evidenceAt: new Date().toISOString(),
   report: { available: true, bytes: LOG.length },
   ...over,
 });
@@ -279,7 +280,16 @@ describe('agenfk ci check', () => {
     it('runs the step when the producer is no longer on the allowlist', () =>
       runsBecause([candidate('x', { producerAllowed: false })].map(c => ({ ...c, contentTree: co.tree })), 'producer_not_allowed'));
     it('runs the step when the receipt is older than --max-age allows', () =>
-      runsBecause([candidate('x', { receivedAt: new Date(Date.now() - 30 * 864e5).toISOString() })].map(c => ({ ...c, contentTree: co.tree })), 'stale', { maxAgeDays: 7 }));
+      runsBecause([candidate('x', { evidenceAt: new Date(Date.now() - 30 * 864e5).toISOString() })].map(c => ({ ...c, contentTree: co.tree })), 'stale', { maxAgeDays: 7 }));
+    // Codex review: a receipt that waited offline arrives "fresh"; its evidence is not.
+    it('measures --max-age from when the evidence was made, not when the hub received it', () =>
+      runsBecause([candidate('x', { receivedAt: new Date().toISOString(), evidenceAt: new Date(Date.now() - 30 * 864e5).toISOString() })].map(c => ({ ...c, contentTree: co.tree })), 'stale', { maxAgeDays: 7 }));
+    it('counts a receipt that cannot say when its evidence was made as stale under --max-age', () =>
+      runsBecause([candidate('x', { evidenceAt: null })].map(c => ({ ...c, contentTree: co.tree })), 'stale', { maxAgeDays: 7 }));
+    it('never matches a command revision neither side states', () =>
+      // Absent on both sides (JSON drops undefined): undefined === undefined must not be a match.
+      runsBecause([candidate('x', { commandRevision: undefined })].map(c => ({ ...c, contentTree: co.tree })), 'command_revision_changed', {},
+        { settings: { verifyCommand: 'npm test', receiptsMode: 'enforce' } }));
     it('runs the step when the receipt kept no report', () =>
       runsBecause([candidate('x', { report: { available: false, bytes: 99_000_000 } })].map(c => ({ ...c, contentTree: co.tree })), 'report_unavailable'));
 
@@ -301,6 +311,51 @@ describe('agenfk ci check', () => {
       expect(r.exitCode).toBe(1);
       expect(r.result).toMatchObject({ outcome: 'block', reason: 'tree_mismatch' });
       expect(outputs()).toMatchObject({ run: 'true', decision: 'block' });
+    });
+  });
+
+  // ── Codex review: what comes back from the hub is checked, not trusted ────
+  describe('evidence and outputs from a hub that misbehaves', () => {
+    it('a receipt id cannot forge another GITHUB_OUTPUT line', async () => {
+      hub = await fakeHub(hubAnswering(lookupBody('shadow', [candidate(co.tree, { id: 'r\nrun=false' })])));
+      const r = await check();
+      expect(r.exitCode).toBe(10);
+      const lines = fs.readFileSync(outputFile, 'utf8').split('\n').filter(Boolean);
+      expect(lines.filter(l => l.startsWith('run=')), lines.join(' | ')).toEqual(['run=true']);
+      expect(lines.every(l => /^[a-z-]+=/.test(l)), lines.join(' | ')).toBe(true);
+    });
+
+    it('a review whose findings did not come back is not reused', async () => {
+      const c = candidate(co.tree, { id: 'rv-1', kind: 'review', commandRevision: null, lenses: ['general'], report: { available: false, bytes: null } });
+      hub = await fakeHub((req, res) => {
+        if ((req.url ?? '').startsWith('/v1/ci/receipts?')) return json(res, 200, lookupBody('enforce', [c]));
+        return json(res, 200, {}); // the detail: 200, but no receipt in it
+      });
+      const r = await check({ kind: 'review', lens: 'general' });
+      expect(r.exitCode, JSON.stringify(r.result)).toBe(10);
+      expect(r.result.reason).toBe('report_unavailable');
+    });
+
+    it('a detail naming another receipt is not this receipt\'s evidence', async () => {
+      const c = candidate(co.tree);
+      hub = await fakeHub((req, res) => {
+        const u = req.url ?? '';
+        if (u.startsWith('/v1/ci/receipts?')) return json(res, 200, lookupBody('enforce', [c]));
+        if (u.endsWith('/report')) { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(LOG); }
+        return json(res, 200, fullReceipt({ ...c, id: 'someone-else' }));
+      });
+      const r = await check();
+      expect(r.exitCode).toBe(10);
+      expect(r.result.reason).toBe('report_unavailable');
+    });
+
+    it('the timeout covers the body too: a hub that sends headers and stalls is not waited on', async () => {
+      hub = await fakeHub((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.write('{"repo":'); });
+      const started = Date.now();
+      const r = await check({ timeoutMs: 200 });
+      expect(r.exitCode).toBe(10);
+      expect(r.result.reason).toBe('hub_unavailable');
+      expect(Date.now() - started).toBeLessThan(5000);
     });
   });
 
