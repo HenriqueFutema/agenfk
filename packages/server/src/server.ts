@@ -9209,6 +9209,60 @@ app.get("/projects/:id/flow/leave-plans", limitBoardRoutes, asyncHandler(async (
 }));
 
 /**
+ * RFC-002: the receipt a certified run leaves on the card it closed — built only
+ * from values the pass path gathered around the run itself, so the path that
+ * writes it only has to decide whether the run certified the tree.
+ */
+function verificationReceiptOf(args: {
+  item: any;
+  project: any;
+  itemId: string;
+  testId: string;
+  command: string;
+  startedAt: string;
+  finishedAt: string;
+  logPath: string | null;
+  commit: string;
+  gitTree: string | null;
+  treeState: string | null;
+  actor: { gitName: string | null; gitEmail: string | null };
+}) {
+  const { item, project, itemId, testId, command, startedAt, finishedAt, logPath, commit, gitTree, treeState, actor } = args;
+  return {
+    id: uuidv4(),
+    kind: 'verification' as const,
+    version: 1 as const,
+    repo: (project as any)?.hubRepoSettings?.remoteUrl ?? null,
+    receiptsMode: receiptsModeOf(project),
+    card: {
+      id: itemId,
+      title: item.title,
+      type: item.type,
+      closedAt: new Date().toISOString(),
+      owner: (item as any).assignee ?? null,
+      closedBy: { name: actor.gitName ?? null, email: actor.gitEmail ?? null },
+      link: (item as any).prUrl ?? (item as any).externalUrl ?? null,
+    },
+    execution: {
+      id: testId,
+      command,
+      commandRevision: (project as any)?.hubRepoSettings?.revision,
+      exitCode: 0,
+      startedAt,
+      finishedAt,
+      logPath,
+    },
+    content: {
+      commit,
+      gitTree,
+      treeState,
+      treeStateVersion: STATE_VERSION,
+    },
+    reusable: true as const,
+  };
+}
+
+/**
  * RFC-002: a card comment saying NO verification receipt was made for the run
  * that just closed it, and why, in one sentence. Written when a guard reads the
  * tree differently before and after the run: the card may close on what it saw,
@@ -10104,14 +10158,6 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         io.emit('items_updated');
       }
     }
-    /*
-     * RFC-002: a root card in receipts mode never gets here on a move that ends
-     * the flow - both shortcuts into this helper are refused for it, because a
-     * card that closes on somebody else's earlier run has proven nothing about
-     * the tree it closed on and there is no run to write a receipt for. The
-     * command runs, and the receipt (or the sentence saying there is none) is
-     * that run's, in the pass path above.
-     */
     // The hub counts passes: a close on a green in hand is one (the green's source is in the payload).
     recordHubEvent({ type: 'validate.passed', projectId: item.projectId, itemId, payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand, via: how.output } });
     recordHubEvent({ type: 'test.logged', projectId: item.projectId, itemId, payload: { command: resolvedCommand, status: 'PASSED', testId, via: how.output } });
@@ -10430,7 +10476,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * THE GUARD ITSELF: HEAD did not move and nothing was staged while the
        * command ran. Pulled out of the `if` below so the receipt path can ask
        * the same question from outside it - a run whose tree moved under it is
-       * the one case that must NOT leave a receipt.
+       * the one case that must NOT leave a receipt. A staged edit during the run
+       * would be swept into OUR close commit, stamping this green on content it
+       * never ran against; HEAD does not see that, the porcelain does.
        */
       const treeStoodStill = preCommitSha === headBeforeRun && preCommitStatus === statusBeforeRun;
       let gitResult: AutoGitCommitResult | undefined;
@@ -10454,14 +10502,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * Where either fails, the record carries no commit and no card inherits
        * this green - the honest direction is a command run, not a claim.
        */
-      if (
-        endsFlow &&
-        gateRoot &&
-        treeStoodStill
-        // A staged edit during the run would be swept into OUR close commit,
-        // stamping this green on content it never ran against. HEAD does not
-        // see that; the porcelain does.
-      ) {
+      if (endsFlow && gateRoot && treeStoodStill) {
         const verifiedSha = readCleanTreeSha(gateRoot, gitRun);
         /*
          * 3ffc9651: the STATE this green speaks for, dirty tree or not - every
@@ -10510,38 +10551,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
               const actor = resolveActor(gateRoot);
               let gitTree: string | null = null;
               try { gitTree = gitRun.run(['-C', gateRoot, 'rev-parse', `${verifiedSha}^{tree}`]).trim() || null; } catch { /* absent rather than wrong */ }
-              const receipt = {
-                id: uuidv4(),
-                kind: 'verification' as const,
-                version: 1 as const,
-                repo: (project as any)?.hubRepoSettings?.remoteUrl ?? null,
-                receiptsMode: receiptsModeOf(project),
-                card: {
-                  id: itemId,
-                  title: updated.title,
-                  type: updated.type,
-                  closedAt: new Date().toISOString(),
-                  owner: (updated as any).assignee ?? null,
-                  closedBy: { name: actor.gitName ?? null, email: actor.gitEmail ?? null },
-                  link: (updated as any).prUrl ?? (updated as any).externalUrl ?? null,
-                },
-                execution: {
-                  id: testId,
-                  command: resolvedCommand!,
-                  commandRevision: (project as any)?.hubRepoSettings?.revision,
-                  exitCode: 0,
-                  startedAt,
-                  finishedAt,
-                  logPath,
-                },
-                content: {
-                  commit: verifiedSha,
-                  gitTree,
-                  treeState,
-                  treeStateVersion: STATE_VERSION,
-                },
-                reusable: true as const,
-              };
+              const receipt = verificationReceiptOf({
+                item: updated, project, itemId, testId, command: resolvedCommand!,
+                startedAt, finishedAt, logPath, commit: verifiedSha, gitTree, treeState,
+                actor,
+              });
               // Re-read: the tests and comments written above this function's close
               // must survive the receipt that follows them.
               const current = await storage.getItem(itemId);
