@@ -565,6 +565,50 @@ const SCHEMA_PG = `
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_jira_oauth_pending_completion ON jira_oauth_pending(completion_hash);
+
+  -- Repository settings (RFC-002). Mirrors the SQLite DDL above; see the
+  -- comment there for what each column is for. Timestamps stay TEXT rather
+  -- than TIMESTAMPTZ on purpose: the app writes the ISO string new Date()
+  -- .toISOString() produces on both backends, so a row read off one replica
+  -- reads identically off the other, and the revision trail compares as
+  -- strings in one order.
+  CREATE TABLE IF NOT EXISTS repo_settings (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    verify_command TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    receipts_mode TEXT NOT NULL DEFAULT 'off' CHECK (receipts_mode IN ('off','shadow','enforce')),
+    shadow_threshold INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
+
+  CREATE TABLE IF NOT EXISTS repo_command_revisions (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    verify_command TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('init','admin')),
+    actor_user_id TEXT,
+    actor_email TEXT,
+    installation_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url, revision)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_command_revisions_repo
+    ON repo_command_revisions(org_id, remote_url);
+
+  CREATE TABLE IF NOT EXISTS repo_producers (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    added_by_email TEXT,
+    PRIMARY KEY (org_id, remote_url, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_producers_repo ON repo_producers(org_id, remote_url);
 `;
 
 /**

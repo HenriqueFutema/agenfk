@@ -627,6 +627,60 @@ const SCHEMA_SQLITE = `
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_jira_oauth_pending_completion ON jira_oauth_pending(completion_hash);
+
+  -- Repository settings (RFC-002). repo_settings is the org's authoritative
+  -- record for ONE canonical repository: the verify command every agent must
+  -- run, the revision it is on, how CI receipts are treated, and the floor
+  -- 'enforce' is measured against. The repository is identified by the same
+  -- canonical URL sanitizeRemoteUrl() writes into events.remote_url, so ssh /
+  -- https / with-or-without-.git are one record. shadow_threshold is NULL
+  -- until an admin sets one — 'no floor yet', which is not the same as 0, and
+  -- is why 'enforce' is refused while it is NULL. Timestamps are ISO TEXT
+  -- written by the app, identical in both dialects.
+  CREATE TABLE IF NOT EXISTS repo_settings (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    verify_command TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    receipts_mode TEXT NOT NULL DEFAULT 'off' CHECK (receipts_mode IN ('off','shadow','enforce')),
+    shadow_threshold INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
+
+  -- The command's history. One row per revision, written by whoever moved it:
+  -- the installation that claimed it first (source 'init', its installation id)
+  -- or the admin who revised it (source 'admin', their user and email). A
+  -- revision is never rewritten, so the trail says how the repo came to be
+  -- verified, not just how it is verified now.
+  CREATE TABLE IF NOT EXISTS repo_command_revisions (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    verify_command TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('init','admin')),
+    actor_user_id TEXT,
+    actor_email TEXT,
+    installation_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url, revision)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_command_revisions_repo
+    ON repo_command_revisions(org_id, remote_url);
+
+  -- Which installations may produce receipts for this repo. Membership only:
+  -- the row's presence is the allow, so adding and removing stay idempotent.
+  CREATE TABLE IF NOT EXISTS repo_producers (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    added_by_email TEXT,
+    PRIMARY KEY (org_id, remote_url, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_producers_repo ON repo_producers(org_id, remote_url);
 `;
 
 class SqliteAdapter implements HubDb {

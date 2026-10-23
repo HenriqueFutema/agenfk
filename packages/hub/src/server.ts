@@ -10,6 +10,7 @@ import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
 import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
+import { repoSettingsAdminRouter, repoSettingsRouter } from './routes/repoSettings.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
@@ -241,6 +242,10 @@ export async function createHubApp(
   // admin router's limiter nor any /v1 fallthrough sees these paths first.
   mountRouter(app, '/v1/admin/jira', jiraAdminRouter(ctx));
   mountRouter(app, '/v1/jira', jiraInstallationRouter(ctx));
+  // Repository settings (RFC-002): the board's admin routes and the
+  // installation's own read/claim, likewise ahead of the broad /v1 routers.
+  mountRouter(app, '/v1/admin/repos', repoSettingsAdminRouter(ctx));
+  mountRouter(app, '/v1', repoSettingsRouter(ctx));
   mountRouter(app, '/v1', eventsRouter(ctx));
   mountRouter(app, '/v1', flowsRouter(ctx));
   mountRouter(app, '/auth', authRouter(ctx));

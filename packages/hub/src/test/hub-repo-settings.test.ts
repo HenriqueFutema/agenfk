@@ -286,6 +286,21 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub repository settings (%s)', (
       expect((await read(keyA, REPO_HTTPS)).headers.etag).not.toBe(before);
     });
 
+    it('changes the ETag when the producer list changes without changing its size', async () => {
+      await seedRepo();
+      expect((await adminPut('producers', { repo: REPO_HTTPS, installationId: 'inst-alice', allowed: true })).status).toBe(200);
+      const before = (await read(keyA, REPO_HTTPS)).headers.etag;
+      // One producer out, another in: the COUNT is 1 before and after, so a tag
+      // over the count alone would let an installation serve the old allowlist.
+      expect((await adminPut('producers', { repo: REPO_HTTPS, installationId: 'inst-alice', allowed: false })).status).toBe(200);
+      expect((await adminPut('producers', { repo: REPO_HTTPS, installationId: 'inst-bob', allowed: true })).status).toBe(200);
+
+      const after = (await read(keyA, REPO_HTTPS)).headers.etag;
+      expect(after).toBeTruthy();
+      expect(after).not.toBe(before);
+      expect((await read(keyA, REPO_HTTPS, before)).status).toBe(200);
+    });
+
     it('needs an api key', async () => {
       const r = await supertest(__server).get(`/v1/repo-settings?${urlOf(REPO_HTTPS)}`);
       expect(r.status).toBe(401);
@@ -342,6 +357,34 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub repository settings (%s)', (
 
       const third = await adminPut('command', { repo: REPO_SSH, verifyCommand: 'just verify' });
       expect(third.body.revision).toBe(3);
+    });
+
+    it('two admins revising at the same moment both land, on consecutive revisions', async () => {
+      await seedRepo();
+      const results = await Promise.all([
+        adminPut('command', { repo: REPO_HTTPS, verifyCommand: 'make check' }),
+        adminPut('command', { repo: REPO_HTTPS, verifyCommand: 'just verify' }),
+      ]);
+      for (const r of results) {
+        expect(r.status, JSON.stringify(r.body)).toBe(200);
+        expect(r.body.revision, JSON.stringify(r.body)).toBeTruthy();
+      }
+      // Neither caller collides on the primary key: the two revisions are 2 and 3.
+      expect(results.map(r => r.body.revision).sort((a: number, b: number) => a - b)).toEqual([2, 3]);
+      // And each caller is told the revision ITS command landed on: the history
+      // row for that revision says the same thing the response says, so the two
+      // admins' writes did not end up in each other's revision numbers.
+      for (const r of results) {
+        const stored = await db.all<any[]>(
+          'SELECT verify_command FROM repo_command_revisions WHERE org_id = ? AND remote_url = ? AND revision = ?',
+          ['org-a', CANON, r.body.revision],
+        );
+        expect(stored, JSON.stringify(r.body)).toHaveLength(1);
+        expect(String(stored[0].verify_command), JSON.stringify(r.body)).toBe(r.body.verifyCommand);
+      }
+
+      const revs = (await adminGet('/revisions', `?${urlOf(REPO_HTTPS)}`)).body.revisions;
+      expect(revs.map((x: any) => x.revision)).toEqual([3, 2, 1]);
     });
 
     it('GET revisions lists admin then init, newest first, with who and where from', async () => {
