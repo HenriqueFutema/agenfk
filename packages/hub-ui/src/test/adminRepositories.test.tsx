@@ -105,7 +105,8 @@ describe('Admin → Repositories: the list', () => {
   it('is reachable from the admin nav, under Fleet', async () => {
     hubAnswers();
     renderAt('/admin/repos');
-    const fleet = screen.getByRole('group', { name: 'Fleet' });
+    const nav = screen.getByRole('navigation', { name: /admin sections/i });
+    const fleet = within(nav).getByRole('group', { name: 'Fleet' });
     expect(within(fleet).getByRole('link', { name: /repositories/i })).toHaveAttribute('href', '/admin/repos');
   });
 
@@ -164,7 +165,7 @@ describe('Admin → Repositories: one repository', () => {
     hubAnswers();
     renderAt(detailUrl);
     const history = await screen.findByRole('table', { name: /revision history/i });
-    const rev1 = within(history).getByText('1').closest('tr')!;
+    const rev1 = (await within(history).findByText('1')).closest('tr')!;
     expect(within(rev1).getByText(/initialized by installation/i)).toBeInTheDocument();
     expect(within(rev1).getByText(/inst-alice/)).toBeInTheDocument();
     expect(within(rev1).getByText('npm run verify')).toBeInTheDocument();
@@ -219,7 +220,7 @@ describe('Admin → Repositories: one repository', () => {
     hubAnswers();
     renderAt(detailUrl);
     const table = await screen.findByRole('table', { name: /recent receipts/i });
-    const ok = within(table).getByText('Ship receipts').closest('tr')!;
+    const ok = (await within(table).findByText('Ship receipts')).closest('tr')!;
     expect(within(ok).getByText('Reusable')).toBeInTheDocument();
     expect(within(ok).getByText('2026-06-03 10:15 UTC')).toBeInTheDocument();
     const no = within(table).getByText('Review it').closest('tr')!;

@@ -16,6 +16,7 @@ import {
   setProducer,
   setReceiptsMode,
 } from '../services/repoSettings.js';
+import { lastReceiptTimes, listRepoReceipts } from '../services/ciReceipts.js';
 
 /**
  * Repository settings (RFC-002): the org's authoritative verify command per
@@ -133,7 +134,19 @@ export function repoSettingsAdminRouter(ctx: HubServerContext): Router {
   const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   router.get('/', guard, asyncRoute(async (req: Request, res: Response) => {
-    res.json({ repos: await listRepoSettings(ctx.db, req.session!.orgId) });
+    const orgId = req.session!.orgId;
+    const last = await lastReceiptTimes(ctx.db, orgId);
+    const repos = await listRepoSettings(ctx.db, orgId);
+    res.json({ repos: repos.map(r => ({ ...r, lastReceiptAt: last.get(r.remoteUrl) ?? null })) });
+  }));
+
+  // The repository's recent receipts, for the admin to see which can be reused and why not.
+  router.get('/receipts', guard, asyncRoute(async (req: Request, res: Response) => {
+    try {
+      res.json({ receipts: await listRepoReceipts(ctx.db, req.session!.orgId, repoQuery(req)) });
+    } catch (e) {
+      sendRepoError(res, e);
+    }
   }));
 
   // Every route below names the repository it changes; a repo that is not a

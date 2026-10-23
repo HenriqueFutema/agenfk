@@ -366,3 +366,36 @@ export async function getReceiptReport(db: HubDb, token: CiTokenContext, id: str
   if (!row.report_gz_b64) throw new CiError('report_unavailable', 'this receipt has no report the hub kept');
   return zlib.gunzipSync(Buffer.from(row.report_gz_b64, 'base64'));
 }
+
+// ── the admin's view (the Repositories page) ────────────────────────────────
+
+/** How many receipts the Repositories page shows for one repository. */
+const ADMIN_RECENT_RECEIPTS = 50;
+
+/**
+ * A repository's recent receipts for its admin, newest first: the same summary
+ * CI reads, plus the card's title from the snapshot the receipt carries, since
+ * the admin is looking for a card and the hub has no other record of it.
+ */
+export async function listRepoReceipts(db: HubDb, orgId: string, repo: unknown) {
+  const remoteUrl = canonicalRepo(repo);
+  const rows = await db.all<ReceiptListRow>(
+    `SELECT ${RECEIPT_COLUMNS} FROM receipts WHERE org_id = ? AND remote_url = ?
+      ORDER BY received_at DESC, id DESC LIMIT ${ADMIN_RECENT_RECEIPTS}`,
+    [orgId, remoteUrl],
+  );
+  const producers = await producersOf(db, orgId, remoteUrl);
+  return rows.map(r => {
+    const body = parseBody(r.body_json);
+    return { ...summaryOf(r, body, producers), cardTitle: typeof body?.card?.title === 'string' ? body.card.title : null };
+  });
+}
+
+/** When each of the org's repositories last received a receipt. */
+export async function lastReceiptTimes(db: HubDb, orgId: string): Promise<Map<string, string>> {
+  const rows = await db.all<{ remote_url: string; last_at: string | Date }>(
+    'SELECT remote_url, MAX(received_at) AS last_at FROM receipts WHERE org_id = ? GROUP BY remote_url',
+    [orgId],
+  );
+  return new Map(rows.map(r => [String(r.remote_url), r.last_at instanceof Date ? r.last_at.toISOString() : String(r.last_at)]));
+}
