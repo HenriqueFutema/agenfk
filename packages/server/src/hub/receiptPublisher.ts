@@ -28,8 +28,9 @@
  * there, means no `report` key at all — not an empty one.
  *
  * The publication state is written back onto the receipt object itself, on the
- * item, in `item.verificationReceipts`. Nothing else about the receipt is
- * changed, and the state never leaves this machine: it is stripped before the
+ * item, in the array it came from — `item.verificationReceipts` for a run's
+ * receipt, `item.reviewReceipts` for a review's. Nothing else about the receipt
+ * is changed, and the state never leaves this machine: it is stripped before the
  * body is sent, so the hub's stored receipt is the receipt the close path
  * wrote.
  */
@@ -94,7 +95,11 @@ export interface PublishReceiptsResult {
   pending: number;
 }
 
-/** A receipt as the close path wrote it (task f918a42c), plus our state on it. */
+/**
+ * A card's claim on another machine, plus our delivery state on it: a
+ * verification receipt as the close path wrote it (task f918a42c) or a review
+ * receipt as the record path writes it (task 95ba0ec5).
+ */
 interface StoredReceipt {
   id?: unknown;
   kind?: unknown;
@@ -234,14 +239,14 @@ function refusalComment(receiptId: string, answer: Extract<HubAnswer, { kind: 'r
 /**
  * Publish every receipt that is not settled, on every card.
  *
- * The state is written back per CARD, not per receipt: a card's receipts share
- * one array, and one write per card means a pass that publishes three receipts
- * across two cards writes each card once. Each write re-reads the card first,
- * because the network is in the gap between reading the receipts and writing
- * their state back — and a card that gained a comment, a test result, or a
- * second receipt while we were waiting on the hub must not lose it. Only the
- * `publication` of each receipt we touched is carried over; everything else on
- * the freshly-read card stands.
+ * The state is written back per CARD and per array, not per receipt: the
+ * receipts of one kind share one array, and one write per array means a pass
+ * that publishes three receipts across two cards writes each card once. Each
+ * write re-reads the card first, because the network is in the gap between
+ * reading the receipts and writing their state back — and a card that gained a
+ * comment, a test result, or a second receipt while we were waiting on the hub
+ * must not lose it. Only the `publication` of each receipt we touched is carried
+ * over; everything else on the freshly-read card stands.
  */
 export async function publishPendingReceipts(args: PublishPendingReceiptsArgs): Promise<PublishReceiptsResult> {
   const maxReportBytes = args.maxReportBytes ?? DEFAULT_MAX_REPORT_BYTES;
@@ -249,13 +254,30 @@ export async function publishPendingReceipts(args: PublishPendingReceiptsArgs): 
   const result: PublishReceiptsResult = { acked: 0, rejected: 0, pending: 0 };
   const items = await args.storage.listItems({});
 
+  // Both arrays a card can carry a receipt in: what a run certified and what a
+  // review judged are different claims, but they are sent and remembered the
+  // same way, each back into the array it came from. A review receipt has no
+  // `execution.logPath`, so `reportOf` is handed nothing and it goes with no
+  // report — which is what a claim about a review is.
   for (const item of items) {
-    const receipts = (item as any).verificationReceipts;
-    if (!Array.isArray(receipts) || receipts.length === 0) continue;
+    for (const array of ['verificationReceipts', 'reviewReceipts'] as const) {
+      const receipts = (item as any)[array];
+      await publishArray(item, array, receipts);
+    }
+  }
+
+  return result;
+
+  async function publishArray(
+    item: any,
+    array: 'verificationReceipts' | 'reviewReceipts',
+    receipts: unknown,
+  ): Promise<void> {
+    if (!Array.isArray(receipts) || receipts.length === 0) return;
     const pending = (receipts as StoredReceipt[]).filter(
       (r) => r && (!r.publication || r.publication.state === 'pending'),
     );
-    if (pending.length === 0) continue;
+    if (pending.length === 0) return;
 
     const comments: any[] = [];
     // Receipt id -> the state to write back, kept apart from the write so a
@@ -288,13 +310,13 @@ export async function publishPendingReceipts(args: PublishPendingReceiptsArgs): 
 
     try {
       const current = await args.storage.getItem(item.id);
-      if (!current) continue; // closed or deleted while we were talking; nothing to remember it for
+      if (!current) return; // closed or deleted while we were talking; nothing to remember it for
       const cur: any = current;
-      const currentReceipts: any[] = Array.isArray(cur.verificationReceipts) ? cur.verificationReceipts : [];
+      const currentReceipts: any[] = Array.isArray(cur[array]) ? cur[array] : [];
       const merged = currentReceipts.map((r: any) =>
         r && updates.has(r.id) ? { ...r, publication: updates.get(r.id) } : r,
       );
-      const write: Record<string, unknown> = { verificationReceipts: merged };
+      const write: Record<string, unknown> = { [array]: merged };
       if (comments.length) {
         // One comment per refusal, on the card that carries the receipt: a
         // receipt the hub will not take is a gap in the record that nobody
@@ -308,6 +330,4 @@ export async function publishPendingReceipts(args: PublishPendingReceiptsArgs): 
       console.error(`[HUB_RECEIPTS] could not record publication on ${item.id}: ${(e as Error).message}`);
     }
   }
-
-  return result;
 }

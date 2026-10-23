@@ -250,8 +250,15 @@ describe('RFC-002 (95ba0ec5): a recorded review leaves a review receipt', () => 
   it('a reviewer who is an author is receipted as it is: not reusable, and saying why', async () => {
     const { dir, base, tip } = makeRepo();
     const { id } = await cardIn(dir);
-    await authored(id, base, 'author-session');
-    // The reviewer's own session IS the author's: it wrote what it reviewed.
+    // The reviewer IS an author: the same session AND agent advanced the card.
+    // (A different sub-agent of the author's session would be independent, as
+    // judgeReview compares session and agent id.)
+    await storage.updateItem(id, {
+      stepRecords: [{
+        kind: 'exit', step: 'WORK', at: '2026-01-01T00:00:00.000Z', head: base,
+        actor: { client: 'claude-code', sessionId: 'author-session', agentId: 'agentSelf' },
+      }],
+    } as never);
     const res = await record(id, {
       transcript: claudeSubagentTranscript('author-session', 'agentSelf', FUTURE),
       range: `${base}..${tip}`, findings: [],

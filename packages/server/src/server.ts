@@ -4019,6 +4019,7 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   if (!item) return res.status(404).json({ error: "Item not found" });
   const body = req.body ?? {};
   let reviewer: ReturnType<typeof readTranscriptIdentity>;
+  let lenses: string[];
   let findings: ReturnType<typeof parseFindings>;
   try {
     reviewer = readTranscriptIdentity(body.transcript);
@@ -4057,6 +4058,14 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   if (last.some(t => Number.isNaN(t) || t < Date.parse(tipAt))) {
     return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'} (file: ${reviewer.mtime}), before the range's tip commit (${tipAt}): it cannot have reviewed it. Send the same reviewer a new message to read the newer work (it reads again from its newest prompt), or give a new reviewer the brief (agenfk review brief ${item.id}), then record again.` });
   }
+  // RFC-002: the lenses the review was run through. Absent, a review is a
+  // general review; present, it is a set of names — nothing else is recorded,
+  // because a receipt that says "reviewed" without saying through what is a
+  // weaker claim than one that says nothing. Refused here, before the record
+  // exists: a card cannot hold a review whose lenses we did not understand.
+  try { lenses = parseLenses(body.lenses); } catch (e: any) {
+    return res.status(400).json({ error: e?.message ?? String(e) });
+  }
   const recId = uuidv4();
   const notOurs = reportPathTest(root, project);
   // The card's own work: itself and its descendants (reviews happen at the parent).
@@ -4068,7 +4077,7 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
       ? (() => { const u = unreviewedAfter(root, from, Date.parse(reviewer.startedAt!), mine, notOurs); return 'notJudged' in u ? { unreviewedNotJudged: u.notJudged } : { unreviewed: u }; })()
       : { unreviewedNotJudged: 'the transcript carries no timestamps, so when the reviewer began is not known' }),
     reviewer: { client: reviewer.client, sessionId: reviewer.sessionId, agentId: reviewer.agentId, transcript: reviewer.transcript, edits: reviewer.edits, advancedCards: reviewer.advancedCards },
-    range: { from, to, ...(auto ? { auto: true } : {}) }, findings,
+    range: { from, to, ...(auto ? { auto: true } : {}) }, findings, lenses,
     // The tree as reviewed, uncommitted work included: a change after this
     // needs the review recorded again (CGLAB-381 review). The report a run
     // writes is not the card's work (d26832d6): a capture after the review
@@ -4077,6 +4086,56 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   };
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, { reviewRecords: [...(fresh?.reviewRecords ?? []), rec] } as any);
+  /*
+   * RFC-002 (95ba0ec5): in receipts mode the review we just recorded IS a
+   * receipt — the same claim the review-record check makes, judged here by the
+   * server and written so another machine can honour it. A root card only (a
+   * child is reviewed with its parent) and only in receipts mode. Like the
+   * verification receipt it is a note about what happened, not a condition of
+   * it: the record is stored and the reply is 201 whatever the receipt does,
+   * and a verdict of "not reusable" is written down all the same, because
+   * Shadow mode is measuring how often real reviews fail this.
+   */
+  if (freshRootClose(item, project)) {
+    try {
+      const withRecord: any = await storage.getItem(item.id);
+      const evidence = await reviewEvidence(withRecord, root);
+      // The verdict the receipt carries is the card's review judged over the
+      // CARD rather than over the record's own view of it — that view is what
+      // the review-record check judges at the step, and here it would be
+      // comparing a tree state read before this record existed. The tree the
+      // review was recorded for is set aside: comparing it would read the act of
+      // recording as the tree having moved under the review. Whether the tree
+      // still stands at the range's tip is `reusable`'s question, asked of the
+      // tree itself, below.
+      const judged = judgeReview(evidence, root, (args) => gitRun.run(args), { bindTree: true });
+      const actor = resolveActor(root);
+      let gitTree: string | null = null;
+      try { gitTree = git(['rev-parse', `${to}^{tree}`]) || null; } catch { /* absent rather than wrong */ }
+      const receipt = reviewReceiptOf({
+        item: withRecord, project, record: rec, evidence, verdict: judged,
+        humanGates: await humanGatesOf(withRecord),
+        lenses, gitTree, actor: { gitName: actor.gitName, gitEmail: actor.gitEmail }, root,
+      });
+      // Re-read: a record or a comment written while the receipt was being
+      // judged must survive the receipt that follows it.
+      const current: any = await storage.getItem(item.id);
+      await storage.updateItem(item.id, { reviewReceipts: [...(current?.reviewReceipts ?? []), receipt] } as any);
+      io.emit('items_updated');
+      // Offered to the hub now, not awaited: a hub that is down must not delay
+      // the reply by a timeout, and the receipt stays `pending` on the card for
+      // the next tick either way. With no hub configured there is no one to ask.
+      if (hubClient.hubConfig) {
+        void publishPendingReceipts({
+          storage: storage as SQLiteStorageProvider,
+          hubConfig: hubClient.hubConfig,
+          fetchImpl: globalThis.fetch as any,
+        }).catch(e => console.error('[HUB_RECEIPTS]', e?.message || e));
+      }
+    } catch (e: any) {
+      console.error(`[review] review receipt failed for ${item.id}: ${e?.message || e}`);
+    }
+  }
   io.emit('items_updated');
   res.status(201).json(rec);
 }));
@@ -9208,6 +9267,117 @@ app.get("/projects/:id/flow/leave-plans", limitBoardRoutes, asyncHandler(async (
   }
   res.json(plans);
 }));
+
+/** RFC-002: a lens is a short kebab-case name (`general`, `security`, `perf-1`). */
+
+const LENS_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+
+/**
+ * RFC-002: the human gates under a card — a person's approval of a step, or
+ * their override of a check — on the card and on the cards reviewed with it. A
+ * receipt carries that a person said yes, at which step and when: the names,
+ * the reasons and who the approval covers are this machine's business, and a
+ * card's step records hold no absolute paths today, which is why they are
+ * picked field by field rather than copied.
+ */
+async function humanGatesOf(item: any): Promise<Array<{ kind: 'approval' | 'override'; step: string | null; at: string | null }>> {
+  const cards: any[] = [item, ...(await descendantsOf(item))];
+  return cards
+    .flatMap((c: any) => (Array.isArray(c?.stepRecords) ? c.stepRecords : []))
+    .filter((r: any) => r?.kind === 'approval' || r?.kind === 'override')
+    .map((r: any) => ({ kind: r.kind, step: r.step ?? null, at: r.at ?? null }));
+}
+
+/**
+ * RFC-002 (95ba0ec5): the lenses a review was run through, as the caller named
+ * them. Absent means a general review; a list must be one to eight real names,
+ * de-duplicated with the first order kept — a review says what it looked at, or
+ * it is refused and nothing is recorded against a lens nobody asked for.
+ */
+function parseLenses(value: unknown): string[] {
+  if (value === undefined || value === null) return ['general'];
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8
+    || !value.every((l) => typeof l === 'string' && LENS_NAME.test(l))) {
+    throw new Error('lenses must be 1 to 8 names like security or general');
+  }
+  return [...new Set(value as string[])];
+}
+
+/**
+ * RFC-002: the receipt a recorded review leaves on the card it reviewed — the
+ * server's own verdict on the review, not the caller's account of it, and the
+ * tree, the range and the human gates it all points at. What it never carries
+ * is the transcript's path: the receipt crosses machines and the log does not,
+ * so it carries the log's hash instead.
+ *
+ * A review that fails the test is still receipted, with `reusable: false` and
+ * the reason: Shadow mode is measuring how often a real review is not
+ * reusable — hiding those is how it would report a clean record it never had.
+ */
+function reviewReceiptOf(args: {
+  item: any;
+  project: any;
+  record: any;
+  evidence: any;
+  verdict: { outcome: string; detail: string };
+  humanGates: Array<{ kind: 'approval' | 'override'; step: string | null; at: string | null }>;
+  lenses: string[];
+  gitTree: string | null;
+  actor: { gitName: string | null; gitEmail: string | null };
+  root: string;
+}) {
+  const { item, project, record, evidence, verdict, humanGates, lenses, gitTree, actor, root } = args;
+  // What was written after the reviewer began, when the record can say. An
+  // old record, or one whose transcript kept no timestamps, is not a review of
+  // a hundred unlooked-at lines: it is a review that was not measured, which
+  // is not a reason to refuse it either.
+  const fixes: { lines: number; files: string[] } | null =
+    record.unreviewed && typeof record.unreviewed.lines === 'number'
+      ? { lines: record.unreviewed.lines, files: Array.isArray(record.unreviewed.files) ? record.unreviewed.files : [] }
+      : null;
+  const notReusable = verdict.outcome !== 'pass'
+    ? 'not_independent' as const
+    : fixes && fixes.lines > MAX_UNREVIEWED_LINES
+      ? 'fixes_not_reviewed' as const
+      // The tip has to BE the tree: work left uncommitted is work the review
+      // did not read, and a receipt points at a commit other machines check out.
+      : readCleanTreeSha(root, gitRun) !== record.range?.to
+        ? 'uncommitted_changes' as const
+        : null;
+  return {
+    id: uuidv4(),
+    kind: 'review' as const,
+    version: 1 as const,
+    repo: project?.hubRepoSettings?.remoteUrl ?? null,
+    receiptsMode: receiptsModeOf(project),
+    card: {
+      id: item.id,
+      title: item.title,
+      type: item.type,
+      owner: item.assignee ?? null,
+      recordedBy: { name: actor.gitName ?? null, email: actor.gitEmail ?? null },
+      link: item.prUrl ?? item.externalUrl ?? null,
+    },
+    review: {
+      recordId: record.id,
+      recordedAt: record.at,
+      reviewer: { client: record.reviewer?.client, sessionId: record.reviewer?.sessionId, agentId: record.reviewer?.agentId ?? null },
+      authors: evidence.authors,
+      independence: { outcome: verdict.outcome, detail: verdict.detail },
+      range: { from: record.range?.from, to: record.range?.to },
+      lenses,
+      findings: record.findings,
+      fixesAfterReview: fixes,
+      // The hash of the file, never its path: the receipt is a claim about the
+      // transcript, not a pointer into whoever recorded it's home directory.
+      transcriptSha256: crypto.createHash('sha256').update(fs.readFileSync(record.reviewer.transcript)).digest('hex'),
+    },
+    humanGates,
+    content: { commit: record.range?.to, gitTree },
+    reusable: !notReusable,
+    notReusableReason: notReusable,
+  };
+}
 
 /**
  * RFC-002: the receipt a certified run leaves on the card it closed — built only
