@@ -3300,6 +3300,16 @@ app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) 
   }
   try {
     const before: any = await storage.getProject(req.params.id);
+    // RFC-002: while the hub owns this repository's command, it is the record
+    // the org holds, not the local row. The same command is still accepted
+    // (idempotent); a different one is refused and nothing is written.
+    const hubOwned = hubVerifyCommandOf(before);
+    if (hubOwned && hubOwned !== verifyCommand) {
+      return res.status(409).json({
+        error: "HUB_OWNS_VERIFY_COMMAND",
+        message: `This repository's verify command is set on the hub (revision ${before.hubRepoSettings.revision}): \`${hubOwned}\`. An org admin changes it on the hub's Repositories page.`,
+      });
+    }
     const previous = before?.verifyCommand as string | undefined;
     const changed = !!before && previous !== verifyCommand;
     // Kept on the project as well as on cards: with no card in flight, a card
@@ -4519,6 +4529,9 @@ type CaptureOutcome =
 function effectiveVerifyCommand(project: any): { command: string | null; fromFile: boolean } {
   const report = typeof project?.testReport?.command === 'string' ? project.testReport.command : null;
   if (report) return { command: report, fromFile: false };
+  // RFC-002: the hub's command beats the repository file's and the stored row.
+  const hub = hubVerifyCommandOf(project);
+  if (hub) return { command: hub, fromFile: true };
   const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
   if (typeof declared === 'string' && declared.trim()) return { command: declared, fromFile: true };
   const stored = typeof project?.verifyCommand === 'string' ? project.verifyCommand : null;
@@ -4531,7 +4544,15 @@ function effectiveVerifyCommand(project: any): { command: string | null; fromFil
  * says is what runs. Unlike `effectiveVerifyCommand`, a test report's command
  * does not stand in for it: the final gate runs the project's own command.
  */
+/** RFC-002: the hub's authoritative verify command for this project, when the hub has one. */
+function hubVerifyCommandOf(project: any): string | null {
+  const c = project?.hubRepoSettings?.verifyCommand;
+  return typeof c === 'string' && c.trim() ? c : null;
+}
+
 function finalVerifyCommandOf(project: any): string | undefined {
+  const hub = hubVerifyCommandOf(project);
+  if (hub) return hub;
   const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
   return (typeof declared === 'string' ? declared : project?.verifyCommand) || undefined;
 }
@@ -9462,7 +9483,7 @@ export function unreadableFileVerify(
   project: any,
   // The exact string the caller selected to run, when it has one: judged as it will run, never re-read -
   // a file edited between selecting and checking must not pass one command and run another (Codex review).
-  declared: unknown = readDeclaredSettings(project?.projectRoot).settings.verifyCommand,
+  declared: unknown = hubVerifyCommandOf(project) ?? readDeclaredSettings(project?.projectRoot).settings.verifyCommand,
 ): { error: 'COMMAND_UNREADABLE'; message: string; command: string } | null {
   if (typeof declared !== 'string') return null;
   const unreadable = unreadableFileCommand({ key: 'verifyCommand', command: declared });
@@ -9888,9 +9909,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   const projectVerifyCommand = (project as any)?.verifyCommand as string | undefined;
   const declaredHere = readDeclaredSettings((project as any)?.projectRoot);
-  const fileVerify = typeof declaredHere.settings.verifyCommand === 'string'
+  // RFC-002: the hub's command is what runs, so it is what the hidden-character
+  // check judges. `declaredHere` below stays the repository's own string: it is
+  // what gets recorded as a file change, and a hub command is never that.
+  const hubVerify = hubVerifyCommandOf(project);
+  const declaredVerify = typeof declaredHere.settings.verifyCommand === 'string'
     ? String(declaredHere.settings.verifyCommand)
     : null;
+  const fileVerify = hubVerify ?? declaredVerify;
   const projectVerify = fileVerify ?? projectVerifyCommand;
   /*
    * 281adef0: a flow with verifyAt 'parent' runs the project's suite once, at
@@ -9912,7 +9938,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   if (isFinalStep && !deferTo) {
     // The command this close runs, as selected - a pull may have landed while the gate ran (review of #260).
-    await observeDeclaredVerifyCommand(item.projectId, fileVerify);
+    await observeDeclaredVerifyCommand(item.projectId, declaredVerify);
     const noted = await storage.getItem(itemId);
     if (noted) Object.assign(item, noted);
   }

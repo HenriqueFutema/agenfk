@@ -13,6 +13,7 @@ import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import type { Flow } from '@agenfk/core';
 import { flowChecksErrors, normalizeFlowSteps } from '@agenfk/core';
 import type { HubConfig } from './types.js';
+import { syncRepoSettings, declaredVerifyCommand } from './repoSettingsSync.js';
 
 export type FetchLike = (url: string, opts: any) => Promise<{
   status: number;
@@ -246,6 +247,28 @@ export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
       continue;
     }
     if (result.etag) args.etagCache.set(project.id, result.etag);
+
+    // RFC-002: the hub's authoritative repository settings, after the flow
+    // reconcile so a hub outage on one channel never blocks the other. Only a
+    // project with a git remote can be keyed on the hub, and its settings ride
+    // their own ETag cache key so a 304 on the flow does not skip them.
+    if (remoteUrl) {
+      try {
+        const repoResult = await syncRepoSettings({
+          storage: args.storage,
+          hubConfig: args.hubConfig,
+          projectId: project.id,
+          remoteUrl,
+          localCommand: declaredVerifyCommand((project as any).projectRoot) ?? (typeof (project as any).verifyCommand === 'string' && (project as any).verifyCommand ? (project as any).verifyCommand : null),
+          lastEtag: args.etagCache.get('repo:' + project.id) ?? null,
+          fetchImpl: args.fetchImpl,
+        });
+        if (repoResult.etag) args.etagCache.set('repo:' + project.id, repoResult.etag);
+      } catch (e) {
+        // Contained per project, exactly like the flow reconcile above.
+        console.error(`[HUB_REPO_SETTINGS] Unexpected error for project ${project.id}:`, (e as Error).message);
+      }
+    }
   }
 }
 
