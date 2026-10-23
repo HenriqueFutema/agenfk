@@ -122,19 +122,50 @@ describe('hub receiptPublisher.publishPendingReceipts', () => {
     fs.rmSync(logDir, { recursive: true, force: true });
   });
 
+  /** A review receipt as the record path writes it (task 95ba0ec5), minus its id. */
+  const reviewReceipt = (over: Record<string, any> = {}): any => ({
+    id: 'rev-1',
+    kind: 'review',
+    version: 1,
+    repo: 'git@github.com:acme/app.git',
+    receiptsMode: 'shadow',
+    card: {
+      id: 'card-1', title: 'Publish the receipt', type: 'TASK', owner: null,
+      recordedBy: { name: 'Dev', email: 'dev@acme.test' }, link: null,
+    },
+    review: {
+      recordId: 'rec-1',
+      recordedAt: '2026-06-01T10:00:00.000Z',
+      reviewer: { client: 'claude-code', sessionId: 'reviewer-session', agentId: 'agent1' },
+      authors: [{ client: 'claude-code', sessionId: 'author-session', agentId: null }],
+      independence: { outcome: 'pass', detail: 'reviewed by an independent session' },
+      range: { from: 'c'.repeat(40), to: 'b'.repeat(40) },
+      lenses: ['general'],
+      findings: [],
+      fixesAfterReview: null,
+      transcriptSha256: 'd'.repeat(64),
+    },
+    humanGates: [],
+    content: { commit: 'b'.repeat(40), gitTree: 'a'.repeat(40) },
+    reusable: true,
+    notReusableReason: null,
+    ...over,
+  });
+
   /** A project and a card, and `receipts` written onto the card. */
-  async function seed(receipts: any[]): Promise<string> {
+  async function seed(receipts: any[], into: 'verificationReceipts' | 'reviewReceipts' = 'verificationReceipts'): Promise<string> {
     await storage.createProject({ id: 'p1', name: 'p1', description: '', createdAt: new Date(), updatedAt: new Date() } as any);
     await storage.createItem({
       id: 'card-1', projectId: 'p1', type: 'TASK', title: 'Publish the receipt',
       status: 'DONE', createdAt: new Date(), updatedAt: new Date(),
     } as any);
-    const updated = await storage.updateItem('card-1', { verificationReceipts: receipts } as any);
+    const updated = await storage.updateItem('card-1', { [into]: receipts } as any);
     return updated.id;
   }
 
   const item = () => storage.getItem('card-1') as Promise<any>;
   const published = async (): Promise<any[]> => (await item())?.verificationReceipts ?? [];
+  const publishedReviews = async (): Promise<any[]> => (await item())?.reviewReceipts ?? [];
   const args = (fetchImpl: FetchLike, over: Record<string, any> = {}) => ({
     storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, fetchImpl, ...over,
   } as any);
@@ -359,6 +390,35 @@ describe('hub receiptPublisher.publishPendingReceipts', () => {
     expect(byId['rcpt-e'].state).toBe('rejected');
     expect(byId['rcpt-d'].attempts).toBe(1);
     expect(byId['rcpt-e'].attempts).toBe(1);
+  });
+
+  it('a review receipt goes as kind review, with no report, and its ack lands in reviewReceipts', async () => {
+    // A review receipt is a claim about a REVIEW, not about a run: there is no
+    // log of it to carry, so the body is the receipt alone, and the state we
+    // write back goes into the array the receipt came from rather than into the
+    // verification one.
+    const rcpt = reviewReceipt();
+    await seed([rcpt], 'reviewReceipts');
+    const { fetchImpl, calls } = makeHubFetch(() => ({ status: 201, body: { id: rcpt.id, stored: 'new', reusable: true, reason: null } }));
+
+    expect(await publishPendingReceipts(args(fetchImpl))).toMatchObject({ acked: 1, rejected: 0, pending: 0 });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(`${HUB_URL}/v1/receipts`);
+    expect(calls[0].body.receipt.kind).toBe('review');
+    expect(calls[0].body.receipt.id).toBe(rcpt.id);
+    expect('report' in calls[0].body).toBe(false);
+    // The whole receipt as the card holds it, minus the delivery state.
+    const { publication: _publication, ...asSent } = (await publishedReviews())[0];
+    expect(calls[0].body.receipt).toEqual(asSent);
+
+    expect((await publishedReviews())[0].publication).toEqual({
+      state: 'acked', attempts: 1, lastError: null, ackedAt: expect.any(String), reusable: true, reason: null,
+    });
+    // And it is not published again, which is the ack meaning what it says.
+    const again = makeHubFetch(() => ({ status: 201, body: { id: rcpt.id, stored: 'duplicate', reusable: true, reason: null } }));
+    expect(await publishPendingReceipts(args(again.fetchImpl))).toMatchObject({ acked: 0, pending: 0 });
+    expect(again.calls).toHaveLength(0);
   });
 
   it('a card with no receipts and a project with no cards cost nothing', async () => {
