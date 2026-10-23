@@ -1057,3 +1057,78 @@ describe('PG parity: admin model mappings', () => {
     expect(reverted.byModel).toHaveLength(2);
   });
 });
+
+/**
+ * PG parity: repository settings (RFC-002).
+ *
+ * The repository record is claimed with an atomic first-writer-wins insert, and
+ * its revision history is a second table keyed by (org, remote_url, revision) —
+ * both statements are exactly the shape the dialect translator can get wrong
+ * (`INSERT OR IGNORE` has no PG spelling, and `shadowThreshold` is a nullable
+ * integer that must survive as NULL, not 0). So the whole admin path is walked
+ * on pg-mem here, with the view checked on the way.
+ */
+describe('PG parity: repository settings (RFC-002)', () => {
+  const REPO = 'https://github.com/acme/app.git';
+  const CANON = 'git@github.com:acme/app.git';
+  let fx: Fixture & { key: string };
+
+  beforeEach(async () => {
+    const booted = await bootHubOnPg();
+    fx = { ...booted, key: await issueApiKey(booted.db, 'org', 'pg-repo', { installationId: 'inst-pg-repo' }) };
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-repo', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'dev', 'dev@acme.com')`,
+    );
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES ('inst-pg-producer', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'ci', 'ci@acme.com')`,
+    );
+  });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const bearer = (k: string) => ({ Authorization: `Bearer ${k}` });
+
+  it('init -> admin revise -> mode -> producers, and the view reflects all of it', async () => {
+    const init = await supertest(__server).post('/v1/repo-settings/init').set(bearer(fx.key))
+      .send({ repo: 'git@github.com:ACME/App', verifyCommand: 'npm test' });
+    expect(init.status, JSON.stringify(init.body)).toBe(201);
+    expect(init.body.created).toBe(true);
+    expect(init.body.settings).toMatchObject({
+      remoteUrl: CANON, verifyCommand: 'npm test', revision: 1, receiptsMode: 'off', producers: [],
+    });
+    expect(init.body.settings.shadowThreshold).toBeNull();
+
+    const revised = await supertest(__server).put('/v1/admin/repos/command').set('Cookie', fx.cookie)
+      .send({ repo: REPO, verifyCommand: 'pnpm verify' });
+    expect(revised.status, JSON.stringify(revised.body)).toBe(200);
+    expect(revised.body).toMatchObject({ remoteUrl: CANON, verifyCommand: 'pnpm verify', revision: 2 });
+
+    const mode = await supertest(__server).put('/v1/admin/repos/mode').set('Cookie', fx.cookie)
+      .send({ repo: REPO, mode: 'shadow', shadowThreshold: 12 });
+    expect(mode.status, JSON.stringify(mode.body)).toBe(200);
+    expect(mode.body).toMatchObject({ receiptsMode: 'shadow', shadowThreshold: 12, revision: 2 });
+
+    const producers = await supertest(__server).put('/v1/admin/repos/producers').set('Cookie', fx.cookie)
+      .send({ repo: REPO, installationId: 'inst-pg-producer', allowed: true });
+    expect(producers.status, JSON.stringify(producers.body)).toBe(200);
+    expect(producers.body.producers).toEqual(['inst-pg-producer']);
+
+    const view = await supertest(__server).get(`/v1/repo-settings?repo=${encodeURIComponent(REPO)}`).set(bearer(fx.key));
+    expect(view.status).toBe(200);
+    expect(view.body.settings).toMatchObject({
+      remoteUrl: CANON, verifyCommand: 'pnpm verify', revision: 2, receiptsMode: 'shadow',
+      shadowThreshold: 12, producers: ['inst-pg-producer'],
+    });
+    expect(view.headers.etag).toBeTruthy();
+
+    const revs = await supertest(__server).get(`/v1/admin/repos/revisions?repo=${encodeURIComponent(REPO)}`).set('Cookie', fx.cookie);
+    expect(revs.status).toBe(200);
+    expect(revs.body.revisions.map((r: any) => r.revision)).toEqual([2, 1]);
+    expect(revs.body.revisions[0]).toMatchObject({ source: 'admin', actorEmail: 'admin@x' });
+    expect(revs.body.revisions[1]).toMatchObject({ source: 'init', installationId: 'inst-pg-repo' });
+
+    const rows = await fx.db.all<{ n: number }>('SELECT COUNT(*) AS n FROM repo_settings', []);
+    expect(Number(rows[0].n)).toBe(1);
+  });
+});
