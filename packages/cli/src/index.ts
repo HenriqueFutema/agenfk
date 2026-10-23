@@ -26,6 +26,7 @@ import { registryFlowToLocal } from './registryFlowFile.js';
 import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
+import { registerCiCommands } from './commands/ci.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
 import { ensureLocalIgnored, stripLegacyProjectId, readLegacyProjectId, projectFileTracked, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
@@ -650,6 +651,7 @@ program
 ;
 
 registerHubCommands(program);
+registerCiCommands(program);
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).
 program.hook('preAction', (thisCommand, actionCommand) => {

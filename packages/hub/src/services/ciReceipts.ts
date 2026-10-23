@@ -197,7 +197,7 @@ const RECEIPT_COLUMNS = `id, kind, card_id, content_tree, command_revision, inst
   body_json, received_at`;
 
 /** What CI needs to judge one candidate, without its body or its report. */
-function summaryOf(row: ReceiptListRow, body: any) {
+function summaryOf(row: ReceiptListRow, body: any, producers: ReadonlySet<string>) {
   const available = Number(row.has_report) === 1;
   const reusable = Number(row.reusable) === 1;
   return {
@@ -210,6 +210,10 @@ function summaryOf(row: ReceiptListRow, body: any) {
     reusable,
     notReusableReason: reusable ? null : row.not_reusable_reason ?? null,
     installationId: row.installation_id,
+    // The allowlist as it stands NOW: `reusable` was decided when the receipt
+    // was written, and an admin who removed the producer since has said its
+    // receipts no longer stand in for anything.
+    producerAllowed: producers.has(row.installation_id),
     receivedAt: row.received_at instanceof Date ? row.received_at.toISOString() : String(row.received_at),
     ...(row.kind === 'review' ? { lenses: lensesOf(body) } : {}),
     // The declared size even when the report was not kept: "too big" says how big.
@@ -223,6 +227,14 @@ const lensesOf = (body: any): string[] =>
 const parseBody = (s: string): any => {
   try { return JSON.parse(s); } catch { return null; }
 };
+
+async function producersOf(db: HubDb, orgId: string, remoteUrl: string): Promise<Set<string>> {
+  const rows = await db.all<{ installation_id: string }>(
+    'SELECT installation_id FROM repo_producers WHERE org_id = ? AND remote_url = ?',
+    [orgId, remoteUrl],
+  );
+  return new Set(rows.map(r => r.installation_id));
+}
 
 /** The repository a read names, after the token's scope has had its say. */
 function scopedRepo(token: CiTokenContext, input: unknown): string {
@@ -275,6 +287,7 @@ export async function lookupReceipts(db: HubDb, token: CiTokenContext, q: Lookup
 
   const settings = await repoSettingsOf(db, token.orgId, remoteUrl);
   if (!settings) throw new CiError('repo_unknown', 'this repository has no settings for this organisation');
+  const producers = await producersOf(db, token.orgId, remoteUrl);
 
   const candidates = async (column: 'card_id' | 'content_tree', value: string) => {
     const rows = await db.all<ReceiptListRow>(
@@ -287,7 +300,7 @@ export async function lookupReceipts(db: HubDb, token: CiTokenContext, q: Lookup
       .map(r => ({ row: r, body: parseBody(r.body_json) }))
       .filter(({ body }) => lensText === null || lensesOf(body).includes(lensText))
       .slice(0, MAX_CANDIDATES)
-      .map(({ row, body }) => summaryOf(row, body));
+      .map(({ row, body }) => summaryOf(row, body, producers));
   };
 
   let cardId: string | null = null;
@@ -343,7 +356,8 @@ async function readableRow(db: HubDb, token: CiTokenContext, id: string) {
 export async function getReceipt(db: HubDb, token: CiTokenContext, id: string) {
   const row = await readableRow(db, token, id);
   const body = parseBody(row.body_json);
-  return { ...summaryOf(row, body), repo: row.remote_url, receipt: body };
+  const producers = await producersOf(db, token.orgId, row.remote_url);
+  return { ...summaryOf(row, body, producers), repo: row.remote_url, receipt: body };
 }
 
 /** The run's log as it was written, inflated from the gzip the hub kept. */

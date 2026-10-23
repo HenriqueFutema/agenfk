@@ -1,0 +1,85 @@
+name: AgEnFK receipt check
+description: >-
+  Ask the AgEnFK hub whether a verification or independent-review receipt
+  certifies this pull request's exact content (RFC-002). Gate the expensive
+  STEPS of a job on the `run` output, never the whole job: GitHub counts a
+  skipped job as a passing required check.
+
+inputs:
+  kind:
+    description: "What the gated steps stand for: verification or review."
+    required: true
+  lens:
+    description: "For kind review: the lens the gated steps perform (general, security, ...)."
+    required: false
+    default: ""
+  policy:
+    description: "run (default): run the steps when nothing qualifies. require: fail the job instead."
+    required: false
+    default: "run"
+  hub-url:
+    description: "The AgEnFK hub URL."
+    required: true
+  token:
+    description: "A ci_ token an org admin minted on the hub (store it as a secret)."
+    required: true
+  max-age:
+    description: "Only reuse a receipt younger than this many days."
+    required: false
+    default: ""
+  report-dir:
+    description: "Where the reused report or findings are written (default .agenfk-ci)."
+    required: false
+    default: ""
+  agenfk-version:
+    description: "The agenfk version to run. Pin it."
+    required: false
+    default: "latest"
+
+outputs:
+  run:
+    description: "'false' when a receipt lets the gated steps be skipped; 'true' otherwise. Gate steps with `!= 'false'`, so a check that never wrote it runs them."
+    value: ${{ steps.check.outputs.run }}
+  decision:
+    description: "reuse, run or block."
+    value: ${{ steps.check.outputs.decision }}
+  reason:
+    description: "Why, as a code (matched, tree_mismatch, hub_unavailable, ...)."
+    value: ${{ steps.check.outputs.reason }}
+  receipt-id:
+    description: "The receipt reused (or that Shadow would have reused)."
+    value: ${{ steps.check.outputs.receipt-id }}
+  would-reuse:
+    description: "Whether Enforce would reuse a receipt here; what Shadow measures."
+    value: ${{ steps.check.outputs.would-reuse }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      # Inputs reach the script as environment variables only, never spliced
+      # into its text, so an input cannot become code.
+      env:
+        KIND: ${{ inputs.kind }}
+        LENS: ${{ inputs.lens }}
+        POLICY: ${{ inputs.policy }}
+        MAX_AGE: ${{ inputs.max-age }}
+        REPORT_DIR: ${{ inputs.report-dir }}
+        AGENFK_VERSION: ${{ inputs.agenfk-version }}
+        AGENFK_HUB_URL: ${{ inputs.hub-url }}
+        AGENFK_CI_TOKEN: ${{ inputs.token }}
+      run: |
+        args=(--yes "agenfk@${AGENFK_VERSION:-latest}" ci check --kind "$KIND" --policy "${POLICY:-run}")
+        if [ -n "$LENS" ]; then args+=(--lens "$LENS"); fi
+        if [ -n "$MAX_AGE" ]; then args+=(--max-age "$MAX_AGE"); fi
+        if [ -n "$REPORT_DIR" ]; then args+=(--report-dir "$REPORT_DIR"); fi
+        set +e
+        npx "${args[@]}"
+        code=$?
+        set -e
+        # 10 means "run the gated steps", which the `run` output already says:
+        # it is not a failure of this step. 1 (the policy requires a receipt
+        # and none qualifies) and anything else fail the job.
+        if [ "$code" -eq 10 ]; then exit 0; fi
+        exit "$code"
