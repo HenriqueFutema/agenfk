@@ -12,6 +12,7 @@ import { orgRenameRouter } from './routes/orgRename.js';
 import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { repoSettingsAdminRouter, repoSettingsRouter } from './routes/repoSettings.js';
 import { receiptsRouter } from './routes/receipts.js';
+import { ciRouter, ciTokensAdminRouter } from './routes/ci.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
@@ -248,6 +249,8 @@ export async function createHubApp(
   mountRouter(app, '/v1/admin/repos', repoSettingsAdminRouter(ctx));
   mountRouter(app, '/v1', repoSettingsRouter(ctx));
   mountRouter(app, '/v1', receiptsRouter(ctx));
+  mountRouter(app, '/v1/ci', ciRouter(ctx));
+  mountRouter(app, '/v1/admin/ci-tokens', ciTokensAdminRouter(ctx));
   mountRouter(app, '/v1', eventsRouter(ctx));
   mountRouter(app, '/v1', flowsRouter(ctx));
   mountRouter(app, '/auth', authRouter(ctx));

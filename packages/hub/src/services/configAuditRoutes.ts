@@ -81,6 +81,16 @@ const installationSnap: Snapshot = async (db, orgId, p) =>
   (await db.get('SELECT * FROM installations WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
 // The handler takes the preview in any case and revokes the one LIVE key it names (BUG 915f76ed): the snapshot
 // finds that key the same way before, and by its full hash after, once it is revoked.
+const ciTokenSnap: Snapshot = async (db, orgId, p, req) => {
+  const known = (req as any)._auditCiTokenHash as string | undefined;
+  const row = known
+    ? await db.get<any>('SELECT token_hash, label, remote_url, created_at, revoked_at FROM ci_tokens WHERE org_id = ? AND token_hash = ?', [orgId, known])
+    : await db.get<any>('SELECT token_hash, label, remote_url, created_at, revoked_at FROM ci_tokens WHERE org_id = ? AND lower(token_hash) LIKE ? AND revoked_at IS NULL', [orgId, `${String(p.tokenHashPreview ?? '').toLowerCase()}%`]);
+  if (!row) return null;
+  (req as any)._auditCiTokenHash = row.token_hash;
+  const { token_hash: _hash, ...rest } = row;
+  return rest;
+};
 const apiKeySnap: Snapshot = async (db, orgId, p, req) => {
   const known = (req as any)._auditApiKeyHash as string | undefined;
   const row = known
@@ -144,6 +154,9 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   // API keys and installations
   { method: 'POST', path: '/v1/admin/api-keys', area: 'api-keys', action: 'api-key.issue', target: bodyField('label', 'API key'), noBody: true },
   { method: 'DELETE', path: '/v1/admin/api-keys/:tokenHashPreview', area: 'api-keys', action: 'api-key.revoke', target: param('tokenHashPreview', 'API key'), snapshot: apiKeySnap },
+  // CI read tokens (RFC-002). The issue keeps the request (label, scope, repo) as `after`: it never holds the token, which only the reply carries.
+  { method: 'POST', path: '/v1/admin/ci-tokens', area: 'api-keys', action: 'ci-token.issue', target: (_p, req) => `CI token ${typeof req.body?.label === 'string' ? req.body.label : ''}`.trim() },
+  { method: 'DELETE', path: '/v1/admin/ci-tokens/:tokenHashPreview', area: 'api-keys', action: 'ci-token.revoke', target: param('tokenHashPreview', 'CI token'), snapshot: ciTokenSnap },
   { method: 'POST', path: '/hub/device/approve', area: 'api-keys', action: 'device.approve', target: bodyField('userCode', 'device'), noBody: true },
   { method: 'POST', path: '/hub/invite/create', area: 'api-keys', action: 'invite.create', target: () => 'installation invite', noBody: true },
   { method: 'POST', path: '/hub/invite/redeem', area: 'api-keys', action: 'invite.redeem', target: () => 'installation invite', noBody: true, source: 'cli' },

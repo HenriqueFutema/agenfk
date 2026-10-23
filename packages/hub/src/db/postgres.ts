@@ -634,6 +634,19 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_receipts_repo
     ON receipts(org_id, remote_url, kind, content_tree);
+
+  -- CI read tokens (RFC-002). Mirrors the SQLite DDL above; see the comment
+  -- there. remote_url NULL is an org-wide token, never "no repository".
+  CREATE TABLE IF NOT EXISTS ci_tokens (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT,
+    label TEXT,
+    created_at TEXT NOT NULL,
+    created_by_email TEXT,
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ci_tokens_org ON ci_tokens(org_id);
 `;
 
 /**

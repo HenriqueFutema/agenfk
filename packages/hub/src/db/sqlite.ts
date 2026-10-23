@@ -718,6 +718,25 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_receipts_repo
     ON receipts(org_id, remote_url, kind, content_tree);
+
+  -- CI read tokens (RFC-002). A ci_ token is what a CI job presents to read
+  -- receipts, and nothing else: it lives in its own table so that no route
+  -- taking an installation's api key can ever accept one (it cannot write
+  -- events, publish receipts or claim a command), and an api key is never a CI
+  -- token either. remote_url is the ONE repository the token may read, in the
+  -- canonical spelling repo_settings uses; NULL is the whole organisation,
+  -- which an admin has to ask for explicitly. Only the sha256 of the token is
+  -- kept. Timestamps are ISO TEXT written by the app.
+  CREATE TABLE IF NOT EXISTS ci_tokens (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT,
+    label TEXT,
+    created_at TEXT NOT NULL,
+    created_by_email TEXT,
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ci_tokens_org ON ci_tokens(org_id);
 `;
 
 class SqliteAdapter implements HubDb {
