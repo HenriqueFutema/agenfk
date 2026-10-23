@@ -681,6 +681,43 @@ const SCHEMA_SQLITE = `
     PRIMARY KEY (org_id, remote_url, installation_id)
   );
   CREATE INDEX IF NOT EXISTS idx_repo_producers_repo ON repo_producers(org_id, remote_url);
+
+  -- Verification/review receipts (RFC-002). A receipt is a claim one machine
+  -- makes for another to honour — "this command, run on this tree, passed on
+  -- this card" — and the hub is where the claim becomes a record. It is
+  -- WRITE-ONCE: the id is minted by the producing machine and is the primary
+  -- key, so a retry cannot duplicate a row and a different body under a taken
+  -- id is refused rather than merged. The row is keyed by the canonical remote
+  -- URL like repo_settings, and its installation_id is the PUBLISHING key's
+  -- installation, never anything the body claims - the credential is the
+  -- producer. reusable is the hub's decision taken at write time (producer
+  -- allowlist, report cap, the producer's own offer) and not_reusable_reason
+  -- records which said no, so a reader never has to guess why a receipt cannot
+  -- be trusted. body_json is the receipt exactly as received and body_hash the
+  -- sha256 of exactly that string, which is what makes a retry recognisable as
+  -- a retry. report_gz_b64 is the run log gzipped, and only while the log fits
+  -- under the hub's cap (measured on the uncompressed bytes); report_bytes is
+  -- the log's size either way, so "too big to keep" still says how big.
+  -- received_at is ISO TEXT written by the app, as everywhere else here.
+  CREATE TABLE IF NOT EXISTS receipts (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('verification','review')),
+    installation_id TEXT NOT NULL,
+    card_id TEXT,
+    content_tree TEXT,
+    command_revision INTEGER,
+    body_json TEXT NOT NULL,
+    body_hash TEXT NOT NULL,
+    reusable INTEGER NOT NULL,
+    not_reusable_reason TEXT,
+    report_gz_b64 TEXT,
+    report_bytes INTEGER,
+    received_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_receipts_repo
+    ON receipts(org_id, remote_url, kind, content_tree);
 `;
 
 class SqliteAdapter implements HubDb {

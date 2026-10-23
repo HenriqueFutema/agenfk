@@ -294,6 +294,21 @@ describe('hub receiptPublisher.publishPendingReceipts', () => {
     expect(JSON.stringify(calls[0].body.report)).not.toContain('log line');
   });
 
+  it('a log bigger than the uncompressed cap goes as omitted, and is not gzipped at all', async () => {
+    const rcpt = receipt();
+    await seed([rcpt]);
+    // The hub measures its cap on the UNCOMPRESSED log, so the client must too:
+    // a 30 MB suite log gzips small, and a client that only looked at the gzip
+    // would send it for the hub to throw away.
+    fs.writeFileSync(logPath, 'x'.repeat(50));
+    const { fetchImpl, calls } = makeHubFetch(() => ({ status: 201, body: { id: rcpt.id, stored: 'new', reusable: false, reason: 'report_over_cap' } }));
+
+    expect(await publishPendingReceipts(args(fetchImpl, { maxReportBytes: 10 }))).toMatchObject({ acked: 1 });
+
+    expect(calls[0].body.report).toEqual({ omitted: 'over_cap', bytes: 50 });
+    expect(JSON.stringify(calls[0].body.report)).not.toContain('xxx');
+  });
+
   it('a card whose receipt has no log sends no report at all', async () => {
     const rcpt = receipt({ execution: { ...receipt().execution, logPath: null } });
     await seed([rcpt]);

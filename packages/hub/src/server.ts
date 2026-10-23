@@ -11,6 +11,7 @@ import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
 import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { repoSettingsAdminRouter, repoSettingsRouter } from './routes/repoSettings.js';
+import { receiptsRouter } from './routes/receipts.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
@@ -246,6 +247,7 @@ export async function createHubApp(
   // installation's own read/claim, likewise ahead of the broad /v1 routers.
   mountRouter(app, '/v1/admin/repos', repoSettingsAdminRouter(ctx));
   mountRouter(app, '/v1', repoSettingsRouter(ctx));
+  mountRouter(app, '/v1', receiptsRouter(ctx));
   mountRouter(app, '/v1', eventsRouter(ctx));
   mountRouter(app, '/v1', flowsRouter(ctx));
   mountRouter(app, '/auth', authRouter(ctx));

@@ -14,6 +14,7 @@ import type { Flow } from '@agenfk/core';
 import { flowChecksErrors, normalizeFlowSteps } from '@agenfk/core';
 import type { HubConfig } from './types.js';
 import { syncRepoSettings, declaredVerifyCommand } from './repoSettingsSync.js';
+import { publishPendingReceipts } from './receiptPublisher.js';
 
 export type FetchLike = (url: string, opts: any) => Promise<{
   status: number;
@@ -270,6 +271,21 @@ export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
         console.error(`[HUB_REPO_SETTINGS] Unexpected error for project ${project.id}:`, (e as Error).message);
       }
     }
+  }
+
+  // RFC-002: receipts a card is still holding go to the hub now. After the
+  // per-project loop and in its own try/catch: publishing is per CARD, not per
+  // project, so it has nothing to do with the reconcile above, and a hub that
+  // is unreachable on the flow channel must not be the reason a receipt is
+  // never sent (nor a throw here the reason a flow never reconciled).
+  try {
+    await publishPendingReceipts({
+      storage: args.storage,
+      hubConfig: args.hubConfig,
+      fetchImpl: args.fetchImpl,
+    });
+  } catch (e) {
+    console.error('[HUB_RECEIPTS] publish failed:', (e as Error).message);
   }
 }
 

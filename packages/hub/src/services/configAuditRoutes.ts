@@ -213,6 +213,7 @@ export const AUDIT_EXEMPT_ROUTES: Record<string, string> = {
   'POST /auth/login': 'a sign-in, not a change to any setting',
   'POST /auth/logout': 'a sign-out, not a change to any setting',
   'POST /v1/events': "installations' activity events, the hub's data, not its configuration",
+  'POST /v1/receipts': 'receipts are what installations report, the hub\'s data, not its configuration',
   'POST /v1/admin/flows/contract': 'describes a draft flow and stores nothing',
   'POST /v1/admin/rollups/recompute': 'rebuilds derived statistics from the events; no setting changes',
   'POST /v1/admin/system/pending/ack': 'dismisses a notice the hub showed; no setting changes',

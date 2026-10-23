@@ -34,6 +34,7 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'repo_command_revisions',
   'repo_producers',
   'repo_settings',
+  'receipts',
   'repoint_campaigns',
   'rollups_daily',
   'upgrade_directives',

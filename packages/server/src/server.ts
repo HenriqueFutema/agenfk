@@ -22,6 +22,7 @@ import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEna
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
+import { publishPendingReceipts } from "./hub/receiptPublisher.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
 import { createWorktree, removeWorktree } from "./worktrees.js";
@@ -10561,6 +10562,19 @@ async function handleValidateProgress(itemId: string, command: string | undefine
               const current = await storage.getItem(itemId);
               await storage.updateItem(itemId, { verificationReceipts: [...(((current as any)?.verificationReceipts) ?? []), receipt] } as any);
               io.emit('items_updated');
+              // RFC-002: try to hand it to the hub now, while the close that made
+              // it is still this request. Not awaited — a hub that is down must
+              // not delay the close's reply by a timeout — and its errors are
+              // swallowed here because the receipt stays `pending` on the card
+              // either way, so the flow-sync tick will try again. With no hub
+              // configured there is nobody to ask, and nothing is attempted.
+              if (hubClient.hubConfig) {
+                void publishPendingReceipts({
+                  storage: storage as SQLiteStorageProvider,
+                  hubConfig: hubClient.hubConfig,
+                  fetchImpl: globalThis.fetch as any,
+                }).catch(e => console.error('[HUB_RECEIPTS]', e?.message || e));
+              }
             } catch (e: any) {
               console.error(`[validate] verification receipt failed for ${itemId}: ${e?.message || e}`);
             }
