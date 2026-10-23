@@ -50,6 +50,14 @@ const mark = (marker: string) => nodeCommand(`require('fs').writeFileSync(${JSON
 
 /** A committed repository whose .agenfk/project.json declares `verifyCommand`. */
 function repoDeclaring(verifyCommand: string): string {
+  return makeRepo(verifyCommand);
+}
+
+/**
+ * A committed repository, optionally with extra committed files beside the
+ * `.agenfk/project.json` that declares the command.
+ */
+function makeRepo(verifyCommand: string, files: Record<string, string> = {}): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hubverify-'));
   repos.push(dir);
   execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir, shell: posixShell() });
@@ -57,7 +65,11 @@ function repoDeclaring(verifyCommand: string): string {
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'test');
   fs.mkdirSync(path.join(dir, '.agenfk'));
   fs.writeFileSync(path.join(dir, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand }));
-  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\nFILE_RAN\nHUB_RAN\nSTORED_RAN\n');
+  for (const [rel, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), content);
+  }
+  fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\nFILE_RAN\nHUB_RAN\nSTORED_RAN\nRAN_HERE\n');
   execSync('git add . && git commit -qm one', { cwd: dir, shell: posixShell() });
   return dir;
 }
@@ -135,6 +147,70 @@ describe('the hub command runs at the final verify', () => {
     expect(fs.existsSync(path.join(dir, 'HUB_RAN'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'FILE_RAN'))).toBe(false);
     expect((await storage.getItem(id))?.status).toBe('WORK');
+  });
+
+  it('the card runs from its project root, which is why a repo-relative hub command works at all', async () => {
+    // The two-checkouts test below is the point of the feature. This is the
+    // single-checkout half of it, named on its own: the final verify runs in the
+    // project root, so `./scripts/mark.js` is the file that was committed, not
+    // one the shell found somewhere else.
+    const dir = makeRepo('npm test', { 'scripts/mark.js': "require('fs').writeFileSync('RAN_HERE', '');\n" });
+    const pid = await project(await twoSteps(), { projectRoot: dir });
+    await storage.updateProject(pid, { hubRepoSettings: hubSettings('node ./scripts/mark.js') } as any);
+    const id = await card(pid, 'WORK');
+
+    const res = await validate(id);
+    expect(res.body.error, JSON.stringify(res.body)).toBeUndefined();
+    expect(fs.existsSync(path.join(dir, 'RAN_HERE'))).toBe(true);
+    expect(fs.existsSync(path.join(process.cwd(), 'RAN_HERE'))).toBe(false);
+    expect((await storage.getItem(id))?.status).toBe('END');
+  });
+});
+
+describe('one hub command, written once, in two checkouts of the same repository', () => {
+  /**
+   * The point of the whole feature (RFC-002, task 4ce27d50).
+   *
+   * The hub holds ONE command for the repository and every clone runs it, from
+   * that clone's own root. So one command written relative to the repository has
+   * to work in both checkouts — and it has to prove it by writing its marker
+   * NEXT TO ITSELF, not in the other checkout or in the server's directory.
+   *
+   * `scripts/mark.js` is committed code, so each checkout has its own copy;
+   * `RAN_HERE` is dropped in the working directory the command ran in, which is
+   * what makes the two assertions below a real test of "from the root".
+   */
+  const MARK_COMMAND = "node scripts/mark.js";
+  const MARK_SCRIPT = "require('fs').writeFileSync('RAN_HERE', '');\n";
+  /** One committed file at each checkout's own path — not a machine's path. */
+  const makeCheckout = () => makeRepo('npm test', { 'scripts/mark.js': MARK_SCRIPT });
+
+  it('runs in both checkouts and each one is marked in its own root; both cards reach END', async () => {
+    const flowId = await twoSteps();
+    const checkouts = [makeCheckout(), makeCheckout()];
+    // Two machines, one repository, one hub record — the same settings on both.
+    const projects: string[] = [];
+    for (const dir of checkouts) {
+      const pid = await project(flowId, { projectRoot: dir });
+      await storage.updateProject(pid, { hubRepoSettings: hubSettings(MARK_COMMAND) } as any);
+      projects.push(pid);
+    }
+
+    for (const [i, pid] of projects.entries()) {
+      const id = await card(pid, 'WORK');
+      const res = await validate(id);
+      expect(res.body.error, `${checkouts[i]}: ${JSON.stringify(res.body)}`).toBeUndefined();
+      // Its OWN root, and only its own.
+      expect(fs.existsSync(path.join(checkouts[i], 'RAN_HERE')), `RAN_HERE in ${checkouts[i]}`).toBe(true);
+      expect((await storage.getItem(id))?.status).toBe('END');
+    }
+    // A marker in a checkout means the command ran THERE, with that checkout as
+    // its working directory: each root holds exactly one, and neither card's run
+    // leaked into the other checkout or into the server's own directory.
+    for (const dir of checkouts) {
+      expect(fs.readdirSync(dir).filter((f) => f === 'RAN_HERE')).toEqual(['RAN_HERE']);
+    }
+    expect(fs.existsSync(path.join(process.cwd(), 'RAN_HERE'))).toBe(false);
   });
 });
 

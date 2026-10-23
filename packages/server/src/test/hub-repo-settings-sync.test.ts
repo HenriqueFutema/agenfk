@@ -181,6 +181,54 @@ describe('hub repoSettingsSync.syncRepoSettings', () => {
     expect(stored.revision).toBe(3);
   });
 
+  it('claims the repository with a path inside the checkout rewritten to repo-relative', async () => {
+    // The hub hands the command to every clone and runs it from the repository
+    // root, so an absolute path into THIS checkout must go over as a relative
+    // one: `/work/app/scripts/verify.js` is Ana's checkout, `./scripts/verify.js`
+    // is everybody's.
+    await mkProject(storage, 'p1');
+    const winner = settingsPath(1);
+    const { fetchImpl, calls } = makeHubFetch({
+      get: { status: 200, body: { settings: null } },
+      init: { status: 201, body: { settings: winner } },
+    });
+
+    const result = await syncRepoSettings(args({ fetchImpl, localCommand: 'node /work/app/scripts/verify.js', projectRoot: '/work/app' }));
+
+    expect(result.outcome, JSON.stringify(result)).toBe('initialized');
+    const posts = calls.filter((c) => c.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body).toEqual({ repo: REMOTE, verifyCommand: 'node ./scripts/verify.js' });
+  });
+
+  it('a command naming a path outside the checkout is never POSTed: error, and the reason names the path', async () => {
+    await mkProject(storage, 'p1');
+    const before = await storage.getProject('p1');
+    const { fetchImpl, calls } = makeHubFetch({
+      get: { status: 200, body: { settings: null } },
+      init: { status: 201, body: { settings: settingsPath(1) } },
+    });
+
+    const result = await syncRepoSettings(args({ fetchImpl, localCommand: 'bash /opt/tools/check.sh', projectRoot: '/work/app' }));
+
+    expect(result.outcome, JSON.stringify(result)).toBe('error');
+    expect((result as any).error).toContain('/opt/tools/check.sh');
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+    expect((await storage.getProject('p1'))?.hubRepoSettings).toEqual(before?.hubRepoSettings);
+  });
+
+  it('a local command with no path at all is claimed as written, with or without a project root', async () => {
+    await mkProject(storage, 'p1');
+    const { fetchImpl, calls } = makeHubFetch({
+      get: { status: 200, body: { settings: null } },
+      init: { status: 201, body: { settings: settingsPath(1) } },
+    });
+
+    expect((await syncRepoSettings(args({ fetchImpl, localCommand: 'make check' }))).outcome).toBe('initialized');
+    expect((await syncRepoSettings(args({ fetchImpl, localCommand: 'pnpm verify', projectRoot: '/work/app' }))).outcome).toBe('initialized');
+    expect(calls.filter((c) => c.method === 'POST').map((c) => c.body.verifyCommand)).toEqual(['make check', 'pnpm verify']);
+  });
+
   it('the hub has none and we have no local command → none, no POST, nothing written', async () => {
     await mkProject(storage, 'p1');
     const { fetchImpl, calls } = makeHubFetch({ get: { status: 200, body: { settings: null } } });
@@ -321,6 +369,64 @@ describe('runFlowSyncTick also pulls repo settings', () => {
     const posts = calls.filter((c) => c.method === 'POST');
     expect(posts).toHaveLength(1);
     expect(posts[0].body).toEqual({ repo: REMOTE, verifyCommand: 'make check' });
+  });
+
+  it("rewrites a path inside the project root before claiming it — the root is the project's", async () => {
+    // The claim is written with the project's own checkout as the root, not with
+    // whatever directory the server happens to run in. The repository declares
+    // its command with a path that points back into its own checkout — what a
+    // machine-local editor writes into `.agenfk/project.json`.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-sync-root-'));
+    fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: `node ${path.join(dir, 'scripts', 'verify.js')}` }));
+    await mkProject(storage, 'pa', { projectRoot: dir });
+    const { fetchImpl, calls } = makeHubFetch({
+      get: { status: 200, body: { settings: null } },
+      init: { status: 201, body: { settings: settingsPath(1) } },
+    });
+
+    await runFlowSyncTick({
+      storage,
+      hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG },
+      fetchImpl,
+      emit: vi.fn(),
+      etagCache: new Map<string, string>(),
+      resolveRepo: async (projectId) => (projectId === 'pa' ? REMOTE : null),
+    } as any);
+
+    const posts = calls.filter((c) => c.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body.verifyCommand.replace(/\\/g, '/')).toBe('node ./scripts/verify.js');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a project whose command names a path outside its checkout never claims the repository: the POST is withheld', async () => {
+    // The whole point of refusing on the client: a command that would only run on
+    // this machine must not become the record every other clone is handed. The
+    // sync's own error is swallowed per project by the tick (a hub outage on one
+    // project must not stop the next), so what the tick has to prove is that no
+    // POST left and nothing was stored.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-sync-outside-'));
+    fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: 'bash /opt/tools/check.sh' }));
+    await mkProject(storage, 'pa', { projectRoot: dir });
+    const { fetchImpl, calls } = makeHubFetch({
+      get: { status: 200, body: { settings: null } },
+      init: { status: 201, body: { settings: settingsPath(1) } },
+    });
+
+    await runFlowSyncTick({
+      storage,
+      hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG },
+      fetchImpl,
+      emit: vi.fn(),
+      etagCache: new Map<string, string>(),
+      resolveRepo: async (projectId) => (projectId === 'pa' ? REMOTE : null),
+    } as any);
+
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+    expect((await storage.getProject('pa'))?.hubRepoSettings).toBeFalsy();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('prefers the repository-declared command over the stored one', async () => {

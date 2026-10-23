@@ -33,6 +33,21 @@ const SECRET = 'a'.repeat(64);
 const ADMIN_EMAIL = 'admin@x';
 const PASSWORD = 'longenough1';
 
+/**
+ * A command naming a file on one person's machine.
+ *
+ * The hub holds ONE command per repository and hands it to every clone, so a
+ * path that resolves on Ana's laptop is a command that runs there and nowhere
+ * else. The hub cannot know anyone's checkout root, so it refuses the shape:
+ * any absolute or home path, with its own code.
+ *
+ * Written with `/` separators and quoted: the hub is one server, and on Windows
+ * a bare `C:\Users\ana\app\run.sh` in a test string loses its backslashes to the
+ * shell before it ever reaches a path function.
+ */
+const PATH_ON_A_LAPTOP = '/Users/ana/app/run.sh';
+const CMD_ON_A_LAPTOP = `bash "${PATH_ON_A_LAPTOP}"`;
+
 const REPO_HTTPS = 'https://github.com/acme/app.git';
 const REPO_SSH = 'git@github.com:acme/app.git';
 const REPO_BARE = 'https://github.com/acme/app';
@@ -230,6 +245,17 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub repository settings (%s)', (
       expect(rows).toHaveLength(0);
     });
 
+    it('refuses a command naming a path on one machine with 400 machine_specific_path, and writes nothing', async () => {
+      const r = await init(keyA, REPO_HTTPS, CMD_ON_A_LAPTOP);
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+      expect(r.body.code).toBe('machine_specific_path');
+      // The message names the path, so the person can find it in their own command.
+      expect(String(r.body.error)).toContain(PATH_ON_A_LAPTOP);
+      // Nothing half-claimed the repository: no record, and no revision either.
+      expect(await db.all<any[]>('SELECT * FROM repo_settings', [])).toHaveLength(0);
+      expect(await db.all<any[]>('SELECT * FROM repo_command_revisions', [])).toHaveLength(0);
+    });
+
     it('rejects a missing or unusable repo with 400 invalid_repo', async () => {
       for (const bad of ['', '   ', null, 7]) {
         const r = await init(keyA, bad, CMD_A);
@@ -420,6 +446,25 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub repository settings (%s)', (
       const r = await adminPut('command', { repo: REPO_HTTPS, verifyCommand: '   ' });
       expect(r.status).toBe(400);
       expect(r.body.code).toBe('invalid_command');
+    });
+
+    it('PUT command naming a path on one machine is 400 machine_specific_path, and no revision is written', async () => {
+      await seedRepo();
+      const before = await db.all<any[]>('SELECT * FROM repo_command_revisions', []);
+      expect(before).toHaveLength(1);
+
+      const r = await adminPut('command', { repo: REPO_HTTPS, verifyCommand: CMD_ON_A_LAPTOP });
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+      expect(r.body.code).toBe('machine_specific_path');
+      expect(String(r.body.error)).toContain(PATH_ON_A_LAPTOP);
+
+      // The refused revision wrote no history row, and the record still holds
+      // the command it held before — an admin cannot half-land a command.
+      expect(await db.all<any[]>('SELECT * FROM repo_command_revisions', [])).toHaveLength(1);
+      const stored = await db.all<any>('SELECT verify_command, revision FROM repo_settings', []);
+      expect(stored).toHaveLength(1);
+      expect(String(stored[0].verify_command)).toBe(CMD_A);
+      expect(Number(stored[0].revision)).toBe(1);
     });
   });
 
