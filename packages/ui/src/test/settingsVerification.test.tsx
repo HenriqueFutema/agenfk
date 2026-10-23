@@ -32,6 +32,7 @@ vi.mock('../api', () => ({
       { key: 'exclusiveSuite', label: 'One suite run at a time', description: 'For suites sharing a database.', value: 'Off', origin: 'set-here', from: 'Set here.' },
     ] })),
     updateProject: vi.fn(async () => ({})),
+    listProjects: vi.fn(async () => [{ id: 'p1', name: 'Alpha' }, { id: 'p2', name: 'Beta' }]),
   },
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -105,6 +106,41 @@ describe('Settings: Project', () => {
     await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith('p1', { verifyAtScope: 'project' }));
     fireEvent.click(screen.getByTestId('setting-toggle-exclusiveSuite'));
     await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith('p1', { exclusiveSuite: true }));
+  });
+
+  // CGLAB-670: its subtitle said "every project on this installation".
+  it('says its settings apply only to the open project, by name', async () => {
+    renderPanel('p1');
+    fireEvent.click(await screen.findByRole('button', { name: /^Project$/ }));
+    const header = (await screen.findByRole('heading', { name: 'Project' })).parentElement!;
+    await waitFor(() => expect(header.textContent).toMatch(/These apply only to Alpha, the project open on the board\./));
+    expect(header.textContent).not.toMatch(/every project/);
+  });
+
+  it('says the open project without a name when the project list has none for it', async () => {
+    renderPanel('p9');
+    fireEvent.click(await screen.findByRole('button', { name: /^Project$/ }));
+    const header = (await screen.findByRole('heading', { name: 'Project' })).parentElement!;
+    await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
+    expect(header.textContent).toMatch(/These apply only to the project open on the board\./);
+    expect(header.textContent).not.toMatch(/every project/);
+  });
+
+  it('says the open project without a name, and keeps its settings, when the project list cannot be read', async () => {
+    vi.mocked(api.listProjects).mockRejectedValueOnce(new Error('down'));
+    renderPanel('p1');
+    fireEvent.click(await screen.findByRole('button', { name: /^Project$/ }));
+    const header = (await screen.findByRole('heading', { name: 'Project' })).parentElement!;
+    await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
+    expect(header.textContent).toMatch(/These apply only to the project open on the board\./);
+    expect(await screen.findByTestId('setting-toggle-exclusiveSuite')).toBeTruthy();
+  });
+
+  it('leaves the other sections saying they apply to every project', async () => {
+    renderPanel('p1');
+    fireEvent.click(await screen.findByRole('button', { name: /Verification/ }));
+    const header = (await screen.findByRole('heading', { name: 'Verification' })).parentElement!;
+    expect(header.textContent).toMatch(/These apply to every project on this installation\./);
   });
 
   it('is not offered with no project open', async () => {
