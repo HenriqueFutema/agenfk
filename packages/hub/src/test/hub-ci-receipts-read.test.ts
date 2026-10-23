@@ -536,6 +536,57 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub CI read tokens and receipts 
     });
   });
 
+  // ── the admin's view of a repository's receipts ──────────────────────────
+  describe('GET /v1/admin/repos/receipts and lastReceiptAt (the Repositories page)', () => {
+    it('lists a repository\'s recent receipts, newest first, with the card title and the hub\'s verdict', async () => {
+      const first = await publish(verification());
+      await new Promise(r => setTimeout(r, 5));
+      const second = await publish(review(['general', 'security'], { reusable: false, notReusableReason: 'not_independent' }));
+      const r = await srv().get('/v1/admin/repos/receipts').query({ repo: REPO_HTTPS }).set('Cookie', cookieAdmin);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.receipts.map((x: any) => x.id)).toEqual([second, first]);
+      expect(r.body.receipts[1]).toMatchObject({
+        id: first, kind: 'verification', cardId: 'card-root', cardTitle: 'Root', reusable: true, notReusableReason: null,
+        installationId: 'inst-alice', contentTree: TREE, commandRevision: 1,
+      });
+      expect(r.body.receipts[0]).toMatchObject({ id: second, kind: 'review', reusable: false, notReusableReason: 'not_reusable_by_producer', lenses: ['general', 'security'] });
+      expect(r.body.receipts[0].receipt).toBeUndefined();
+    });
+
+    it('shows only this repository of this org', async () => {
+      await publish(verification({ repo: REPO2_HTTPS }));
+      await db.run(
+        `INSERT INTO repo_producers (org_id, remote_url, installation_id, added_at) VALUES ('org-b', ?, 'inst-other', '2026-01-01T00:00:00Z')`,
+        [CANON],
+      );
+      const theirs = await srv().post('/v1/receipts').set(bearer(keyB)).send({ receipt: verification() });
+      expect(theirs.status, JSON.stringify(theirs.body)).toBe(201);
+      const r = await srv().get('/v1/admin/repos/receipts').query({ repo: REPO_HTTPS }).set('Cookie', cookieAdmin);
+      expect(r.body.receipts).toEqual([]);
+    });
+
+    it('is for admins only', async () => {
+      expect((await srv().get('/v1/admin/repos/receipts').query({ repo: REPO_HTTPS }).set('Cookie', cookieMember)).status).toBe(403);
+      const { token } = await mint({ scope: 'org' });
+      expect((await srv().get('/v1/admin/repos/receipts').query({ repo: REPO_HTTPS }).set(bearer(token))).status).toBe(401);
+    });
+
+    it('refuses a repository that is not a usable remote', async () => {
+      const r = await srv().get('/v1/admin/repos/receipts').query({ repo: '' }).set('Cookie', cookieAdmin);
+      expect(r.status).toBe(400);
+    });
+
+    it('the repository list says when each repository last received a receipt', async () => {
+      const id = await publish(verification());
+      const row = await db.get<any>('SELECT received_at FROM receipts WHERE id = ?', [id]);
+      const r = await srv().get('/v1/admin/repos').set('Cookie', cookieAdmin);
+      expect(r.status).toBe(200);
+      const byRepo = Object.fromEntries(r.body.repos.map((x: any) => [x.remoteUrl, x]));
+      expect(byRepo[CANON].lastReceiptAt).toBe(String(row.received_at));
+      expect(byRepo[CANON2].lastReceiptAt).toBeNull();
+    });
+  });
+
   // ── one receipt, and its report ──────────────────────────────────────────
   describe('GET /v1/ci/receipts/:id and its report', () => {
     it('returns the receipt exactly as published, with the hub\'s verdict', async () => {
