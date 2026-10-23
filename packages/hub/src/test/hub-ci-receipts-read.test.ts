@@ -441,6 +441,20 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub CI read tokens and receipts 
       expect(r.body.receipts[0]).toMatchObject({ id, reusable: false, notReusableReason: 'not_reusable_by_producer' });
     });
 
+    it('says whether the producer is on the allowlist NOW, not only when it published', async () => {
+      const id = await publish(verification());
+      const { token } = await mint({ repo: REPO_HTTPS });
+      const before = await lookup(token, { repo: REPO_HTTPS, kind: 'verification', tree: TREE });
+      expect(before.body.receipts[0]).toMatchObject({ id, reusable: true, producerAllowed: true });
+      const removed = await srv().put('/v1/admin/repos/producers').set('Cookie', cookieAdmin)
+        .send({ repo: REPO_HTTPS, installationId: 'inst-alice', allowed: false });
+      expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+      const after = await lookup(token, { repo: REPO_HTTPS, kind: 'verification', tree: TREE });
+      expect(after.body.receipts[0]).toMatchObject({ id, producerAllowed: false });
+      const one = await srv().get(`/v1/ci/receipts/${id}`).set(bearer(token));
+      expect(one.body.producerAllowed).toBe(false);
+    });
+
     it('says a receipt published without a report has none', async () => {
       await publish(verification(), false);
       const { token } = await mint({ repo: REPO_HTTPS });
