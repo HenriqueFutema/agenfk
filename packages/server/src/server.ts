@@ -4538,18 +4538,19 @@ function effectiveVerifyCommand(project: any): { command: string | null; fromFil
   return { command: stored, fromFile: false };
 }
 
-/**
- * The command the FINAL verify runs: the repository's file, else the stored
- * row - resolved exactly as the final step resolves it, so what the leave plan
- * says is what runs. Unlike `effectiveVerifyCommand`, a test report's command
- * does not stand in for it: the final gate runs the project's own command.
- */
 /** RFC-002: the hub's authoritative verify command for this project, when the hub has one. */
 function hubVerifyCommandOf(project: any): string | null {
   const c = project?.hubRepoSettings?.verifyCommand;
   return typeof c === 'string' && c.trim() ? c : null;
 }
 
+/**
+ * The command the FINAL verify runs: the hub's command when the hub has one,
+ * else the repository's file, else the stored
+ * row - resolved exactly as the final step resolves it, so what the leave plan
+ * says is what runs. Unlike `effectiveVerifyCommand`, a test report's command
+ * does not stand in for it: the final gate runs the project's own command.
+ */
 function finalVerifyCommandOf(project: any): string | undefined {
   const hub = hubVerifyCommandOf(project);
   if (hub) return hub;
