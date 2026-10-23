@@ -52,6 +52,10 @@ const ROWS: Row[] = [
   { command: 'bash /opt/tools/check.sh', output: null, refused: ['/opt/tools/check.sh'] },
   { command: 'bash ~/bin/check.sh', output: null, refused: ['~/bin/check.sh'] },
   { command: 'node /work/app/../other/x.js', output: null, refused: ['/work/app/../other/x.js'] },
+  // An unquoted path that escapes its own space: the backslash is the shell's,
+  // not the path's, so the replacement has to bring its own or the shell reads
+  // two words where the command named one file.
+  { command: 'node /work/app/run\\ all.sh', output: 'node ./run\\ all.sh', rewritten: [{ from: '/work/app/run all.sh', to: './run\\ all.sh' }] },
 ];
 
 describe('a command from this checkout, made relative to it', () => {
@@ -226,8 +230,10 @@ describe('machineSpecificPaths() — the hub’s view, with no checkout', () => 
         return r.ok ? [] : r.paths;
       })();
       expect(machineSpecificPaths(command), command).toEqual(fromRefusal);
+      // A row the client may rewrite (inside /work/app) still names an absolute
+      // path, which the hub, having no checkout, must refuse: only the refused
+      // rows are pinned to their own list here.
       if (refused) expect(machineSpecificPaths(command), command).toEqual(refused);
-      else expect(machineSpecificPaths(command), command).toEqual([]);
     }
   });
 

@@ -29,6 +29,7 @@ export * from './projectSettings';
 export * from './projectFile';
 export * from './projectIdentity';
 export * from './fileCommand';
+export * from './commandPaths';
 export * from './privateFile';
 export * from './hubDeadletter';
 export * from './releaseChannel';

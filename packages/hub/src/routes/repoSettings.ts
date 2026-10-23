@@ -35,6 +35,7 @@ import {
 const STATUS_FOR: Record<RepoSettingsError['code'], number> = {
   invalid_repo: 400,
   invalid_command: 400,
+  machine_specific_path: 400,
   invalid_mode: 400,
   invalid_threshold: 400,
   unknown_installation: 400,

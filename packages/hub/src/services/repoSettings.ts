@@ -1,4 +1,5 @@
 import type { HubDb } from '../db/types.js';
+import { machineSpecificPaths } from '@agenfk/core';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 
 /**
@@ -33,6 +34,7 @@ export class RepoSettingsError extends Error {
     readonly code:
       | 'invalid_repo'
       | 'invalid_command'
+      | 'machine_specific_path'
       | 'not_found'
       | 'invalid_mode'
       | 'invalid_threshold'
@@ -102,13 +104,33 @@ export function canonicalRepo(input: unknown): string {
   return canonical;
 }
 
-/** A verify command: trimmed, non-empty, bounded. */
+/**
+ * A verify command: trimmed, non-empty, bounded, and portable.
+ *
+ * The hub has nobody's disk, so it cannot tell a repository's own file from
+ * Ana's directory next door — but it does not have to. The command it stores
+ * runs from the repository root on EVERY machine that clones the repository,
+ * so any absolute or home-relative path in it names a file on the one machine
+ * that wrote it and nowhere else (the client that CAN see the checkout would
+ * have made it `./scripts/verify.sh`). Such a command is refused, whatever the
+ * path happens to be on the machine that sent it.
+ */
 export function validCommand(input: unknown): string {
   if (typeof input !== 'string') throw new RepoSettingsError('invalid_command', 'verifyCommand must be a string');
   const trimmed = input.trim();
   if (!trimmed) throw new RepoSettingsError('invalid_command', 'verifyCommand is required');
   if (trimmed.length > MAX_VERIFY_COMMAND_LENGTH) {
     throw new RepoSettingsError('invalid_command', `verifyCommand is longer than ${MAX_VERIFY_COMMAND_LENGTH} characters`);
+  }
+  const bad = machineSpecificPaths(trimmed);
+  if (bad.length) {
+    const listed = bad.map((p) => `\`${p}\``).join(', ');
+    throw new RepoSettingsError(
+      'machine_specific_path',
+      `The verify command runs from the repository root on every machine that clones the repository, `
+      + `so it cannot name a path that only exists on one machine: ${listed}. `
+      + 'Name the file relative to the repository instead (for example `./scripts/verify.sh`).',
+    );
   }
   return trimmed;
 }

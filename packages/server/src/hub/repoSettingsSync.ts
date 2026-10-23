@@ -17,6 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
+import { normalizeCommandPaths } from '@agenfk/core';
 import type { HubConfig } from './types.js';
 import type { FetchLike } from './flowSync.js';
 
@@ -47,6 +48,14 @@ export interface SyncRepoSettingsArgs {
   remoteUrl: string;
   /** This repository's own command, to claim an unclaimed record with. */
   localCommand: string | null;
+  /**
+   * This checkout's root, when the caller can see it. The hub keys the record on
+   * the remote and runs the command from the repository root on every machine,
+   * so a path inside THIS checkout is sent as `./scripts/verify.sh` and a path
+   * outside it is refused before the POST — the hub cannot tell the two apart
+   * and must never be told about a directory that exists on one laptop.
+   */
+  projectRoot?: string | null;
   lastEtag: string | null;
   fetchImpl: FetchLike;
 }
@@ -132,12 +141,18 @@ export async function syncRepoSettings(args: SyncRepoSettingsArgs): Promise<Repo
   // ── The hub knows nothing about this repository: claim it ─────────────────
   if (!localCommand) return { outcome: 'none', etag: null };
 
+  // Make the command portable before it leaves: an absolute path inside this
+  // checkout becomes repo-relative, and a path that belongs to this machine
+  // alone is refused here rather than claimed on the hub for every clone.
+  const portable = normalizeCommandPaths(localCommand, args.projectRoot ?? null);
+  if (!portable.ok) return { outcome: 'error', etag, error: portable.reason };
+
   let initRes: Awaited<ReturnType<FetchLike>>;
   try {
     initRes = await fetchImpl(`${base}/v1/repo-settings/init`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo: remoteUrl, verifyCommand: localCommand }),
+      body: JSON.stringify({ repo: remoteUrl, verifyCommand: portable.command }),
     });
   } catch (e) {
     return { outcome: 'error', etag, error: (e as Error).message };

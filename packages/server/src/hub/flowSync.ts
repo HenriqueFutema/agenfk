@@ -260,6 +260,7 @@ export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
           projectId: project.id,
           remoteUrl,
           localCommand: declaredVerifyCommand((project as any).projectRoot) ?? (typeof (project as any).verifyCommand === 'string' && (project as any).verifyCommand ? (project as any).verifyCommand : null),
+          projectRoot: (project as any).projectRoot ?? null,
           lastEtag: args.etagCache.get('repo:' + project.id) ?? null,
           fetchImpl: args.fetchImpl,
         });
