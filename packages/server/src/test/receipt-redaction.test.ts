@@ -1,0 +1,72 @@
+/**
+ * The verify log is redacted before it leaves the machine (RFC-002: "logs are
+ * redacted before upload").
+ *
+ * The log is whatever the test suite printed, and it travels to the hub and to
+ * every CI job holding a token for the repository. What must not travel with
+ * it: secrets in the formats we know, values assigned to secret-named keys,
+ * this machine's own secret environment values (whatever their format), and
+ * the username in the home directory. Everything else stays byte for byte, so
+ * the log still reads as the run it was.
+ */
+import { describe, it, expect } from 'vitest';
+import { redactLog } from '../hub/redact';
+
+const HOME = '/Users/ana';
+const r = (text: string, env: Record<string, string | undefined> = {}) => redactLog(text, { home: HOME, env });
+
+describe('redactLog', () => {
+  it('leaves an ordinary log exactly as it was', () => {
+    const log = 'PASS tests/a.test.js (12 ms)\nTests: 3 passed, 3 total\n';
+    expect(r(log)).toEqual({ text: log, count: 0 });
+  });
+
+  it.each([
+    ['agenfk api key', `key agk_${'a'.repeat(64)} used`],
+    ['agenfk CI token', `token ci_${'b'.repeat(64)}`],
+    ['GitHub token', 'GH ghp_' + 'A1b2C3d4E5'.repeat(4)],
+    ['GitHub fine-grained token', 'github_pat_' + '11ABCDEFG0'.repeat(6)],
+    ['AWS access key id', 'aws AKIAIOSFODNN7EXAMPLE here'],
+    ['Slack token', 'xoxb-1234567890-1234567890123-abcdefABCDEF1234'],
+    ['sk- API key', 'ANTHROPIC sk-ant-api03-' + 'x'.repeat(40)],
+    ['JWT', 'auth eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'],
+    ['Bearer value', 'Authorization: Bearer abcdef0123456789abcdef'],
+  ])('redacts a %s', (_kind, line) => {
+    const out = r(line);
+    expect(out.count).toBeGreaterThan(0);
+    expect(out.text).toContain('[REDACTED');
+    // Nothing of the secret's tail survives.
+    expect(out.text).not.toMatch(/a{20}|b{20}|A1b2C3d4E5A1b2|11ABCDEFG011|IOSFODNN7|abcdefABCDEF1234|x{20}|dozjgNryP4J3|abcdef0123456789abcdef/);
+  });
+
+  it('redacts a private key block whole', () => {
+    const log = 'before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nIBAAKCAQ\n-----END RSA PRIVATE KEY-----\nafter';
+    const out = r(log);
+    expect(out.text).toBe('before\n[REDACTED:private-key]\nafter');
+  });
+
+  it('redacts the password in a URL and keeps the rest', () => {
+    expect(r('connecting to postgres://app:s3cretpw@db.internal:5432/app').text)
+      .toBe('connecting to postgres://app:[REDACTED:url-password]@db.internal:5432/app');
+  });
+
+  it('redacts values assigned to secret-named keys, in env, JSON and YAML spellings', () => {
+    const out = r('DB_PASSWORD=hunter22\n"apiKey": "k-123456"\nclient_secret: abcdefgh\nNAME=ana');
+    expect(out.text).toBe('DB_PASSWORD=[REDACTED:assigned]\n"apiKey": "[REDACTED:assigned]"\nclient_secret: [REDACTED:assigned]\nNAME=ana');
+  });
+
+  it('redacts this machine\'s own secret environment values wherever they appear, whatever their format', () => {
+    const env = { MY_SERVICE_TOKEN: 'zq8!plain-looking-value', HOME_DIR_NAME: 'ignored', SHORT_SECRET: 'abc', PATH: '/usr/bin' };
+    const out = r('debug: using zq8!plain-looking-value for the call, PATH=/usr/bin, abc', env);
+    expect(out.text).toBe('debug: using [REDACTED:env:MY_SERVICE_TOKEN] for the call, PATH=/usr/bin, abc');
+  });
+
+  it('turns the home directory into ~, so the username does not travel', () => {
+    expect(r('at /Users/ana/code/app/src/x.ts:3:1\nat /Users/anabel/x').text)
+      .toBe('at ~/code/app/src/x.ts:3:1\nat /Users/anabel/x');
+  });
+
+  it('counts every redaction', () => {
+    expect(r(`agk_${'a'.repeat(64)} and ci_${'b'.repeat(64)}`).count).toBe(2);
+  });
+});

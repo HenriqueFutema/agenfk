@@ -61,7 +61,7 @@ function parsePr(value: unknown): number {
 
 const gitOut = (cwd: string, args: string[]): string | null => {
   try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim() || null;
   } catch {
     return null;
   }

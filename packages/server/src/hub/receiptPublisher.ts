@@ -35,6 +35,8 @@
  * wrote.
  */
 import * as fs from 'fs';
+import * as os from 'os';
+import { redactLog } from './redact.js';
 import * as zlib from 'zlib';
 import { randomUUID } from 'crypto';
 import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
@@ -167,6 +169,14 @@ function reportOf(
   }
   // The log may have grown between the stat and the read.
   if (plain.length > maxReportBytes) {
+    return { omitted: 'over_cap', bytes: plain.length };
+  }
+  // Redacted before it leaves the machine (RFC-002): what the suite printed
+  // goes to the hub and to CI, its secrets and this user's home path do not.
+  // The file on disk is left as it is - it is this machine's own record.
+  const redacted = redactLog(plain.toString('utf8'), { home: os.homedir(), env: process.env });
+  plain = Buffer.from(redacted.text, 'utf8');
+  if (plain.length > maxReportBytes) {
     // Say so, with the size, and send nothing — and do not spend a gzip on a
     // log already refused on its plain size.
     return { omitted: 'over_cap', bytes: plain.length };
@@ -178,7 +188,7 @@ function reportOf(
     // run.
     return { omitted: 'over_cap', bytes: plain.length };
   }
-  return { encoding: 'gzip+base64', data: gz.toString('base64'), bytes: plain.length };
+  return { encoding: 'gzip+base64', data: gz.toString('base64'), bytes: plain.length, redactions: redacted.count };
 }
 
 /**
@@ -196,7 +206,12 @@ async function publishOne(
   const base = args.hubConfig.url.replace(/\/$/, '');
   // The delivery state is ours and never leaves the machine: the hub stores the
   // receipt exactly as the close path wrote it.
-  const { publication: _publication, ...asSent } = receipt;
+  const { publication: _publication, ...rest } = receipt;
+  // The log's path on THIS machine is not sent: it is no use to anyone else and
+  // names this user's home. The card keeps it; it is how we find our own log.
+  const asSent = rest.execution && typeof rest.execution === 'object'
+    ? { ...rest, execution: { ...rest.execution, logPath: null } }
+    : rest;
   const report = reportOf(receipt.execution?.logPath, maxReportBytes, maxReportGzBytes);
   const body: Record<string, unknown> = { receipt: asSent };
   if (report) body.report = report;

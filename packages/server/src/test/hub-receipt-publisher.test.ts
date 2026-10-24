@@ -195,8 +195,9 @@ describe('hub receiptPublisher.publishPendingReceipts', () => {
     expect(calls[0].body.receipt.id).toBe(rcpt.id);
     // The whole receipt as the card holds it, minus the delivery state, which
     // is ours and never leaves the machine.
-    const { publication: _publication, ...asSent } = (await published())[0];
-    expect(calls[0].body.receipt).toEqual(asSent);
+    // The one exception: the log's path on this machine is sent as null.
+    const { publication: _publication, ...stored } = (await published())[0];
+    expect(calls[0].body.receipt).toEqual({ ...stored, execution: { ...stored.execution, logPath: null } });
     expect(calls[0].body.report.encoding).toBe('gzip+base64');
     expect(calls[0].body.report.bytes).toBe(Buffer.byteLength(LOG_TEXT));
     expect(zlib.gunzipSync(Buffer.from(calls[0].body.report.data, 'base64')).toString()).toBe(LOG_TEXT);
@@ -280,6 +281,35 @@ describe('hub receiptPublisher.publishPendingReceipts', () => {
     }) as unknown as FetchLike;
     await publishPendingReceipts(args(fetchImpl));
     expect((await published())[0].publication.state).toBe('acked');
+  });
+
+  // RFC-002: the log is redacted before it leaves the machine; the file on disk is not touched.
+  it('uploads the log redacted, says how many redactions, and leaves the local file as it was', async () => {
+    const secret = `agk_${'f'.repeat(64)}`;
+    const text = `PASS a\nusing ${secret}\nDB_PASSWORD=hunter22\n`;
+    fs.writeFileSync(logPath, text);
+    const rcpt = receipt();
+    await seed([rcpt]);
+    const { fetchImpl, calls } = makeHubFetch(() => ({ status: 201, body: { id: rcpt.id, reusable: true, reason: null } }));
+    await publishPendingReceipts(args(fetchImpl));
+    const sent = zlib.gunzipSync(Buffer.from(calls[0].body.report.data, 'base64')).toString();
+    expect(sent).not.toContain(secret);
+    expect(sent).not.toContain('hunter22');
+    expect(sent).toContain('PASS a');
+    expect(calls[0].body.report.redactions).toBe(2);
+    expect(calls[0].body.report.bytes).toBe(Buffer.byteLength(sent));
+    expect(fs.readFileSync(logPath, 'utf8')).toBe(text);
+  });
+
+  it('does not send the log\'s path on this machine', async () => {
+    const rcpt = receipt();
+    await seed([rcpt]);
+    const { fetchImpl, calls } = makeHubFetch(() => ({ status: 201, body: { id: rcpt.id, reusable: true, reason: null } }));
+    await publishPendingReceipts(args(fetchImpl));
+    expect(calls[0].body.receipt.execution.logPath).toBeNull();
+    expect(JSON.stringify(calls[0].body.receipt)).not.toContain(logPath);
+    // The card keeps it: it is how this machine finds its own log.
+    expect((await published())[0].execution.logPath).toBe(logPath);
   });
 
   it('an acked receipt is never published again', async () => {

@@ -16,13 +16,14 @@ All notable changes to AgEnFK are documented here.
   server's independence verdict, the lenses and the findings. Enforce needs an admin-set Shadow threshold.
 - **Receipts are write-once on the hub**, with the run's log gzipped beside them (32 MiB cap). Only installations on
   the repository's producer allowlist publish reusable receipts; the client records a receipt as delivered only when
-  the hub acknowledged it.
+  the hub acknowledged it. The log is redacted before upload: known secret formats, secret-named assignments and
+  environment values, and the home directory; the local log and its path stay on the machine.
 - **`agenfk ci check` and the `actions/ci-check` GitHub Action.** CI compares the tree of its own checkout (the PR's
   merge result) with the receipts, found by PR number or by tree, using a read-only `ci_` token an admin mints on the
   hub (one repository by default). Exit 0 skips the gated steps and downloads the original log or findings; 10 runs
   them; 1 fails the job under `--policy require`. A hub error or timeout never skips anything.
 - **Not yet:** recording Shadow agreement, gating Enforce on the threshold actually being met, returning a repository
-  to Shadow after a wrong reuse, sampled re-runs in Enforce, and redacting logs before upload.
+  to Shadow after a wrong reuse, and sampled re-runs in Enforce.
 
 ## [2.0.0-rc.4] — 2026-10-22
 

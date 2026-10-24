@@ -1347,8 +1347,16 @@ Storage rules:
   hub answered with its id; errors leave it `pending` for the next tick, and a
   4xx refusal is `rejected` with a card comment. A delivery failure is never
   recorded as a success.
-- **v1 uploads the run log as written.** Logs are not redacted before upload;
-  keep secrets out of test output.
+- **The log is redacted before upload** (`packages/server/src/hub/redact.ts`):
+  known secret formats (agenfk keys and CI tokens, GitHub, AWS key ids, Slack,
+  `sk-` API keys, JWTs, private-key blocks, `Bearer` values, URL passwords),
+  values assigned to secret-named keys, every value of a secret-named
+  environment variable of the machine (8+ characters), and the home directory
+  (`~`, so the username does not travel). Each is a visible
+  `[REDACTED:<kind>]`; the report carries the count. The local log is not
+  changed, and the receipt never sends the log's local path. This is best
+  effort: a secret in an unknown format that is not in the environment still
+  goes up, so keep secrets out of test output.
 
 ### 13.5 CI tokens and the read API
 
