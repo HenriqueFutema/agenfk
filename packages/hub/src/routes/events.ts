@@ -4,6 +4,7 @@ import { forwardEvents } from '../services/federation/forwarding.js';
 import { recomputeBackdatedDays, utcDayOf } from '../rollup.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
+import { upsertInstallation } from '../services/installations.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
@@ -108,17 +109,6 @@ const INSERT_EVENT_SQL = `
   INSERT OR IGNORE INTO events
   (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, reporting_version, payload)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`;
-
-const UPSERT_INSTALLATION_SQL = `
-  INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(id) DO UPDATE SET
-    last_seen = excluded.last_seen,
-    os_user = COALESCE(excluded.os_user, installations.os_user),
-    git_name = COALESCE(excluded.git_name, installations.git_name),
-    git_email = COALESCE(excluded.git_email, installations.git_email)
-  WHERE installations.org_id = excluded.org_id
 `;
 
 export function eventsRouter(ctx: HubServerContext): Router {
@@ -398,10 +388,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
         forwardable.push({ ...e, userKey });
         ingested++;
         ingestedDays.add(utcDayOf(e.occurredAt));
-        await ctx.db.run(UPSERT_INSTALLATION_SQL, [
-          e.installationId, e.orgId, now, now,
-          e.actor.osUser ?? null, e.actor.gitName ?? null, e.actor.gitEmail ?? null,
-        ]);
+        await upsertInstallation(ctx.db, e.orgId, {
+          installationId: e.installationId,
+          osUser: e.actor.osUser, gitName: e.actor.gitName, gitEmail: e.actor.gitEmail,
+        }, now);
 
         // Repoint campaign reports (CGLAB-66) transition the matching target.
         //

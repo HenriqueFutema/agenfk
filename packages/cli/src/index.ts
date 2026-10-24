@@ -26,6 +26,7 @@ import { registryFlowToLocal } from './registryFlowFile.js';
 import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
+import { registerCiCommands } from './commands/ci.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
 import { ensureLocalIgnored, stripLegacyProjectId, readLegacyProjectId, projectFileTracked, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
@@ -650,6 +651,7 @@ program
 ;
 
 registerHubCommands(program);
+registerCiCommands(program);
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).
 program.hook('preAction', (thisCommand, actionCommand) => {
@@ -4381,6 +4383,7 @@ reviewCmd
   .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
   .option('--range <from..to>', 'The commits the review covered. Leave it out (or pass auto) and the server uses where the card began, up to HEAD - uncommitted work included')
   .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "severity"?: "HIGH"|"MEDIUM"|"LOW", "reason"? } ([] when nothing was found)')
+  .option('--lens <name>', 'A lens the review covered (repeatable; default general)', (v: string, prev: string[] = []) => [...prev, v])
   .action(async (id, options) => {
     let findings: unknown;
     try { findings = JSON.parse(options.findings); } catch {
@@ -4397,7 +4400,7 @@ reviewCmd
     const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
     try {
       const { data } = await axios.post(`${API_URL}/items/${id}/review-records`,
-        { transcript: options.transcript, range: options.range ?? 'auto', findings },
+        { transcript: options.transcript, range: options.range ?? 'auto', findings, ...(options.lens ? { lenses: options.lens } : {}) },
         { headers: { 'x-agenfk-internal': verifyToken } });
       const who = data?.reviewer ? `${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}` : 'the reviewer';
       const over = data?.range?.from && data?.range?.to ? ` over ${String(data.range.from).slice(0, 12)}..${String(data.range.to).slice(0, 12)}` : '';

@@ -627,6 +627,121 @@ const SCHEMA_SQLITE = `
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_jira_oauth_pending_completion ON jira_oauth_pending(completion_hash);
+
+  -- Repository settings (RFC-002). repo_settings is the org's authoritative
+  -- record for ONE canonical repository: the verify command every agent must
+  -- run, the revision it is on, how CI receipts are treated, and the floor
+  -- 'enforce' is measured against. The repository is identified by the same
+  -- canonical URL sanitizeRemoteUrl() writes into events.remote_url, so ssh /
+  -- https / with-or-without-.git are one record. shadow_threshold is NULL
+  -- until an admin sets one — 'no floor yet', which is not the same as 0, and
+  -- is why 'enforce' is refused while it is NULL. Timestamps are ISO TEXT
+  -- written by the app, identical in both dialects.
+  CREATE TABLE IF NOT EXISTS repo_settings (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    verify_command TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    receipts_mode TEXT NOT NULL DEFAULT 'off' CHECK (receipts_mode IN ('off','shadow','enforce')),
+    shadow_threshold INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
+
+  -- The command's history. One row per revision, written by whoever moved it:
+  -- the installation that claimed it first (source 'init', its installation id)
+  -- or the admin who revised it (source 'admin', their user and email). A
+  -- revision is never rewritten, so the trail says how the repo came to be
+  -- verified, not just how it is verified now.
+  CREATE TABLE IF NOT EXISTS repo_command_revisions (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    verify_command TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('init','admin')),
+    actor_user_id TEXT,
+    actor_email TEXT,
+    installation_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url, revision)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_command_revisions_repo
+    ON repo_command_revisions(org_id, remote_url);
+
+  -- Which installations may produce receipts for this repo. Membership only:
+  -- the row's presence is the allow, so adding and removing stay idempotent.
+  CREATE TABLE IF NOT EXISTS repo_producers (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    added_by_email TEXT,
+    PRIMARY KEY (org_id, remote_url, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_producers_repo ON repo_producers(org_id, remote_url);
+
+  -- Verification/review receipts (RFC-002). A receipt is a claim one machine
+  -- makes for another to honour — "this command, run on this tree, passed on
+  -- this card" — and the hub is where the claim becomes a record. It is
+  -- WRITE-ONCE: the id is minted by the producing machine and is the primary
+  -- key, so a retry cannot duplicate a row and a different body under a taken
+  -- id is refused rather than merged. The row is keyed by the canonical remote
+  -- URL like repo_settings, and its installation_id is the PUBLISHING key's
+  -- installation, never anything the body claims - the credential is the
+  -- producer. reusable is the hub's decision taken at write time (producer
+  -- allowlist, report cap, the producer's own offer) and not_reusable_reason
+  -- records which said no, so a reader never has to guess why a receipt cannot
+  -- be trusted. body_json is the receipt exactly as received and body_hash the
+  -- sha256 of exactly that string, which is what makes a retry recognisable as
+  -- a retry. report_gz_b64 is the run log gzipped, and only while the log fits
+  -- under the hub's cap (measured on the uncompressed bytes); report_bytes is
+  -- the log's size either way, so "too big to keep" still says how big.
+  -- received_at is ISO TEXT written by the app, as everywhere else here.
+  CREATE TABLE IF NOT EXISTS receipts (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('verification','review')),
+    installation_id TEXT NOT NULL,
+    card_id TEXT,
+    content_tree TEXT,
+    command_revision INTEGER,
+    body_json TEXT NOT NULL,
+    body_hash TEXT NOT NULL,
+    reusable INTEGER NOT NULL,
+    not_reusable_reason TEXT,
+    report_gz_b64 TEXT,
+    report_bytes INTEGER,
+    received_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_receipts_repo
+    ON receipts(org_id, remote_url, kind, content_tree);
+
+  CREATE INDEX IF NOT EXISTS idx_receipts_card
+    ON receipts(org_id, remote_url, kind, card_id, received_at);
+  CREATE INDEX IF NOT EXISTS idx_receipts_recent
+    ON receipts(org_id, remote_url, received_at);
+
+  -- CI read tokens (RFC-002). A ci_ token is what a CI job presents to read
+  -- receipts, and nothing else: it lives in its own table so that no route
+  -- taking an installation's api key can ever accept one (it cannot write
+  -- events, publish receipts or claim a command), and an api key is never a CI
+  -- token either. remote_url is the ONE repository the token may read, in the
+  -- canonical spelling repo_settings uses; NULL is the whole organisation,
+  -- which an admin has to ask for explicitly. Only the sha256 of the token is
+  -- kept. Timestamps are ISO TEXT written by the app.
+  CREATE TABLE IF NOT EXISTS ci_tokens (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT,
+    label TEXT,
+    created_at TEXT NOT NULL,
+    created_by_email TEXT,
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ci_tokens_org ON ci_tokens(org_id);
 `;
 
 class SqliteAdapter implements HubDb {

@@ -19,6 +19,7 @@ import { AdminIdentities } from './pages/AdminIdentities';
 import { AdminModels } from './pages/AdminModels';
 import { AdminOrg } from './pages/AdminOrg';
 import { AdminJira } from './pages/AdminJira';
+import { AdminRepos } from './pages/AdminRepos';
 import { AdminOverview } from './pages/AdminOverview';
 import { Layout } from './components/Layout';
 
@@ -79,6 +80,7 @@ export function App() {
         <Route path="identities" element={<AdminIdentities />} />
         <Route path="models" element={<AdminModels />} />
         <Route path="jira" element={<AdminJira />} />
+        <Route path="repos" element={<AdminRepos />} />
         <Route path="audit" element={<AdminAudit />} />
         <Route path="org" element={<AdminOrg />} />
         <Route index element={<AdminOverview />} />

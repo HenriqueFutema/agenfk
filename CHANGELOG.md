@@ -2,6 +2,29 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [Unreleased] — targets 2.1.0-beta.1
+
+**CI receipts (RFC-002): verify once, reuse in CI.** Opt-in per repository on the hub. See `HUB_ARCHITECTURE.md` §13.
+
+- **The hub holds each repository's verify command.** The first authorized installation that syncs a repository
+  claims it from its declared command (first writer wins); after that the hub is authoritative and admins revise it,
+  with every revision kept. Commands run from the repository root: absolute paths inside the checkout become
+  repo-relative, and a command naming a path outside it is refused.
+- **Receipts mode per repository: `off` (default), `shadow`, `enforce`.** Off changes nothing. In Shadow and Enforce
+  the root card's final gate runs the command fresh, even when a green of the same tree is on record, and publishes
+  a **verification receipt**. `agenfk review record --lens <name>` publishes a **review receipt** carrying the
+  server's independence verdict, the lenses and the findings. Enforce needs an admin-set Shadow threshold.
+- **Receipts are write-once on the hub**, with the run's log gzipped beside them (32 MiB cap). Only installations on
+  the repository's producer allowlist publish reusable receipts; the client records a receipt as delivered only when
+  the hub acknowledged it. The log is redacted before upload: known secret formats, secret-named assignments and
+  environment values, and the home directory; the local log and its path stay on the machine.
+- **`agenfk ci check` and the `actions/ci-check` GitHub Action.** CI compares the tree of its own checkout (the PR's
+  merge result) with the receipts, found by PR number or by tree, using a read-only `ci_` token an admin mints on the
+  hub (one repository by default). Exit 0 skips the gated steps and downloads the original log or findings; 10 runs
+  them; 1 fails the job under `--policy require`. A hub error or timeout never skips anything.
+- **Not yet:** recording Shadow agreement, gating Enforce on the threshold actually being met, returning a repository
+  to Shadow after a wrong reuse, and sampled re-runs in Enforce.
+
 ## [2.0.0-rc.4] — 2026-10-22
 
 Fourth release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since

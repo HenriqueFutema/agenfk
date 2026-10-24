@@ -22,6 +22,7 @@ import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEna
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
+import { publishPendingReceipts } from "./hub/receiptPublisher.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
 import { createWorktree, removeWorktree } from "./worktrees.js";
@@ -32,6 +33,7 @@ import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle }
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
 import { requeueDeadletter, readDeadletterIndicator, RequeueRewriteFailed } from "./hub/deadletter.js";
 import { defaultDeadletterPath } from "./hub/flusher.js";
+import { resolveActor } from "./hub/identity";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -197,8 +199,20 @@ const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
   hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
 };
 
-// projectId → git remote URL ("" when no remote, null when not yet resolved).
+// projectId → git remote URL ("" when git says there is no remote, null when
+// not yet resolved). A project with no root yet is never cached: `agenfk init`
+// leaves it unset, and a cached "no remote" outlived the root being set
+// (GH-256).
 const projectRemoteCache = new Map<string, string | null>();
+// Bumped whenever a project's root changes, so a lookup that was already
+// running against the old root does not write its answer back.
+const projectRemoteGeneration = new Map<string, number>();
+
+/** Drop a project's cached remote: its root changed, so the answer may have. */
+function forgetProjectRemote(projectId: string): void {
+  projectRemoteCache.delete(projectId);
+  projectRemoteGeneration.set(projectId, (projectRemoteGeneration.get(projectId) ?? 0) + 1);
+}
 
 async function resolveFlowName(projectId: string | undefined): Promise<string> {
   if (!projectId) return DEFAULT_FLOW.name;
@@ -228,24 +242,34 @@ async function readItemMeta(itemId: string): Promise<{ title: string | null; ext
 }
 
 // One lookup per project at a time (#208 review): concurrent events share it.
-const warmProjectRemote = oneInFlight(warmProjectRemoteOnce);
-async function warmProjectRemoteOnce(projectId: string): Promise<void> {
+// Keyed by the root's generation too: an event that arrives after the root
+// changed must start a lookup of the new root, not join the old one, whose
+// answer is thrown away.
+const warmRemoteInFlight = oneInFlight((key: string) => {
+  const sep = key.indexOf(':');
+  return warmProjectRemoteOnce(key.slice(sep + 1), Number(key.slice(0, sep)));
+});
+const warmProjectRemote = (projectId: string): Promise<void> =>
+  warmRemoteInFlight(`${projectRemoteGeneration.get(projectId) ?? 0}:${projectId}`);
+async function warmProjectRemoteOnce(projectId: string, generation: number): Promise<void> {
+  const current = () => (projectRemoteGeneration.get(projectId) ?? 0) === generation;
   try {
     const proj = await storage.getProject(projectId);
     const root = (proj as any)?.projectRoot;
-    if (!root) { projectRemoteCache.set(projectId, ''); return; }
+    if (!root) return;
     // Async and bounded (it runs on the request path AND per project in the
     // flow-sync poller); a lookup that timed out is remembered for a minute
     // only, then asked again (#208 review - see projectRemote.ts).
     const answer = await readRemoteUrl(root);
+    if (!current()) return;
     projectRemoteCache.set(projectId, answer.url);
     const lifetime = remoteCacheLifetimeMs(answer);
     if (lifetime !== undefined) {
-      const forget = setTimeout(() => projectRemoteCache.delete(projectId), lifetime);
+      const forget = setTimeout(() => { if (current()) projectRemoteCache.delete(projectId); }, lifetime);
       if (typeof forget.unref === 'function') forget.unref();
     }
   } catch {
-    projectRemoteCache.set(projectId, '');
+    // Unreadable project: answer "no remote" for this event, cache nothing.
   }
 }
 
@@ -3290,7 +3314,7 @@ app.put("/projects/:id", limitBoardRoutes, asyncHandler(async (req: any, res: an
 // step, so setting it is privileged. Gate it with the install-time secret like
 // /backup — only a local trusted caller (the CLI, which reads
 // ~/.agenfk/verify-token) may set it, never a browser or LAN peer. (bug e60e20aa.)
-app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) => {
+app.put("/projects/:id/verify-command", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -3300,6 +3324,16 @@ app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) 
   }
   try {
     const before: any = await storage.getProject(req.params.id);
+    // RFC-002: while the hub owns this repository's command, it is the record
+    // the org holds, not the local row. The same command is still accepted
+    // (idempotent); a different one is refused and nothing is written.
+    const hubOwned = hubVerifyCommandOf(before);
+    if (hubOwned && hubOwned !== verifyCommand) {
+      return res.status(409).json({
+        error: "HUB_OWNS_VERIFY_COMMAND",
+        message: `This repository's verify command is set on the hub (revision ${before.hubRepoSettings.revision}): \`${hubOwned}\`. An org admin changes it on the hub's Repositories page.`,
+      });
+    }
     const previous = before?.verifyCommand as string | undefined;
     const changed = !!before && previous !== verifyCommand;
     // Kept on the project as well as on cards: with no card in flight, a card
@@ -4007,6 +4041,7 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   if (!item) return res.status(404).json({ error: "Item not found" });
   const body = req.body ?? {};
   let reviewer: ReturnType<typeof readTranscriptIdentity>;
+  let lenses: string[];
   let findings: ReturnType<typeof parseFindings>;
   try {
     reviewer = readTranscriptIdentity(body.transcript);
@@ -4045,6 +4080,14 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   if (last.some(t => Number.isNaN(t) || t < Date.parse(tipAt))) {
     return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'} (file: ${reviewer.mtime}), before the range's tip commit (${tipAt}): it cannot have reviewed it. Send the same reviewer a new message to read the newer work (it reads again from its newest prompt), or give a new reviewer the brief (agenfk review brief ${item.id}), then record again.` });
   }
+  // RFC-002: the lenses the review was run through. Absent, a review is a
+  // general review; present, it is a set of names — nothing else is recorded,
+  // because a receipt that says "reviewed" without saying through what is a
+  // weaker claim than one that says nothing. Refused here, before the record
+  // exists: a card cannot hold a review whose lenses we did not understand.
+  try { lenses = parseLenses(body.lenses); } catch (e: any) {
+    return res.status(400).json({ error: e?.message ?? String(e) });
+  }
   const recId = uuidv4();
   const notOurs = reportPathTest(root, project);
   // The card's own work: itself and its descendants (reviews happen at the parent).
@@ -4056,7 +4099,7 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
       ? (() => { const u = unreviewedAfter(root, from, Date.parse(reviewer.startedAt!), mine, notOurs); return 'notJudged' in u ? { unreviewedNotJudged: u.notJudged } : { unreviewed: u }; })()
       : { unreviewedNotJudged: 'the transcript carries no timestamps, so when the reviewer began is not known' }),
     reviewer: { client: reviewer.client, sessionId: reviewer.sessionId, agentId: reviewer.agentId, transcript: reviewer.transcript, edits: reviewer.edits, advancedCards: reviewer.advancedCards },
-    range: { from, to, ...(auto ? { auto: true } : {}) }, findings,
+    range: { from, to, ...(auto ? { auto: true } : {}) }, findings, lenses,
     // The tree as reviewed, uncommitted work included: a change after this
     // needs the review recorded again (CGLAB-381 review). The report a run
     // writes is not the card's work (d26832d6): a capture after the review
@@ -4065,6 +4108,56 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   };
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, { reviewRecords: [...(fresh?.reviewRecords ?? []), rec] } as any);
+  /*
+   * RFC-002 (95ba0ec5): in receipts mode the review we just recorded IS a
+   * receipt — the same claim the review-record check makes, judged here by the
+   * server and written so another machine can honour it. A root card only (a
+   * child is reviewed with its parent) and only in receipts mode. Like the
+   * verification receipt it is a note about what happened, not a condition of
+   * it: the record is stored and the reply is 201 whatever the receipt does,
+   * and a verdict of "not reusable" is written down all the same, because
+   * Shadow mode is measuring how often real reviews fail this.
+   */
+  if (freshRootClose(item, project)) {
+    try {
+      const withRecord: any = await storage.getItem(item.id);
+      const evidence = await reviewEvidence(withRecord, root);
+      // The verdict the receipt carries is the card's review judged over the
+      // CARD rather than over the record's own view of it — that view is what
+      // the review-record check judges at the step, and here it would be
+      // comparing a tree state read before this record existed. The tree the
+      // review was recorded for is set aside: comparing it would read the act of
+      // recording as the tree having moved under the review. Whether the tree
+      // still stands at the range's tip is `reusable`'s question, asked of the
+      // tree itself, below.
+      const judged = judgeReview(evidence, root, (args) => gitRun.run(args), { bindTree: true });
+      const actor = resolveActor(root);
+      let gitTree: string | null = null;
+      try { gitTree = git(['rev-parse', `${to}^{tree}`]) || null; } catch { /* absent rather than wrong */ }
+      const receipt = reviewReceiptOf({
+        item: withRecord, project, record: rec, evidence, verdict: judged,
+        humanGates: await humanGatesOf(withRecord),
+        lenses, gitTree, actor: { gitName: actor.gitName, gitEmail: actor.gitEmail }, root,
+      });
+      // Re-read: a record or a comment written while the receipt was being
+      // judged must survive the receipt that follows it.
+      const current: any = await storage.getItem(item.id);
+      await storage.updateItem(item.id, { reviewReceipts: [...(current?.reviewReceipts ?? []), receipt] } as any);
+      io.emit('items_updated');
+      // Offered to the hub now, not awaited: a hub that is down must not delay
+      // the reply by a timeout, and the receipt stays `pending` on the card for
+      // the next tick either way. With no hub configured there is no one to ask.
+      if (hubClient.hubConfig) {
+        void publishPendingReceipts({
+          storage: storage as SQLiteStorageProvider,
+          hubConfig: hubClient.hubConfig,
+          fetchImpl: globalThis.fetch as any,
+        }).catch(e => console.error('[HUB_RECEIPTS]', e?.message || e));
+      }
+    } catch (e: any) {
+      console.error(`[review] review receipt failed for ${item.id}: ${e?.message || e}`);
+    }
+  }
   io.emit('items_updated');
   res.status(201).json(rec);
 }));
@@ -4519,19 +4612,38 @@ type CaptureOutcome =
 function effectiveVerifyCommand(project: any): { command: string | null; fromFile: boolean } {
   const report = typeof project?.testReport?.command === 'string' ? project.testReport.command : null;
   if (report) return { command: report, fromFile: false };
+  // RFC-002: the hub's command beats the repository file's and the stored row.
+  const hub = hubVerifyCommandOf(project);
+  if (hub) return { command: hub, fromFile: true };
   const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
   if (typeof declared === 'string' && declared.trim()) return { command: declared, fromFile: true };
   const stored = typeof project?.verifyCommand === 'string' ? project.verifyCommand : null;
   return { command: stored, fromFile: false };
 }
 
+/** RFC-002: the hub's authoritative verify command for this project, when the hub has one. */
+function hubVerifyCommandOf(project: any): string | null {
+  const c = project?.hubRepoSettings?.verifyCommand;
+  return typeof c === 'string' && c.trim() ? c : null;
+}
+
+/** RFC-002: a project whose hub settings are Shadow or Enforce: its root cards close on a fresh run and leave receipts. */
+function receiptsModeOf(project: any): 'shadow' | 'enforce' | null {
+  const m = project?.hubRepoSettings?.receiptsMode;
+  return m === 'shadow' || m === 'enforce' ? m : null;
+}
+const freshRootClose = (item: any, project: any) => !item?.parentId && !!receiptsModeOf(project);
+
 /**
- * The command the FINAL verify runs: the repository's file, else the stored
+ * The command the FINAL verify runs: the hub's command when the hub has one,
+ * else the repository's file, else the stored
  * row - resolved exactly as the final step resolves it, so what the leave plan
  * says is what runs. Unlike `effectiveVerifyCommand`, a test report's command
  * does not stand in for it: the final gate runs the project's own command.
  */
 function finalVerifyCommandOf(project: any): string | undefined {
+  const hub = hubVerifyCommandOf(project);
+  if (hub) return hub;
   const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
   return (typeof declared === 'string' ? declared : project?.verifyCommand) || undefined;
 }
@@ -5345,6 +5457,7 @@ app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: a
   try {
     const updated = await storage.updateProject(req.params.id, { projectRoot: candidate } as any);
     if (!updated) return res.status(404).json({ error: "Project not found" });
+    forgetProjectRemote(req.params.id);
     io.emit('items_updated');
     res.json(updated);
   } catch {
@@ -5647,6 +5760,8 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
   recordHubEvent({
     type: isNewRegistration ? 'pr.opened' : 'pr.updated',
     projectId: item?.projectId,
+    // The anchor card: the hub resolves a PR's receipts to it (GH-256).
+    itemId,
     // model/harness are agent-declared (the CLI/MCP caller knows its own runtime;
     // the server process cannot infer them). Optional — omitted when not supplied.
     payload: {
@@ -5696,6 +5811,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   recordHubEvent({
     type: 'pr.updated',
     projectId: anchorItem?.projectId,
+    itemId: existing.itemId,
     payload: {
       prNumber, repo, sizing, sizingShadow: shadow,
       leafStory: shadowCounts.leafStory,
@@ -9096,7 +9212,7 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
       const { pass } = await siblingGreenOf(item, await storage.listItems({ parentId: item.parentId }), flow as TransitionFlow, project, root, command);
       if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
     }
-    if (leavingEndsFlow(sorted as any, index) && !stepHasCommandChecks(flow, item.status)) {
+    if (leavingEndsFlow(sorted as any, index) && !stepHasCommandChecks(flow, item.status) && !freshRootClose(item, project)) {
       const onRecord = await closeGreenOnRecord(item, project, root, command);
       if (onRecord) return { mode: 'reuse', reusedFrom: { itemId: String(onRecord.green.reusedFrom?.itemId ?? item.id), step: String(onRecord.green.reusedFrom?.step ?? '') } };
     }
@@ -9177,6 +9293,189 @@ app.get("/projects/:id/flow/leave-plans", limitBoardRoutes, asyncHandler(async (
   }
   res.json(plans);
 }));
+
+/** RFC-002: a lens is a short kebab-case name (`general`, `security`, `perf-1`). */
+
+const LENS_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+
+/**
+ * RFC-002: the human gates under a card — a person's approval of a step, or
+ * their override of a check — on the card and on the cards reviewed with it. A
+ * receipt carries that a person said yes, at which step and when: the names,
+ * the reasons and who the approval covers are this machine's business, and a
+ * card's step records hold no absolute paths today, which is why they are
+ * picked field by field rather than copied.
+ */
+async function humanGatesOf(item: any): Promise<Array<{ kind: 'approval' | 'override'; step: string | null; at: string | null }>> {
+  const cards: any[] = [item, ...(await descendantsOf(item))];
+  return cards
+    .flatMap((c: any) => (Array.isArray(c?.stepRecords) ? c.stepRecords : []))
+    .filter((r: any) => r?.kind === 'approval' || r?.kind === 'override')
+    .map((r: any) => ({ kind: r.kind, step: r.step ?? null, at: r.at ?? null }));
+}
+
+/**
+ * RFC-002 (95ba0ec5): the lenses a review was run through, as the caller named
+ * them. Absent means a general review; a list must be one to eight real names,
+ * de-duplicated with the first order kept — a review says what it looked at, or
+ * it is refused and nothing is recorded against a lens nobody asked for.
+ */
+function parseLenses(value: unknown): string[] {
+  if (value === undefined || value === null) return ['general'];
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8
+    || !value.every((l) => typeof l === 'string' && LENS_NAME.test(l))) {
+    throw new Error('lenses must be 1 to 8 names like security or general');
+  }
+  return [...new Set(value as string[])];
+}
+
+/**
+ * RFC-002: the receipt a recorded review leaves on the card it reviewed — the
+ * server's own verdict on the review, not the caller's account of it, and the
+ * tree, the range and the human gates it all points at. What it never carries
+ * is the transcript's path: the receipt crosses machines and the log does not,
+ * so it carries the log's hash instead.
+ *
+ * A review that fails the test is still receipted, with `reusable: false` and
+ * the reason: Shadow mode is measuring how often a real review is not
+ * reusable — hiding those is how it would report a clean record it never had.
+ */
+function reviewReceiptOf(args: {
+  item: any;
+  project: any;
+  record: any;
+  evidence: any;
+  verdict: { outcome: string; detail: string };
+  humanGates: Array<{ kind: 'approval' | 'override'; step: string | null; at: string | null }>;
+  lenses: string[];
+  gitTree: string | null;
+  actor: { gitName: string | null; gitEmail: string | null };
+  root: string;
+}) {
+  const { item, project, record, evidence, verdict, humanGates, lenses, gitTree, actor, root } = args;
+  // What was written after the reviewer began, when the record can say. An
+  // old record, or one whose transcript kept no timestamps, is not a review of
+  // a hundred unlooked-at lines: it is a review that was not measured, which
+  // is not a reason to refuse it either.
+  const fixes: { lines: number; files: string[] } | null =
+    record.unreviewed && typeof record.unreviewed.lines === 'number'
+      ? { lines: record.unreviewed.lines, files: Array.isArray(record.unreviewed.files) ? record.unreviewed.files : [] }
+      : null;
+  const notReusable = verdict.outcome !== 'pass'
+    ? 'not_independent' as const
+    : fixes && fixes.lines > MAX_UNREVIEWED_LINES
+      ? 'fixes_not_reviewed' as const
+      // The tip has to BE the tree: work left uncommitted is work the review
+      // did not read, and a receipt points at a commit other machines check out.
+      : readCleanTreeSha(root, gitRun) !== record.range?.to
+        ? 'uncommitted_changes' as const
+        : null;
+  return {
+    id: uuidv4(),
+    kind: 'review' as const,
+    version: 1 as const,
+    repo: project?.hubRepoSettings?.remoteUrl ?? null,
+    receiptsMode: receiptsModeOf(project),
+    card: {
+      id: item.id,
+      title: item.title,
+      type: item.type,
+      owner: item.assignee ?? null,
+      recordedBy: { name: actor.gitName ?? null, email: actor.gitEmail ?? null },
+      link: item.prUrl ?? item.externalUrl ?? null,
+    },
+    review: {
+      recordId: record.id,
+      recordedAt: record.at,
+      reviewer: { client: record.reviewer?.client, sessionId: record.reviewer?.sessionId, agentId: record.reviewer?.agentId ?? null },
+      authors: evidence.authors,
+      independence: { outcome: verdict.outcome, detail: verdict.detail },
+      range: { from: record.range?.from, to: record.range?.to },
+      lenses,
+      findings: record.findings,
+      fixesAfterReview: fixes,
+      // The hash of the file, never its path: the receipt is a claim about the
+      // transcript, not a pointer into whoever recorded it's home directory.
+      transcriptSha256: crypto.createHash('sha256').update(fs.readFileSync(record.reviewer.transcript)).digest('hex'),
+    },
+    humanGates,
+    content: { commit: record.range?.to, gitTree },
+    reusable: !notReusable,
+    notReusableReason: notReusable,
+  };
+}
+
+/**
+ * RFC-002: the receipt a certified run leaves on the card it closed — built only
+ * from values the pass path gathered around the run itself, so the path that
+ * writes it only has to decide whether the run certified the tree.
+ */
+function verificationReceiptOf(args: {
+  item: any;
+  project: any;
+  itemId: string;
+  testId: string;
+  command: string;
+  startedAt: string;
+  finishedAt: string;
+  logPath: string | null;
+  commit: string;
+  gitTree: string | null;
+  treeState: string | null;
+  actor: { gitName: string | null; gitEmail: string | null };
+}) {
+  const { item, project, itemId, testId, command, startedAt, finishedAt, logPath, commit, gitTree, treeState, actor } = args;
+  return {
+    id: uuidv4(),
+    kind: 'verification' as const,
+    version: 1 as const,
+    repo: (project as any)?.hubRepoSettings?.remoteUrl ?? null,
+    receiptsMode: receiptsModeOf(project),
+    card: {
+      id: itemId,
+      title: item.title,
+      type: item.type,
+      closedAt: new Date().toISOString(),
+      owner: (item as any).assignee ?? null,
+      closedBy: { name: actor.gitName ?? null, email: actor.gitEmail ?? null },
+      link: (item as any).prUrl ?? (item as any).externalUrl ?? null,
+    },
+    execution: {
+      id: testId,
+      command,
+      commandRevision: (project as any)?.hubRepoSettings?.revision,
+      exitCode: 0,
+      startedAt,
+      finishedAt,
+      logPath,
+    },
+    content: {
+      commit,
+      gitTree,
+      treeState,
+      treeStateVersion: STATE_VERSION,
+    },
+    reusable: true as const,
+  };
+}
+
+/**
+ * RFC-002: a card comment saying NO verification receipt was made for the run
+ * that just closed it, and why, in one sentence. Written when a guard reads the
+ * tree differently before and after the run: the card may close on what it saw,
+ * but the close is not a claim another machine has to honour.
+ */
+async function noteNoReceipt(itemId: string, reason: string): Promise<void> {
+  try {
+    const current = await storage.getItem(itemId);
+    if (!current) return;
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `No verification receipt for this close: ${reason}.`, timestamp: new Date() };
+    await storage.updateItem(itemId, { comments: [...((current as any).comments || []), comment] } as any);
+    io.emit('items_updated');
+  } catch (e: any) {
+    console.error(`[validate] receipt note failed for ${itemId}: ${e?.message || e}`);
+  }
+}
 
 async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun; answers?: Record<string, string> }): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
@@ -9462,7 +9761,7 @@ export function unreadableFileVerify(
   project: any,
   // The exact string the caller selected to run, when it has one: judged as it will run, never re-read -
   // a file edited between selecting and checking must not pass one command and run another (Codex review).
-  declared: unknown = readDeclaredSettings(project?.projectRoot).settings.verifyCommand,
+  declared: unknown = hubVerifyCommandOf(project) ?? readDeclaredSettings(project?.projectRoot).settings.verifyCommand,
 ): { error: 'COMMAND_UNREADABLE'; message: string; command: string } | null {
   if (typeof declared !== 'string') return null;
   const unreadable = unreadableFileCommand({ key: 'verifyCommand', command: declared });
@@ -9888,9 +10187,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   const projectVerifyCommand = (project as any)?.verifyCommand as string | undefined;
   const declaredHere = readDeclaredSettings((project as any)?.projectRoot);
-  const fileVerify = typeof declaredHere.settings.verifyCommand === 'string'
+  // RFC-002: the hub's command is what runs, so it is what the hidden-character
+  // check judges. `declaredHere` below stays the repository's own string: it is
+  // what gets recorded as a file change, and a hub command is never that.
+  const hubVerify = hubVerifyCommandOf(project);
+  const declaredVerify = typeof declaredHere.settings.verifyCommand === 'string'
     ? String(declaredHere.settings.verifyCommand)
     : null;
+  const fileVerify = hubVerify ?? declaredVerify;
   const projectVerify = fileVerify ?? projectVerifyCommand;
   /*
    * 281adef0: a flow with verifyAt 'parent' runs the project's suite once, at
@@ -9912,7 +10216,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   if (isFinalStep && !deferTo) {
     // The command this close runs, as selected - a pull may have landed while the gate ran (review of #260).
-    await observeDeclaredVerifyCommand(item.projectId, fileVerify);
+    await observeDeclaredVerifyCommand(item.projectId, declaredVerify);
     const noted = await storage.getItem(itemId);
     if (noted) Object.assign(item, noted);
   }
@@ -10060,7 +10364,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // ── This move's own capture (36c5ca25) ───────────────────────────────────
   // The gate just ran the verify command as its capture, green, on this very tree: running it again proves nothing new.
   // A command check on this step runs after the capture (a build, say, into ignored files the tree state cannot see): the command then runs after it, as before.
-  if (endsFlow && resolvedCommand && gate?.capture && !stepHasCommandChecks(activeFlow, item.status)) {
+  if (endsFlow && resolvedCommand && gate?.capture && !stepHasCommandChecks(activeFlow, item.status) && !freshRootClose(item, project)) {
     const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project);
     if (own) {
       const green = { ...(own.clean === true && typeof own.head === 'string' ? { commit: own.head } : {}), treeState: stateOfRecord(own), treeStateVersion: STATE_VERSION, commitRoot: effectiveRoot };
@@ -10148,7 +10452,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // Same conditions as closing on this move's capture: the move that ends the flow, no command check after the gate.
   // A capture of this move that ran and was NOT green is never outvoted by an older green (as stampCloseGreen refuses).
   const gateRanRed = !!gate?.capture && gate.capture.kind === 'capture' && !gate.capture.reusedFrom && !capturedGreen(gate.capture);
-  if (endsFlow && resolvedCommand && !gateRanRed && !stepHasCommandChecks(activeFlow, item.status)) {
+  if (endsFlow && resolvedCommand && !gateRanRed && !stepHasCommandChecks(activeFlow, item.status) && !freshRootClose(item, project)) {
     const onRecord = await closeGreenOnRecord(item, project, effectiveRoot, resolvedCommand);
     // The state it matched, still the tree's: a tree that moved since runs the command.
     if (onRecord && treeStateOf(effectiveRoot!, project) === onRecord.state) {
@@ -10229,6 +10533,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const gateRoot = runRoot ?? null;
   const headBeforeRun = gateRoot ? readHead(gateRoot, gitRun) : null;
   const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
+  // The receipt (RFC-002) stamps THIS run, so it needs the wall-clock window it ran in.
+  const startedAt = new Date().toISOString();
   // 3ffc9651: and every file's content, so a green on a DIRTY tree can be tied to a state too.
   const filesBeforeRun = gateRoot && endsFlow ? treeFiles(gateRoot, reportOwnedOf(gateRoot, project)) : null;
   // 19e660ac: and what lies beside a subdirectory root, which the stamped state folds in.
@@ -10303,6 +10609,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   })();
 
   const logPath = closeValidationLog(logHandle);
+  const finishedAt = new Date().toISOString();
   const logVanished = !!logHandle && logPath === null;
   const preview = buildOutputPreview(captured, logPath, logVanished);
   const passed = code === 0 && !timedOut;
@@ -10362,6 +10669,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // recorded and no card may inherit it.
       const preCommitSha = endsFlow && gateRoot ? readHead(gateRoot, gitRun) : null;
       const preCommitStatus = endsFlow && gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
+      /*
+       * THE GUARD ITSELF: HEAD did not move and nothing was staged while the
+       * command ran. Pulled out of the `if` below so the receipt path can ask
+       * the same question from outside it - a run whose tree moved under it is
+       * the one case that must NOT leave a receipt. A staged edit during the run
+       * would be swept into OUR close commit, stamping this green on content it
+       * never ran against; HEAD does not see that, the porcelain does.
+       */
+      const treeStoodStill = preCommitSha === headBeforeRun && preCommitStatus === statusBeforeRun;
       let gitResult: AutoGitCommitResult | undefined;
       if (endsFlow && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         // Advisory: a git-commit failure must not report a PASSED validation
@@ -10383,15 +10699,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * Where either fails, the record carries no commit and no card inherits
        * this green - the honest direction is a command run, not a claim.
        */
-      if (
-        endsFlow &&
-        gateRoot &&
-        preCommitSha === headBeforeRun &&
-        // A staged edit during the run would be swept into OUR close commit,
-        // stamping this green on content it never ran against. HEAD does not
-        // see that; the porcelain does.
-        preCommitStatus === statusBeforeRun
-      ) {
+      if (endsFlow && gateRoot && treeStoodStill) {
         const verifiedSha = readCleanTreeSha(gateRoot, gitRun);
         /*
          * 3ffc9651: the STATE this green speaks for, dirty tree or not - every
@@ -10418,6 +10726,75 @@ async function handleValidateProgress(itemId: string, command: string | undefine
           catch (e: any) { console.error(`[validate] stampCloseGreen failed after DONE: ${e?.message || e}`); }
           io.emit('items_updated');
         }
+        /*
+         * RFC-002: in receipts mode the run that closed a ROOT card IS the
+         * receipt — a record of this command, this tree and this card that a CI
+         * job and another clone can honour without asking us anything. It is
+         * made only of a run that really certified the tree it closes on: the
+         * guards above (HEAD and the porcelain unmoved during the run) and, on
+         * top of them, a clean commit after the close commit and files that did
+         * not change while the command ran. Where any of them fails there is no
+         * receipt, and the card is told why in one sentence. A failed run never
+         * gets here at all, so it leaves no receipt and no such comment.
+         */
+        if (endsFlow && freshRootClose(item, project)) {
+          // The receipt's own guard is the CONTENT the run tested: every file the
+          // same at the end as at the start. Deliberately not the stricter shared
+          // -state test above: a dirty tree can still be certified by a run that
+          // left it as it found it, and a tree the run moved cannot be certified
+          // whatever else did or did not move with it.
+          //
+          // And the content BESIDE the project, for a project in a subdirectory:
+          // the receipt names the whole repository's tree, so a change there that
+          // landed during the close (a pre-commit hook staging a sibling package)
+          // is content no run tested (Codex review of RFC-002).
+          const besideUnchanged = outsideNow !== null && outsideNow === outsideBeforeRun;
+          if (verifiedSha && filesNow && filesBeforeRun && filesNow.hash === filesBeforeRun.hash && besideUnchanged) {
+            try {
+              const actor = resolveActor(gateRoot);
+              let gitTree: string | null = null;
+              try { gitTree = gitRun.run(['-C', gateRoot, 'rev-parse', `${verifiedSha}^{tree}`]).trim() || null; } catch { /* absent rather than wrong */ }
+              const receipt = verificationReceiptOf({
+                item: updated, project, itemId, testId, command: resolvedCommand!,
+                startedAt, finishedAt, logPath, commit: verifiedSha, gitTree, treeState,
+                actor,
+              });
+              // Re-read: the tests and comments written above this function's close
+              // must survive the receipt that follows them.
+              const current = await storage.getItem(itemId);
+              await storage.updateItem(itemId, { verificationReceipts: [...(((current as any)?.verificationReceipts) ?? []), receipt] } as any);
+              io.emit('items_updated');
+              // RFC-002: try to hand it to the hub now, while the close that made
+              // it is still this request. Not awaited — a hub that is down must
+              // not delay the close's reply by a timeout — and its errors are
+              // swallowed here because the receipt stays `pending` on the card
+              // either way, so the flow-sync tick will try again. With no hub
+              // configured there is nobody to ask, and nothing is attempted.
+              if (hubClient.hubConfig) {
+                void publishPendingReceipts({
+                  storage: storage as SQLiteStorageProvider,
+                  hubConfig: hubClient.hubConfig,
+                  fetchImpl: globalThis.fetch as any,
+                }).catch(e => console.error('[HUB_RECEIPTS]', e?.message || e));
+              }
+            } catch (e: any) {
+              console.error(`[validate] verification receipt failed for ${itemId}: ${e?.message || e}`);
+            }
+          } else if (verifiedSha && !besideUnchanged && filesNow && filesBeforeRun && filesNow.hash === filesBeforeRun.hash) {
+            await noteNoReceipt(itemId, 'content beside the project changed during the close, so the commit holds files the run never tested');
+          } else if (verifiedSha) {
+            await noteNoReceipt(itemId, 'the tree changed while the verify command ran, so the run did not certify the tree the card closed on');
+          } else {
+            await noteNoReceipt(itemId, 'the tree was not clean after the close commit, so there is no commit for this run to certify');
+          }
+        }
+      }
+      // The guard itself failed: HEAD or the staged files moved during the run, so
+      // the block above - which records the green against a tree it cannot prove -
+      // never ran, and neither did the receipt. A root card in receipts mode is
+      // still told so, once.
+      if (endsFlow && freshRootClose(item, project) && !treeStoodStill) {
+        await noteNoReceipt(itemId, 'HEAD or the staged files changed while the verify command ran, so the run did not certify the tree the card closed on');
       }
       recordHubEvent({
       type: 'validate.passed',
@@ -10871,6 +11248,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
       const kind = resolvedRoot ? await checkoutKind(resolvedRoot) : 'unknown';
       if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
         await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
+        forgetProjectRemote(item.projectId);
       } else {
         const why = resolvedRoot === null
           ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
