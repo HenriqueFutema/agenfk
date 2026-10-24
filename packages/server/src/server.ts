@@ -199,8 +199,20 @@ const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
   hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
 };
 
-// projectId → git remote URL ("" when no remote, null when not yet resolved).
+// projectId → git remote URL ("" when git says there is no remote, null when
+// not yet resolved). A project with no root yet is never cached: `agenfk init`
+// leaves it unset, and a cached "no remote" outlived the root being set
+// (GH-256).
 const projectRemoteCache = new Map<string, string | null>();
+// Bumped whenever a project's root changes, so a lookup that was already
+// running against the old root does not write its answer back.
+const projectRemoteGeneration = new Map<string, number>();
+
+/** Drop a project's cached remote: its root changed, so the answer may have. */
+function forgetProjectRemote(projectId: string): void {
+  projectRemoteCache.delete(projectId);
+  projectRemoteGeneration.set(projectId, (projectRemoteGeneration.get(projectId) ?? 0) + 1);
+}
 
 async function resolveFlowName(projectId: string | undefined): Promise<string> {
   if (!projectId) return DEFAULT_FLOW.name;
@@ -230,24 +242,34 @@ async function readItemMeta(itemId: string): Promise<{ title: string | null; ext
 }
 
 // One lookup per project at a time (#208 review): concurrent events share it.
-const warmProjectRemote = oneInFlight(warmProjectRemoteOnce);
-async function warmProjectRemoteOnce(projectId: string): Promise<void> {
+// Keyed by the root's generation too: an event that arrives after the root
+// changed must start a lookup of the new root, not join the old one, whose
+// answer is thrown away.
+const warmRemoteInFlight = oneInFlight((key: string) => {
+  const sep = key.indexOf(':');
+  return warmProjectRemoteOnce(key.slice(sep + 1), Number(key.slice(0, sep)));
+});
+const warmProjectRemote = (projectId: string): Promise<void> =>
+  warmRemoteInFlight(`${projectRemoteGeneration.get(projectId) ?? 0}:${projectId}`);
+async function warmProjectRemoteOnce(projectId: string, generation: number): Promise<void> {
+  const current = () => (projectRemoteGeneration.get(projectId) ?? 0) === generation;
   try {
     const proj = await storage.getProject(projectId);
     const root = (proj as any)?.projectRoot;
-    if (!root) { projectRemoteCache.set(projectId, ''); return; }
+    if (!root) return;
     // Async and bounded (it runs on the request path AND per project in the
     // flow-sync poller); a lookup that timed out is remembered for a minute
     // only, then asked again (#208 review - see projectRemote.ts).
     const answer = await readRemoteUrl(root);
+    if (!current()) return;
     projectRemoteCache.set(projectId, answer.url);
     const lifetime = remoteCacheLifetimeMs(answer);
     if (lifetime !== undefined) {
-      const forget = setTimeout(() => projectRemoteCache.delete(projectId), lifetime);
+      const forget = setTimeout(() => { if (current()) projectRemoteCache.delete(projectId); }, lifetime);
       if (typeof forget.unref === 'function') forget.unref();
     }
   } catch {
-    projectRemoteCache.set(projectId, '');
+    // Unreadable project: answer "no remote" for this event, cache nothing.
   }
 }
 
@@ -5435,6 +5457,7 @@ app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: a
   try {
     const updated = await storage.updateProject(req.params.id, { projectRoot: candidate } as any);
     if (!updated) return res.status(404).json({ error: "Project not found" });
+    forgetProjectRemote(req.params.id);
     io.emit('items_updated');
     res.json(updated);
   } catch {
@@ -11225,6 +11248,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
       const kind = resolvedRoot ? await checkoutKind(resolvedRoot) : 'unknown';
       if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
         await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
+        forgetProjectRemote(item.projectId);
       } else {
         const why = resolvedRoot === null
           ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
