@@ -132,3 +132,24 @@ describe('redactLog - a recognised secret of any length', () => {
     expect(Date.now() - started).toBeLessThan(3000);
   });
 });
+
+// Codex third pass on the redaction.
+describe('redactLog - every detector reads the original log', () => {
+  it('redacts a JWT of any size', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.' + Buffer.from(JSON.stringify({ data: 'x'.repeat(5000) })).toString('base64url') + '.' + 'a'.repeat(43);
+    const out = r('received ' + jwt).text;
+    expect(out).toBe('received [REDACTED:jwt]');
+  });
+
+  it('an environment value that is also a key name cannot hide the credential beside it', () => {
+    const out = redactLog('{"password":"production-credential-123"}', { home: null, env: { DB_PASSWORD: 'password' } }).text;
+    expect(out).not.toContain('production-credential-123');
+  });
+
+  it('overlapping detections become one redaction', () => {
+    const key = 'agk_' + 'c'.repeat(64);
+    const out = redactLog(`API_TOKEN=${key}`, { home: null, env: { API_TOKEN: key } });
+    expect(out.text).not.toContain('c'.repeat(20));
+    expect(out.count).toBe(1);
+  });
+});

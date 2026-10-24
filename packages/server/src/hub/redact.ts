@@ -58,37 +58,40 @@ const SQ = `'[^'\\n]*'${AFTER_QUOTE}|'[^\\n]*`;
 const BARE = '[^\\s"\',;]+';
 
 /**
- * Known secret formats, in the order they are tried. No `\b`: a token embedded
- * in a longer word (`id=agk_..._suffix`) is still that token (Codex review);
- * only the short `sk-` prefix keeps a guard, or every `task-...` would go.
+ * A detector: a pattern and, when only part of a match is the secret, which
+ * group is (the key, the `Bearer ` and the URL around it stay readable).
+ *
+ * No `\b`: a token embedded in a longer word (`id=agk_..._suffix`) is still
+ * that token. No upper length either: every token starts at a fixed prefix,
+ * so a failed attempt costs only its minimum, and a token of any length is
+ * redacted whole (Codex review). Only `sk-` and JWTs keep a start guard - the
+ * first or every `task-...` would go, the second so a long run of `eyJ` is
+ * tried once, not at every offset.
  */
-const PATTERNS: Array<{ kind: string; re: RegExp; replace?: (m: string, ...g: string[]) => string }> = [
-  { kind: 'agenfk-key', re: /(?:agk|ci)_[0-9a-f]{64}/g },
-  { kind: 'github-token', re: /gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{50,255}/g },
-  { kind: 'aws-key-id', re: /(?:AKIA|ASIA)[0-9A-Z]{16}/g },
-  { kind: 'slack-token', re: /xox[abposr]-[A-Za-z0-9-]{10,255}/g },
-  { kind: 'api-key', re: /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,255}/g },
-  { kind: 'jwt', re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,4096}\.eyJ[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{8,4096}/g },
-  { kind: 'bearer', re: /(Bearer\s{1,8})[A-Za-z0-9._~+/=-]{12,4096}/g, replace: (_m, p) => `${p}[REDACTED:bearer]` },
-  {
-    kind: 'url-password',
-    re: /(?<![A-Za-z0-9+.-])([a-z][a-z0-9+.-]{0,30}:\/\/[^\s:/@]{1,256}:)[^\s@/]+(@)/gi,
-    replace: (_m, a, b) => `${a}[REDACTED:url-password]${b}`,
-  },
+interface Detector { kind: string; re: RegExp; group?: number; unquote?: boolean }
+
+const DETECTORS: Detector[] = [
+  { kind: 'agenfk-key', re: /(?:agk|ci)_[0-9a-f]{64}/dg },
+  { kind: 'github-token', re: /gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,}/dg },
+  { kind: 'aws-key-id', re: /(?:AKIA|ASIA)[0-9A-Z]{16}/dg },
+  { kind: 'slack-token', re: /xox[abposr]-[A-Za-z0-9-]{10,}/dg },
+  { kind: 'api-key', re: /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/dg },
+  { kind: 'jwt', re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/dg },
+  { kind: 'bearer', re: /Bearer[ \t]{1,8}([A-Za-z0-9._~+/=-]{12,})/dg, group: 1 },
+  { kind: 'url-password', re: /(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]{0,30}:\/\/[^\s:/@]{1,256}:([^\s@/]+)@/dgi, group: 1 },
   // "name": "value", with escaped quotes inside the value
   {
     kind: 'assigned',
-    re: new RegExp(`("${SECRET_KEY_NAME}"\\s{0,8}:\\s{0,8}")((?:[^"\\\\\\n]|\\\\.)*"${AFTER_QUOTE}|[^\\n]*)`, 'gim'),
-    replace: (_m, a) => `${a}[REDACTED:assigned]"`,
+    re: new RegExp(`"${SECRET_KEY_NAME}"\\s{0,8}:\\s{0,8}"((?:[^"\\\\\\n]|\\\\.)*"${AFTER_QUOTE}|[^\\n]*)`, 'dgim'),
+    group: 1,
+    unquote: true,
   },
   // name=value / name: value, the value quoted or bare
   {
     kind: 'assigned',
-    re: new RegExp(`(^|[\\s,;{(])(${SECRET_KEY_NAME}[ \\t]{0,8}[=:][ \\t]{0,8})(${DQ}|${SQ}|(?!\\[REDACTED)${BARE})`, 'gim'),
-    replace: (_m, lead, key, value) => {
-      const q = value[0] === '"' || value[0] === "'" ? value[0] : '';
-      return `${lead}${key}${q}[REDACTED:assigned]${q}`;
-    },
+    re: new RegExp(`(?:^|[\\s,;{(])${SECRET_KEY_NAME}[ \\t]{0,8}[=:][ \\t]{0,8}(${DQ}|${SQ}|${BARE})`, 'dgim'),
+    group: 1,
+    unquote: true,
   },
 ];
 
@@ -97,15 +100,16 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const BEGIN = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----/g;
 const END = /-----END [A-Z ]{0,40}PRIVATE KEY-----/g;
 
+interface Range { start: number; end: number; kind: string }
+
 /**
  * Private-key blocks, by scanning: from each BEGIN to the next END. When no END
  * follows a BEGIN, none follows any later BEGIN either, so the scan stops -
  * one pass over the log, whatever it holds.
  */
-function redactKeyBlocks(text: string): { text: string; count: number } {
-  let out = '';
+function keyBlocks(text: string): Range[] {
+  const out: Range[] = [];
   let at = 0;
-  let count = 0;
   for (;;) {
     BEGIN.lastIndex = at;
     const b = BEGIN.exec(text);
@@ -113,13 +117,22 @@ function redactKeyBlocks(text: string): { text: string; count: number } {
     END.lastIndex = b.index + b[0].length;
     const e = END.exec(text);
     if (!e) break;
-    out += text.slice(at, b.index) + '[REDACTED:private-key]';
+    out.push({ start: b.index, end: e.index + e[0].length, kind: 'private-key' });
     at = e.index + e[0].length;
-    count += 1;
   }
-  return { text: out + text.slice(at), count };
+  return out;
 }
 
+/** The part of a quoted value inside its quotes; an unclosed one runs to its end. */
+function unquoted(text: string, start: number, end: number): [number, number] {
+  const q = text[start];
+  if (q !== '"' && q !== "'") {
+    // The JSON detector's group starts after the opening quote and may end with the closing one.
+    return text[end - 1] === '"' && end - 1 > start ? [start, end - 1] : [start, end];
+  }
+  const closes = end - start > 1 && text[end - 1] === q;
+  return [start + 1, closes ? end - 1 : end];
+}
 /**
  * The home directory, as a whole path that starts there: not preceded by a path
  * character (`/Users/bob/backups/Users/ana` is someone else's path) and ending
@@ -134,34 +147,57 @@ function homePattern(home: string): RegExp | null {
   return new RegExp(`(?<![A-Za-z0-9_.~-])${body}(?=[\\\\/]|$|[\\s:'")\\]])`, windows ? 'gim' : 'gm');
 }
 
+/**
+ * Every detector reads the ORIGINAL log and names the ranges to hide; the
+ * ranges are merged and replaced once. Replacing as we went let one redaction
+ * hide the key another detector needed to see - an environment value equal to
+ * `password` turned `{"password":"..."}` into a key nothing recognised
+ * (Codex review).
+ */
 export function redactLog(input: string, opts: RedactOptions): Redacted {
-  let text = input;
-  let count = 0;
+  const ranges: Range[] = [];
 
-  // This machine's own secrets first, longest first, so a value that contains
-  // another is replaced whole. Literal matches: linear.
-  const envSecrets = Object.entries(opts.env)
-    .filter(([name, value]) => SECRET_ENV_NAME.test(name) && typeof value === 'string' && value.length >= MIN_ENV_SECRET_LENGTH)
-    .sort((a, b) => (b[1] as string).length - (a[1] as string).length);
-  for (const [name, value] of envSecrets) {
-    const re = new RegExp(escapeRe(value as string), 'g');
-    text = text.replace(re, () => { count += 1; return `[REDACTED:env:${name}]`; });
+  // This machine's own secrets, wherever they appear. Literal matches: linear.
+  for (const [name, value] of Object.entries(opts.env)) {
+    if (!SECRET_ENV_NAME.test(name) || typeof value !== 'string' || value.length < MIN_ENV_SECRET_LENGTH) continue;
+    const re = new RegExp(escapeRe(value), 'g');
+    for (let m = re.exec(input); m; m = re.exec(input)) ranges.push({ start: m.index, end: m.index + value.length, kind: `env:${name}` });
   }
 
-  const blocks = redactKeyBlocks(text);
-  text = blocks.text;
-  count += blocks.count;
+  ranges.push(...keyBlocks(input));
 
-  for (const p of PATTERNS) {
-    text = text.replace(p.re, (...args: any[]) => {
-      count += 1;
-      const groups = args.slice(1, -2) as string[];
-      return p.replace ? p.replace(args[0] as string, ...groups) : `[REDACTED:${p.kind}]`;
-    });
+  for (const d of DETECTORS) {
+    d.re.lastIndex = 0;
+    for (let m = d.re.exec(input); m; m = d.re.exec(input)) {
+      const span = d.group === undefined ? [m.index, m.index + m[0].length] : (m as any).indices?.[d.group];
+      if (span && span[1] > span[0]) {
+        const [s0, e0] = d.unquote ? unquoted(input, span[0], span[1]) : span;
+        if (e0 > s0) ranges.push({ start: s0, end: e0, kind: d.kind });
+      }
+      if (m[0].length === 0) d.re.lastIndex += 1;
+    }
   }
 
+  // Merge overlapping ranges; the earliest-starting one names the kind.
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+  const merged: Range[] = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r.start < last.end) last.end = Math.max(last.end, r.end);
+    else merged.push({ ...r });
+  }
+
+  let text = '';
+  let at = 0;
+  for (const r of merged) {
+    text += input.slice(at, r.start) + `[REDACTED:${r.kind}]`;
+    at = r.end;
+  }
+  text += input.slice(at);
+
+  // The username last: a path, not a secret, and never inside a redaction.
   const home = opts.home ? homePattern(opts.home) : null;
   if (home) text = text.replace(home, '~');
 
-  return { text, count };
+  return { text, count: merged.length };
 }
