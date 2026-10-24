@@ -336,6 +336,18 @@ describe('agenfk ci check', () => {
       expect(r.result.reason).toBe('report_unavailable');
     });
 
+    it('a review detail that is the right receipt but carries no findings list is not reused', async () => {
+      const c = candidate(co.tree, { id: 'rv-1', kind: 'review', commandRevision: null, lenses: ['general'], report: { available: false, bytes: null } });
+      hub = await fakeHub((req, res) => {
+        if ((req.url ?? '').startsWith('/v1/ci/receipts?')) return json(res, 200, lookupBody('enforce', [c]));
+        const full = fullReceipt(c);
+        return json(res, 200, { ...full, receipt: { ...full.receipt, review: { ...full.receipt.review, findings: 'none' } } });
+      });
+      const r = await check({ kind: 'review', lens: 'general' });
+      expect(r.exitCode, JSON.stringify(r.result)).toBe(10);
+      expect(r.result.reason).toBe('report_unavailable');
+    });
+
     it('a detail naming another receipt is not this receipt\'s evidence', async () => {
       const c = candidate(co.tree);
       hub = await fakeHub((req, res) => {

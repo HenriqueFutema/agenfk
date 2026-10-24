@@ -235,6 +235,53 @@ describe('hub receiptPublisher.publishPendingReceipts', () => {
     expect((await published())[0].publication.state).toBe('acked');
   });
 
+  // Codex second pass: one stalled hub must not hold every later publish.
+  it('a hub that never finishes answering times out as pending, and the next pass still runs', async () => {
+    const rcpt = receipt();
+    await seed([rcpt]);
+    const stalled = vi.fn(() => new Promise<never>(() => { /* never answers */ })) as unknown as FetchLike;
+    const started = Date.now();
+    const first = await publishPendingReceipts(args(stalled, { timeoutMs: 50 }));
+    expect(first).toMatchObject({ acked: 0, pending: 1 });
+    expect((await published())[0].publication.lastError).toMatch(/did not answer/);
+    const { fetchImpl } = makeHubFetch(() => ({ status: 201, body: { id: rcpt.id, reusable: true, reason: null } }));
+    expect(await publishPendingReceipts(args(fetchImpl))).toMatchObject({ acked: 1 });
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it('a body that never finishes arriving times out too', async () => {
+    const rcpt = receipt();
+    await seed([rcpt]);
+    const trickle = vi.fn(async () => ({ status: 201, ok: true, headers: { get: () => null }, json: () => new Promise(() => { /* never ends */ }) })) as unknown as FetchLike;
+    expect(await publishPendingReceipts(args(trickle, { timeoutMs: 50 }))).toMatchObject({ pending: 1 });
+  });
+
+  // Codex second pass: the size is read from the file system, never by reading the file.
+  it.skipIf(process.platform === 'win32')('a log over the cap is refused on its size without being read', async () => {
+    const huge = path.join(logDir, 'huge.log');
+    const fd = fs.openSync(huge, 'w');
+    fs.ftruncateSync(fd, 3 * 1024 * 1024 * 1024); // sparse 3 GiB: reading it whole would throw
+    fs.closeSync(fd);
+    const rcpt = receipt({ execution: { ...receipt().execution, logPath: huge } });
+    await seed([rcpt]);
+    const { fetchImpl, calls } = makeHubFetch(() => ({ status: 201, body: { id: rcpt.id, reusable: false, reason: 'report_over_cap' } }));
+    await publishPendingReceipts(args(fetchImpl, { maxReportBytes: 100 }));
+    expect(calls[0].body.report).toEqual({ omitted: 'over_cap', bytes: 3 * 1024 * 1024 * 1024 });
+  });
+
+  // Codex second pass: another process may settle the receipt while this pass waits on the hub.
+  it('a receipt settled meanwhile stays settled when this pass hears a failure', async () => {
+    const rcpt = receipt();
+    await seed([rcpt]);
+    const fetchImpl = vi.fn(async () => {
+      const cur: any = await storage.getItem('card-1');
+      await storage.updateItem('card-1', { verificationReceipts: cur.verificationReceipts.map((r: any) => ({ ...r, publication: { state: 'acked', attempts: 1, lastError: null, ackedAt: '2026-06-01T00:00:00.000Z' } })) } as any);
+      return { status: 500, ok: false, headers: { get: () => null }, json: async () => ({}) } as any;
+    }) as unknown as FetchLike;
+    await publishPendingReceipts(args(fetchImpl));
+    expect((await published())[0].publication.state).toBe('acked');
+  });
+
   it('an acked receipt is never published again', async () => {
     const rcpt = receipt();
     await seed([rcpt]);

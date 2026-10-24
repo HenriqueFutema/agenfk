@@ -308,3 +308,32 @@ describe('a path with a quote inside it', () => {
     expect(normalizeCommandPaths('bash "/work/app/run all.sh"', ROOT)).toMatchObject({ ok: true, command: 'bash "./run all.sh"' });
   });
 });
+
+// Codex second pass: a `cd` only moves the shell where the shell really moves.
+describe('a `cd` the shell may not have taken', () => {
+  it('does not count a cd inside a subshell, after `||`, or as an argument', () => {
+    for (const command of ['(cd a); bash ../tools/check.sh', 'echo cd a && bash ../tools/check.sh', 'cd a || bash ../tools/check.sh', 'cd a | bash ../x.sh']) {
+      expect(normalizeCommandPaths(command, ROOT).ok, command).toBe(false);
+      expect(machineSpecificPaths(command).length, command).toBeGreaterThan(0);
+    }
+  });
+
+  it('still counts a cd that leads the command, or follows `&&` or `;`', () => {
+    for (const command of ['cd a && bash ../x.sh', 'npm ci; cd a && bash ../x.sh']) {
+      expect(normalizeCommandPaths(command, ROOT).ok, command).toBe(true);
+    }
+  });
+});
+
+describe('a redirection attached to the word before it', () => {
+  it('is still a path', () => {
+    expect(machineSpecificPaths('npm test>/tmp/result.log')).toEqual(['/tmp/result.log']);
+    expect(normalizeCommandPaths('cat<../tools/check.sh', ROOT).ok).toBe(false);
+    expect(normalizeCommandPaths('npm test>/work/app/out.log', ROOT)).toMatchObject({ ok: true, command: 'npm test>./out.log' });
+    expect(machineSpecificPaths('npm test 2>&1>/dev/null')).toEqual([]);
+  });
+
+  it('inside quotes is not a redirection', () => {
+    expect(machineSpecificPaths("echo 'a>/tmp/x'")).toEqual([]);
+  });
+});

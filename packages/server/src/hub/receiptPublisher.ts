@@ -87,7 +87,16 @@ export interface PublishPendingReceiptsArgs {
    * under the hub's JSON body limit, not the log cap above.
    */
   maxReportGzBytes?: number;
+  /**
+   * How long one receipt's request may take, headers AND body. Passes run one
+   * after another, so a hub that stalls mid-answer would otherwise hold every
+   * later publish behind it; past the deadline the receipt stays pending.
+   */
+  timeoutMs?: number;
 }
+
+/** Default deadline for one receipt's request, headers and body. */
+const DEFAULT_PUBLISH_TIMEOUT_MS = 30_000;
 
 export interface PublishReceiptsResult {
   acked: number;
@@ -192,29 +201,49 @@ async function publishOne(
   const body: Record<string, unknown> = { receipt: asSent };
   if (report) body.report = report;
 
-  let res: Awaited<ReturnType<FetchLike>>;
+  // One deadline over the request and the whole answer. The race releases the
+  // pass even when a fetch implementation ignores the abort signal.
+  const timeoutMs = args.timeoutMs ?? DEFAULT_PUBLISH_TIMEOUT_MS;
+  const ctl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => { ctl.abort(); resolve('timeout'); }, timeoutMs);
+  });
+  const exchange = async (): Promise<{ res: Awaited<ReturnType<FetchLike>>; body: any } | { error: string }> => {
+    let res: Awaited<ReturnType<FetchLike>>;
+    try {
+      res = await args.fetchImpl(`${base}/v1/receipts`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${args.hubConfig.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+      });
+    } catch (e) {
+      return { error: (e as Error).message || 'network error' };
+    }
+    // A 2xx is only an acknowledgement if the body names the receipt back. A hub
+    // that answered "200" with nothing in it has told us nothing, and a receipt
+    // recorded as delivered on the strength of it is a receipt that goes missing.
+    let parsed: any = null;
+    try {
+      parsed = await res.json();
+    } catch {
+      parsed = null;
+    }
+    return { res, body: parsed };
+  };
+  let outcome: Awaited<ReturnType<typeof exchange>> | 'timeout';
   try {
-    res = await args.fetchImpl(`${base}/v1/receipts`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${args.hubConfig.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    return { kind: 'pending', error: (e as Error).message || 'network error' };
+    outcome = await Promise.race([exchange(), deadline]);
+  } finally {
+    clearTimeout(timer);
   }
-
-  // A 2xx is only an acknowledgement if the body names the receipt back. A hub
-  // that answered "200" with nothing in it has told us nothing, and a receipt
-  // recorded as delivered on the strength of it is a receipt that goes missing.
-  let body_: any = null;
-  try {
-    body_ = await res.json();
-  } catch {
-    body_ = null;
-  }
+  if (outcome === 'timeout') return { kind: 'pending', error: `the hub did not answer within ${timeoutMs} ms` };
+  if ('error' in outcome) return { kind: 'pending', error: outcome.error };
+  const { res, body: body_ } = outcome;
 
   if (res.status >= 200 && res.status < 300) {
     if (typeof body_?.id !== 'string' || !body_.id) {
