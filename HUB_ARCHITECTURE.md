@@ -1298,6 +1298,10 @@ repo-relative one and refuses the command whole if any path points outside the
 checkout or into a home directory. The hub refuses machine-specific paths too.
 A repo-relative script (`./scripts/verify.sh`) is the way to express a complex
 command.
+This is a portability check, not a sandbox: it reads the command as written, so a
+command can still reach outside the checkout through what the shell expands
+(`$HOME`, `eval`, a symlinked directory). Reuse is safe because CI requires the
+exact tree and the current command revision, not because of this check.
 
 ### 13.3 Modes
 

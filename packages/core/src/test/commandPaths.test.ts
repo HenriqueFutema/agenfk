@@ -384,3 +384,10 @@ describe('every file-opening redirection operator', () => {
     expect(machineSpecificPaths('npm test &>>/tmp/all.log')).toEqual(['/tmp/all.log']);
   });
 });
+
+describe('the `>&file` form opens a file', () => {
+  it('exposes its operand, while `2>&1` stays a duplication', () => {
+    expect(machineSpecificPaths('printf x >&/tmp/result.log')).toEqual(['/tmp/result.log']);
+    expect(machineSpecificPaths('npm test 2>&1')).toEqual([]);
+  });
+});

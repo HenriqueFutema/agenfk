@@ -16,6 +16,12 @@
  * checkout while its prefix looks clean. That is `#264`, and it is the mistake
  * this whole file exists to not make.
  *
+ * What this is NOT: a sandbox. It reads the command as written, so it catches the
+ * paths a person names by accident; a command can still reach outside the checkout
+ * through what the shell expands (`$HOME/x.sh`, `eval`, a symlink `cd`), and no
+ * static reading can stop that. What makes a CI receipt safe to reuse is the exact
+ * tree and the pinned command revision, not this file (RFC-002 review).
+ *
  * Refusing is all of it or none of it: a command mixing one in-checkout path with
  * one outside path is refused whole, so a caller never gets a command
  * half-rewritten into something that means something else.
@@ -215,7 +221,7 @@ const visibleOf = (word: Word, command: string): string => word.src.map((at) => 
  * the file that follows, so `bash </opt/tools/check.sh` names a file exactly as
  * `bash /opt/tools/check.sh` does (Codex review of RFC-002).
  */
-const REDIRECTION = /^\d*(?:&>>?|<>|>\||>>|<|>)/;
+const REDIRECTION = /^\d*(?:&>>?|<>|>\||>>|>&|<&|<|>)/;
 
 interface Piece {
   start: number;
