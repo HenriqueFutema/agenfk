@@ -296,6 +296,72 @@ describe('3ffc9651: the final verify propagates a sibling green recorded at the 
   });
 });
 
+/** Top-level cards (no parent) of one project, on the step before DONE, sharing one tree. */
+async function topLevelSetup() {
+  const repo = tmp('agenfk-ts-top-');
+  git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a.txt && git add . && git commit -qm one');
+  const runs = path.join(tmp('agenfk-ts-top-runs-'), 'runs');
+  const verifyCommand = `node -e "require('fs').appendFileSync(${JSON.stringify(runs).replace(/"/g, '\\"')}, 'run\\n')"`;
+  const project = async () => {
+    const p = (await agent().post('/projects').set(internal()).send({ name: `ts-top-${++seq}` })).body;
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand } as never);
+    return p.id as string;
+  };
+  const projectId = await project();
+  const card = async (inProject = projectId) => {
+    const c = (await agent().post('/items').set(internal()).send({ type: 'BUG', title: `top-${++seq}`, projectId: inProject })).body;
+    await storage.updateItem(c.id, { status: 'TEST' } as any);
+    return c.id as string;
+  };
+  return { repo, card, project, count: counter(runs) };
+}
+
+// GH-271: three top-level cards in one tree each ran the whole suite on close,
+// although the first had just verified this very content: a sibling's green was
+// only ever looked for among cards with the same parent.
+describe('GH-271: a top-level card reuses another top-level card\'s green of the same tree', () => {
+  it('the first closes on the command; the next, with the first\'s files committed, propagates', async () => {
+    const t = await topLevelSetup();
+    fs.writeFileSync(path.join(t.repo, 'one.js'), 'module.exports = 1;\n');
+    fs.writeFileSync(path.join(t.repo, 'two.js'), 'module.exports = 2;\n');
+    const a = await t.card();
+    expect((await validate(a)).body.status).toBe('DONE');
+    expect(t.count()).toBe(1);
+    // The first card's close commit takes only its own file; the content is unchanged.
+    git(t.repo, 'git add one.js && git commit -qm one-closes');
+
+    const b = await t.card();
+    const plan = await agent().get(`/items/${b}/leave-plan?predict=1`);
+    expect(plan.body.prediction, JSON.stringify(plan.body)).toMatchObject({ mode: 'sibling-green' });
+    const rb = await validate(b);
+    expect(rb.body.status, JSON.stringify(rb.body)).toBe('DONE');
+    expect(rb.body.output).toBe('Sibling propagation');
+    expect(t.count()).toBe(1);
+  });
+
+  it('a green of the same tree in another project is not this project\'s', async () => {
+    const t = await topLevelSetup();
+    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'mid-edit\n');
+    expect((await validate(await t.card(await t.project()))).body.status).toBe('DONE');
+    const b = await t.card();
+    const rb = await validate(b);
+    expect(rb.body.status).toBe('DONE');
+    expect(rb.body.output).not.toBe('Sibling propagation');
+    expect(t.count()).toBe(2);
+  });
+
+  it('changed content is another tree: the next top-level card runs its own', async () => {
+    const t = await topLevelSetup();
+    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'one\n');
+    expect((await validate(await t.card())).body.status).toBe('DONE');
+    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'two\n');
+    const rb = await validate(await t.card());
+    expect(rb.body.status).toBe('DONE');
+    expect(rb.body.output).not.toBe('Sibling propagation');
+    expect(t.count()).toBe(2);
+  });
+});
+
 /** A flow START -> GATE (a person approves) -> WORK -> END, with a STORY and TASK children on WORK. */
 async function gatedSetup(command: (runs: string) => string) {
   const repo = tmp('agenfk-ts-gate-');
