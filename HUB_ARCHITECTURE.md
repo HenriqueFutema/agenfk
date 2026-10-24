@@ -1300,8 +1300,9 @@ A repo-relative script (`./scripts/verify.sh`) is the way to express a complex
 command.
 This is a portability check, not a sandbox: it reads the command as written, so a
 command can still reach outside the checkout through what the shell expands
-(`$HOME`, `eval`, a symlinked directory). Reuse is safe because CI requires the
-exact tree and the current command revision, not because of this check.
+(`$HOME`, `eval`, a symlinked directory). Reuse rests on CI requiring the exact
+tree and the current command revision AND on trusting the allowlisted producers:
+those two checks do not pin scripts outside the repository, and neither does this one.
 
 ### 13.3 Modes
 

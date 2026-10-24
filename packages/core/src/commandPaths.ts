@@ -19,8 +19,8 @@
  * What this is NOT: a sandbox. It reads the command as written, so it catches the
  * paths a person names by accident; a command can still reach outside the checkout
  * through what the shell expands (`$HOME/x.sh`, `eval`, a symlink `cd`), and no
- * static reading can stop that. What makes a CI receipt safe to reuse is the exact
- * tree and the pinned command revision, not this file (RFC-002 review).
+ * static reading can stop that. A CI receipt's reuse rests on the exact tree, the
+ * pinned command revision and trusted producers - not on this file (RFC-002 review).
  *
  * Refusing is all of it or none of it: a command mixing one in-checkout path with
  * one outside path is refused whole, so a caller never gets a command
