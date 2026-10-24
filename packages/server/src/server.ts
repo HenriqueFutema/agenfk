@@ -5737,6 +5737,8 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
   recordHubEvent({
     type: isNewRegistration ? 'pr.opened' : 'pr.updated',
     projectId: item?.projectId,
+    // The anchor card: the hub resolves a PR's receipts to it (GH-256).
+    itemId,
     // model/harness are agent-declared (the CLI/MCP caller knows its own runtime;
     // the server process cannot infer them). Optional — omitted when not supplied.
     payload: {
@@ -5786,6 +5788,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   recordHubEvent({
     type: 'pr.updated',
     projectId: anchorItem?.projectId,
+    itemId: existing.itemId,
     payload: {
       prNumber, repo, sizing, sizingShadow: shadow,
       leafStory: shadowCounts.leafStory,

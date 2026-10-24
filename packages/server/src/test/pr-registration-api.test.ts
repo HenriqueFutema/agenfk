@@ -412,4 +412,39 @@ describe('POST /prs emits a hub event into the outbox', () => {
     expect(updEvent).toBeDefined();
     expect(updEvent.payload?.sizing?.task).toBe(3);
   });
+
+  // GH-256: the hub resolves GET /v1/ci/receipts?pr= to the PR's root card by
+  // the pr.* event's item_id. Without it only the tree fallback ever matched.
+  it('pr.opened and pr.updated carry the anchor item id on the envelope', async () => {
+    const project = (await agent().post('/projects').send({ name: 'P3' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'STORY', title: 'S' })).body;
+    await agent().post('/prs').send({
+      itemId: item.id, prNumber: 503, repo: 'org/repo3',
+      model: 'claude-opus-4-8', harness: 'claude-code',
+    });
+    // A re-POST is the other pr.updated route.
+    await agent().post('/prs').send({
+      itemId: item.id, prNumber: 503, repo: 'org/repo3',
+      model: 'claude-opus-4-8', harness: 'claude-code',
+    });
+    await agent().put('/prs/org%2Frepo3/503').send({
+      sizing: { epic: 0, story: 1, task: 0, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
+    });
+
+    const opened = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 503);
+    expect(opened?.itemId).toBe(item.id);
+    const db: any = (await import('../server')).storage['database'];
+    const updates = await (async () => {
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const rows = (db.prepare('SELECT payload FROM hub_outbox').all() as { payload: string }[])
+          .map(r => JSON.parse(r.payload)).filter(p => p.type === 'pr.updated' && p.payload?.prNumber === 503);
+        if (rows.length >= 2 || Date.now() >= deadline) return rows;
+        await new Promise(r => setTimeout(r, 25));
+      }
+    })();
+    expect(updates).toHaveLength(2);
+    for (const u of updates) expect(u.itemId).toBe(item.id);
+  });
 });
