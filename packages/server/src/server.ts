@@ -8951,6 +8951,19 @@ const ENTRY_BASELINE = 'entry-baseline';
  * Every candidate is asked: a stale older sibling must not shadow a younger one
  * still green here. 2ebacb23: shared by the final gate and the dry run.
  */
+/**
+ * GH-271: the cards whose green of this tree a final verify may carry - the
+ * card's siblings, or for a card with no parent the project's other top-level
+ * cards. Several top-level cards worked in one tree each ran the whole suite on
+ * close, although the first had just verified the same content.
+ */
+async function greenPeersOf(item: any): Promise<any[]> {
+  if (item.parentId) return storage.listItems({ parentId: item.parentId });
+  // hydrate: false - only the item's own tests[] is read, never a capture's results,
+  // and a project can hold thousands of finished cards (review).
+  return (await storage.listItems({ projectId: item.projectId, hydrate: false } as any)).filter((s: any) => !s.parentId);
+}
+
 async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, project: any, gateRoot: string | null | undefined, command: string) {
   const sharesRoot = !!gateRoot;
   const treeSha = sharesRoot ? readCleanTreeSha(gateRoot!, gitRun) : null;
@@ -8963,12 +8976,16 @@ async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, 
   for (const s of siblings) {
     // 6b34e5cc: finished is where the move that ends the flow lands (DONE, or a boundary last step), not the literal word.
     if (pass || s.id === item.id || !isCompletionStep(s.status, flow)) continue;
+    // Only a green of this command can carry: asked before the root, which a
+    // project's many finished top-level cards would otherwise each resolve.
+    const greens = testRecords(s.tests).filter((test: any) => test.status === 'PASSED' && test.command === command);
+    if (greens.length === 0) continue;
     // Same checkout as the one the command runs in, or nothing transfers.
     if (!sharesRoot || resolveCommitRoot(await withEffectiveWorktree(s), project?.projectRoot).root !== gateRoot) continue;
     // EVERY matching test, not the first: a sibling re-verified after a
     // rollback has an older record that must not shadow the current one.
-    for (const test of testRecords(s.tests)) {
-      if (pass || test.status !== 'PASSED' || test.command !== command) continue;
+    for (const test of greens) {
+      if (pass) continue;
       if (treeState && currentTreeState(test) === treeState && test.commitRoot === gateRoot) { pass = { sibling: s, test }; continue; }
       const gate = mayPropagate(treeSha, test);
       if (gate.allowed) pass = { sibling: s, test };
@@ -9208,8 +9225,8 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   const index = sorted.findIndex(st => st.name === item.status);
   // The close's order: a sibling's green of this tree, then a green of it on record (ef1342b8), then the command.
   const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green' | 'reuse'; sibling?: { id: string; title: string }; reusedFrom?: { itemId: string; step: string } }> => {
-    if (item.parentId && leavingEndsFlow(sorted as any, index)) {
-      const { pass } = await siblingGreenOf(item, await storage.listItems({ parentId: item.parentId }), flow as TransitionFlow, project, root, command);
+    if (leavingEndsFlow(sorted as any, index)) {
+      const { pass } = await siblingGreenOf(item, await greenPeersOf(item), flow as TransitionFlow, project, root, command);
       if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
     }
     if (leavingEndsFlow(sorted as any, index) && !stepHasCommandChecks(flow, item.status) && !freshRootClose(item, project)) {
@@ -10378,8 +10395,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // ── Sibling propagation ───────────────────────────────────────────────────
   // 3ffc9651: what an identical sibling run in flight is keyed on, when propagation found nothing yet.
   let siblingFlightKey: string | null = null;
-  if (item.parentId) {
-    const siblings = await storage.listItems({ parentId: item.parentId });
+  // A top-level card's peers count only on the move that ends the flow (GH-271).
+  if (item.parentId || endsFlow) {
+    const siblings = endsFlow ? await greenPeersOf(item) : await storage.listItems({ parentId: item.parentId });
     // On the move that ends the flow, check siblings that finished it with the same verifyCommand
     if (endsFlow) {
       /*
@@ -10417,7 +10435,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
       if (treeState && gateRoot) siblingFlightKey = [item.projectId, item.parentId, gateRoot, resolvedCommand, treeState].join('\0');
-    } else if (!isFinalStep && !resolvedCommand) {
+    } else if (item.parentId && !isFinalStep && !resolvedCommand) {
       // "A sibling is further along" runs nothing, so it may only carry a step
       // that needs no command. On a boundary step mid-flow the project's
       // command is required, and it runs (CGLAB-378 review). A command the
