@@ -174,7 +174,15 @@ function reportOf(
   // Redacted before it leaves the machine (RFC-002): what the suite printed
   // goes to the hub and to CI, its secrets and this user's home path do not.
   // The file on disk is left as it is - it is this machine's own record.
-  const redacted = redactLog(plain.toString('utf8'), { home: os.homedir(), env: process.env });
+  // A redaction that fails sends NO log, never the unredacted one; the receipt
+  // still goes, and CI reads "report unavailable" and runs the step.
+  let redacted: ReturnType<typeof redactLog>;
+  try {
+    redacted = redactLog(plain.toString('utf8'), { home: os.homedir(), env: process.env });
+  } catch (e) {
+    console.error(`[HUB_RECEIPTS] could not redact ${logPath}; sending the receipt without its log: ${(e as Error).message}`);
+    return undefined;
+  }
   plain = Buffer.from(redacted.text, 'utf8');
   if (plain.length > maxReportBytes) {
     // Say so, with the size, and send nothing — and do not spend a gzip on a

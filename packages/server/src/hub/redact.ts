@@ -68,7 +68,12 @@ const BARE = '[^\\s"\',;]+';
  * first or every `task-...` would go, the second so a long run of `eyJ` is
  * tried once, not at every offset.
  */
-interface Detector { kind: string; re: RegExp; group?: number; unquote?: boolean }
+/**
+ * `unquote`: 'outer' when the captured value may start with its own quote
+ * (`key="v"`), 'inside' when the capture already starts inside a JSON string
+ * and may end with the closing `"` - an apostrophe there is part of the value.
+ */
+interface Detector { kind: string; re: RegExp; group?: number; unquote?: 'outer' | 'inside' }
 
 const DETECTORS: Detector[] = [
   { kind: 'agenfk-key', re: /(?:agk|ci)_[0-9a-f]{64}/dg },
@@ -84,14 +89,14 @@ const DETECTORS: Detector[] = [
     kind: 'assigned',
     re: new RegExp(`"${SECRET_KEY_NAME}"\\s{0,8}:\\s{0,8}"((?:[^"\\\\\\n]|\\\\.)*"${AFTER_QUOTE}|[^\\n]*)`, 'dgim'),
     group: 1,
-    unquote: true,
+    unquote: 'inside',
   },
   // name=value / name: value, the value quoted or bare
   {
     kind: 'assigned',
     re: new RegExp(`(?:^|[\\s,;{(])${SECRET_KEY_NAME}[ \\t]{0,8}[=:][ \\t]{0,8}(${DQ}|${SQ}|${BARE})`, 'dgim'),
     group: 1,
-    unquote: true,
+    unquote: 'outer',
   },
 ];
 
@@ -124,12 +129,12 @@ function keyBlocks(text: string): Range[] {
 }
 
 /** The part of a quoted value inside its quotes; an unclosed one runs to its end. */
-function unquoted(text: string, start: number, end: number): [number, number] {
-  const q = text[start];
-  if (q !== '"' && q !== "'") {
-    // The JSON detector's group starts after the opening quote and may end with the closing one.
+function unquoted(text: string, start: number, end: number, mode: 'outer' | 'inside'): [number, number] {
+  if (mode === 'inside') {
     return text[end - 1] === '"' && end - 1 > start ? [start, end - 1] : [start, end];
   }
+  const q = text[start];
+  if (q !== '"' && q !== "'") return [start, end];
   const closes = end - start > 1 && text[end - 1] === q;
   return [start + 1, closes ? end - 1 : end];
 }
@@ -164,14 +169,15 @@ export function redactLog(input: string, opts: RedactOptions): Redacted {
     for (let m = re.exec(input); m; m = re.exec(input)) ranges.push({ start: m.index, end: m.index + value.length, kind: `env:${name}` });
   }
 
-  ranges.push(...keyBlocks(input));
+  // A loop, not a spread: a log can hold more blocks than a call takes arguments.
+  for (const r of keyBlocks(input)) ranges.push(r);
 
   for (const d of DETECTORS) {
     d.re.lastIndex = 0;
     for (let m = d.re.exec(input); m; m = d.re.exec(input)) {
       const span = d.group === undefined ? [m.index, m.index + m[0].length] : (m as any).indices?.[d.group];
       if (span && span[1] > span[0]) {
-        const [s0, e0] = d.unquote ? unquoted(input, span[0], span[1]) : span;
+        const [s0, e0] = d.unquote ? unquoted(input, span[0], span[1], d.unquote) : span;
         if (e0 > s0) ranges.push({ start: s0, end: e0, kind: d.kind });
       }
       if (m[0].length === 0) d.re.lastIndex += 1;

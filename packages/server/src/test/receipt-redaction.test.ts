@@ -153,3 +153,17 @@ describe('redactLog - every detector reads the original log', () => {
     expect(out.count).toBe(1);
   });
 });
+
+// Codex fourth pass on the redaction.
+describe('redactLog - output stays well formed', () => {
+  it('a JSON value starting with an apostrophe keeps its closing quote', () => {
+    expect(r('{"password":"\'sensitive","ok":true}').text).toBe('{"password":"[REDACTED:assigned]","ok":true}');
+  });
+
+  it('handles hundreds of thousands of key blocks', () => {
+    const log = '-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----\n'.repeat(200_000);
+    const out = r(log);
+    expect(out.count).toBe(200_000);
+    expect(out.text).not.toContain('BEGIN PRIVATE KEY');
+  });
+});
