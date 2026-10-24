@@ -70,3 +70,46 @@ describe('redactLog', () => {
     expect(r(`agk_${'a'.repeat(64)} and ci_${'b'.repeat(64)}`).count).toBe(2);
   });
 });
+
+// Codex review of the redaction.
+describe('redactLog - what the first version missed', () => {
+  it('redacts quoted assignment values, with escapes, whole', () => {
+    expect(r('DB_PASSWORD="hunter22"').text).toBe('DB_PASSWORD="[REDACTED:assigned]"');
+    expect(r("client_secret: 'abcdefgh'").text).toBe("client_secret: '[REDACTED:assigned]'");
+    const json = r('{"password":"prefix\\"suffixSecret"}').text;
+    expect(json).not.toContain('suffixSecret');
+    expect(json).toBe('{"password":"[REDACTED:assigned]"}');
+  });
+
+  it('redacts a known token embedded in a longer word', () => {
+    const key = 'agk_' + 'a'.repeat(64);
+    expect(r(`id=${key}_suffix`).text).not.toContain('a'.repeat(20));
+    expect(r(`prefix${key}`).text).not.toContain('a'.repeat(20));
+    expect(r(`x_ghp_${'A1b2C3d4E5'.repeat(4)}_y`).text).not.toContain('A1b2C3d4E5A1b2');
+  });
+
+  it.each([
+    ['unclosed private-key markers', '-----BEGIN PRIVATE KEY-----\n'.repeat(400_000)],
+    ['a long scheme-like run', 'a.'.repeat(2_000_000)],
+    ['a secret-named run with no delimiter', 'secret'.repeat(500_000)],
+    ['a long JWT-like run', 'eyJ'.repeat(1_000_000)],
+    ['long token-like runs', ('ghp_' + 'A'.repeat(5000) + ' ').repeat(500)],
+  ])('stays linear on %s', (_kind, input) => {
+    const started = Date.now();
+    r(input);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it('matches a Windows home in either separator and any case', () => {
+    const win = (text: string) => redactLog(text, { home: 'C:\\Users\\ana', env: {} }).text;
+    expect(win('at C:\\Users\\ana\\app\\x.ts')).toBe('at ~\\app\\x.ts');
+    expect(win('at C:/Users/ana/project')).toBe('at ~/project');
+    expect(win('at c:\\users\\ANA\\x')).toBe('at ~\\x');
+    expect(win('at C:\\Users\\anabel\\x')).toBe('at C:\\Users\\anabel\\x');
+  });
+
+  it('does not rewrite the home path inside another path', () => {
+    expect(r('/Users/bob/backups/Users/ana/log').text).toBe('/Users/bob/backups/Users/ana/log');
+    expect(r('file:///Users/ana/x and "/Users/ana/y"').text).toBe('file://~/x and "~/y"');
+  });
+});
