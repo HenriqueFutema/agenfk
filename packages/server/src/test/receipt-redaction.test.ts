@@ -27,7 +27,8 @@ describe('redactLog', () => {
     ['GitHub token', 'GH ghp_' + 'A1b2C3d4E5'.repeat(4)],
     ['GitHub fine-grained token', 'github_pat_' + '11ABCDEFG0'.repeat(6)],
     ['AWS access key id', 'aws AKIAIOSFODNN7EXAMPLE here'],
-    ['Slack token', 'xoxb-1234567890-1234567890123-abcdefABCDEF1234'],
+    // Built at runtime so secret scanners don't take the fixture for a real token.
+    ['Slack token', 'xox' + 'b-1234567890-1234567890123-abcdefABCDEF1234'],
     ['sk- API key', 'ANTHROPIC sk-ant-api03-' + 'x'.repeat(40)],
     ['JWT', 'auth eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'],
     ['Bearer value', 'Authorization: Bearer abcdef0123456789abcdef'],
