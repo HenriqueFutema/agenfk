@@ -157,7 +157,9 @@ function words(command: string): Word[] {
       // An unquoted redirection attached to a word (`npm test>/tmp/x`) starts a
       // word of its own, so the file it opens is looked at like any other path.
       // A word that is still only redirection characters (`>>`, `2>&`) goes on.
-      if ((c === '<' || c === '>') && src.some((at) => !/[0-9<>&]/.test(command[at]!))) break;
+      // `>>`, `&>` and `2>&1` stay whole; the `>` of `2>&1>/tmp/x` that opens a
+      // file after a duplication starts a word of its own (Codex review).
+      if ((c === '<' || c === '>') && src.length > 0 && !/[<>&]/.test(command[src[src.length - 1]!]!)) break;
       src.push(i); i += 1; continue;
     }
 
@@ -290,26 +292,22 @@ function climbingPiece(word: Word, command: string, depth: number): string | nul
  * it was, which only ever refuses more, never less.
  */
 function* wordsWithDepth(command: string): Generator<{ word: Word; depth: number }> {
-  // A `cd` moves the shell only where the shell surely runs it: as a command of
-  // its own (first, or after `&&` / `;`), and never in a command with a subshell
-  // or a pipe, where it may run in another process (Codex review). Anything else
-  // leaves the depth at the root, which only ever refuses more.
-  const trusted = !/[()|]/.test(command);
-  let depth = 0;
-  let prevEnd = 0;
-  let cdAt: number | null = null;
-  for (const word of words(command)) {
-    const visible = visibleOf(word, command);
-    const between = command.slice(prevEnd, word.start).trim();
-    const commandPosition = prevEnd === 0 ? between === '' : between.endsWith('&&') || between.endsWith(';');
-    const isCdTarget = cdAt !== null && between === '';
-    yield { word, depth };
-    if (isCdTarget && trusted && !looksLikePath(visible) && !visible.includes('://')) {
-      const next = depthAfter(visible, depth);
-      if (next >= 0) depth = next;
-    }
-    cdAt = visible === 'cd' && commandPosition ? word.start : null;
-    prevEnd = word.end;
+  // A `cd` moves the shell's directory only where it surely ran and nothing can
+  // undo it: as the FIRST word of the command, followed straight by `&&` (a
+  // failed cd stops everything after it), the only `cd` in the command, and no
+  // other control operator anywhere (`;`, `||`, a lone `&`, `|`, a subshell, a
+  // newline). Every other shape is judged from the repository root, which only
+  // ever refuses more. Chasing each shell construct one by one kept missing the
+  // next one (Codex review, three passes); this is the whole of the rule.
+  const all = words(command);
+  const texts = all.map((w) => visibleOf(w, command));
+  const leading = texts[0] === 'cd' && all.length >= 3
+    && command.slice(all[1]!.end, all[2]!.start).trim() === '&&'
+    && texts.filter((t) => t === 'cd').length === 1
+    && !/;|\|\||(^|[^&])&([^&]|$)|\||[()\n]/.test(command.replace(/&&/g, ''));
+  const credited = leading && !looksLikePath(texts[1]!) && !texts[1]!.includes('://') ? depthAfter(texts[1]!, 0) : 0;
+  for (let k = 0; k < all.length; k += 1) {
+    yield { word: all[k]!, depth: k >= 2 && credited > 0 ? credited : 0 };
   }
 }
 

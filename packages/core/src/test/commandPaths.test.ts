@@ -318,8 +318,9 @@ describe('a `cd` the shell may not have taken', () => {
     }
   });
 
-  it('still counts a cd that leads the command, or follows `&&` or `;`', () => {
-    for (const command of ['cd a && bash ../x.sh', 'npm ci; cd a && bash ../x.sh']) {
+  // Third pass narrowed this: a cd after `;` is no longer credited (see below).
+  it('still counts a cd that leads the command', () => {
+    for (const command of ['cd a && bash ../x.sh']) {
       expect(normalizeCommandPaths(command, ROOT).ok, command).toBe(true);
     }
   });
@@ -335,5 +336,33 @@ describe('a redirection attached to the word before it', () => {
 
   it('inside quotes is not a redirection', () => {
     expect(machineSpecificPaths("echo 'a>/tmp/x'")).toEqual([]);
+  });
+});
+
+// Codex third pass: a `cd` is credited only where it cannot have been skipped.
+describe('a `cd` is credited only as the leading, unconditional step', () => {
+  it('refuses every shape where the cd may not have run, or may have been undone', () => {
+    for (const command of [
+      'false && cd a; bash ../tools/check.sh',
+      'cd a & bash ../tools/check.sh',
+      'cd a; bash ../tools/check.sh',
+      'cd a && x; bash ../tools/check.sh',
+      'cd a && cd .. && bash ../tools/check.sh',
+      'npm ci && cd a && bash ../x.sh',
+    ]) {
+      expect(normalizeCommandPaths(command, ROOT).ok, command).toBe(false);
+      expect(machineSpecificPaths(command).length, command).toBeGreaterThan(0);
+    }
+  });
+
+  it('credits `cd <dir> && ...` at the head of the command', () => {
+    expect(normalizeCommandPaths('cd packages/a && node ../../scripts/x.js && npm test', ROOT).ok).toBe(true);
+  });
+});
+
+describe('chained redirections', () => {
+  it('inspects a file opened after a descriptor duplication', () => {
+    expect(machineSpecificPaths('npm test 2>&1>/tmp/result.log')).toEqual(['/tmp/result.log']);
+    expect(machineSpecificPaths('npm test >>/dev/null 2>&1')).toEqual([]);
   });
 });
