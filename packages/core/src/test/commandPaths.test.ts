@@ -366,3 +366,21 @@ describe('chained redirections', () => {
     expect(machineSpecificPaths('npm test >>/dev/null 2>&1')).toEqual([]);
   });
 });
+
+// Codex fourth pass.
+describe('a cd target the shell expands is not a directory below the root', () => {
+  it('credits only a literal relative directory', () => {
+    for (const command of ['cd "$PWD" && bash ../tools/check.sh', 'cd $HOME && bash ../x.sh', 'cd - && bash ../x.sh', 'cd `pwd` && bash ../x.sh', 'cd a* && bash ../x.sh']) {
+      expect(normalizeCommandPaths(command, ROOT).ok, command).toBe(false);
+    }
+    expect(normalizeCommandPaths('cd packages/a-b_c.d && bash ../x.sh', ROOT).ok).toBe(true);
+  });
+});
+
+describe('every file-opening redirection operator', () => {
+  it('exposes its operand', () => {
+    expect(machineSpecificPaths('cat <>/tmp/input')).toEqual(['/tmp/input']);
+    expect(machineSpecificPaths('printf x >|/tmp/result.log')).toEqual(['/tmp/result.log']);
+    expect(machineSpecificPaths('npm test &>>/tmp/all.log')).toEqual(['/tmp/all.log']);
+  });
+});

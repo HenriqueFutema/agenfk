@@ -215,7 +215,7 @@ const visibleOf = (word: Word, command: string): string => word.src.map((at) => 
  * the file that follows, so `bash </opt/tools/check.sh` names a file exactly as
  * `bash /opt/tools/check.sh` does (Codex review of RFC-002).
  */
-const REDIRECTION = /^\d*(?:&?>>?|<)/;
+const REDIRECTION = /^\d*(?:&>>?|<>|>\||>>|<|>)/;
 
 interface Piece {
   start: number;
@@ -305,7 +305,11 @@ function* wordsWithDepth(command: string): Generator<{ word: Word; depth: number
     && command.slice(all[1]!.end, all[2]!.start).trim() === '&&'
     && texts.filter((t) => t === 'cd').length === 1
     && !/;|\|\||(^|[^&])&([^&]|$)|\||[()\n]/.test(command.replace(/&&/g, ''));
-  const credited = leading && !looksLikePath(texts[1]!) && !texts[1]!.includes('://') ? depthAfter(texts[1]!, 0) : 0;
+  // Only a literal relative directory: `$PWD`, `-`, a glob or a backquote is
+  // expanded by the shell into somewhere this scanner cannot follow.
+  const target = texts[1] ?? '';
+  const literal = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(target) && !all[1]!.quoted;
+  const credited = leading && literal ? depthAfter(target, 0) : 0;
   for (let k = 0; k < all.length; k += 1) {
     yield { word: all[k]!, depth: k >= 2 && credited > 0 ? credited : 0 };
   }
