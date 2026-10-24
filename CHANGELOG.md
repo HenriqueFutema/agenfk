@@ -2,7 +2,7 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [Unreleased] — targets 2.1.0-beta.1
+## [2.1.0-beta.1] — 2026-10-24
 
 **CI receipts (RFC-002): verify once, reuse in CI.** Opt-in per repository on the hub. See `HUB_ARCHITECTURE.md` §13.
 
@@ -23,7 +23,16 @@ All notable changes to AgEnFK are documented here.
   hub (one repository by default). Exit 0 skips the gated steps and downloads the original log or findings; 10 runs
   them; 1 fails the job under `--policy require`. A hub error or timeout never skips anything.
 - **Not yet:** recording Shadow agreement, gating Enforce on the threshold actually being met, returning a repository
-  to Shadow after a wrong reuse, and sampled re-runs in Enforce.
+  to Shadow after a wrong reuse, and sampled re-runs in Enforce. **Use Shadow on this beta.** Shadow never skips a
+  job; leave Enforce off until sampled re-runs land, since nothing yet catches a wrong skip.
+
+**Fixes**
+
+- **A top-level card reuses another top-level card's green of the same tree on close** (#271). Sibling-green reuse
+  only looked under a shared parent, so top-level cards closed one after another each re-ran the full suite. The
+  same conditions still apply: same command, same root, same content; another project's green is never reused.
+- **Settings > Project names the project its settings apply to** (CGLAB-670), instead of claiming every section
+  applies to the whole installation.
 
 ## [2.0.0-rc.4] — 2026-10-22
 
