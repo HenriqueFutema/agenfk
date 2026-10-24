@@ -31,7 +31,7 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -192,7 +192,8 @@ const inReceiptsMode = (pid: string, command: string, receiptsMode: 'off' | 'sha
 
 const receiptsOf = (item: any): any[] => (item?.verificationReceipts ?? []) as any[];
 const commentsOf = (item: any): any[] => (item?.comments ?? []) as any[];
-const revParse = (dir: string, ref: string) => execSync(`git rev-parse ${ref}`, { cwd: dir, encoding: 'utf8' }).trim();
+// An argv, not a shell string: cmd.exe on Windows reads `^` as its escape and git got `HEAD{tree}`.
+const revParse = (dir: string, ref: string) => execFileSync('git', ['rev-parse', ref], { cwd: dir, encoding: 'utf8' }).trim();
 
 describe('in receipts mode the root card final gate runs the command, and the pass is a receipt (RFC-002 f918a42c)', () => {
   it('shadow: a green of this tree on record does not close a root card - the command runs and the plan says so', async () => {

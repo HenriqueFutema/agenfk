@@ -3314,7 +3314,7 @@ app.put("/projects/:id", limitBoardRoutes, asyncHandler(async (req: any, res: an
 // step, so setting it is privileged. Gate it with the install-time secret like
 // /backup — only a local trusted caller (the CLI, which reads
 // ~/.agenfk/verify-token) may set it, never a browser or LAN peer. (bug e60e20aa.)
-app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) => {
+app.put("/projects/:id/verify-command", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(401).json({ error: "Unauthorized" });
   }

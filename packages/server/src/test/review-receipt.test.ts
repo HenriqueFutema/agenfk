@@ -26,7 +26,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -144,7 +144,8 @@ const findings = [{ title: 'null deref in x', state: 'fixed' }, { title: 'rename
 const item = async (id: string) => (await agent().get(`/items/${id}?records=1`)).body;
 const reviewReceipts = async (id: string): Promise<any[]> => (await item(id))?.reviewReceipts ?? [];
 const sha256 = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-const revParse = (dir: string, ref: string) => execSync(`git rev-parse ${ref}`, { cwd: dir, encoding: 'utf8' }).trim();
+// An argv, not a shell string: cmd.exe on Windows reads `^` as its escape and git got `HEAD{tree}`.
+const revParse = (dir: string, ref: string) => execFileSync('git', ['rev-parse', ref], { cwd: dir, encoding: 'utf8' }).trim();
 /** A fresh reviewer: a Claude Code sub-agent transcript of its own session. */
 const reviewer = (session: string, agentId: string) => claudeSubagentTranscript(session, agentId, FUTURE);
 /** A person's approval on the card, as the board writes one. */
