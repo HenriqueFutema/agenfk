@@ -41,10 +41,21 @@ const MIN_ENV_SECRET_LENGTH = 8;
 
 /** A key name that announces a secret value. Bounded on both sides of the word. */
 const SECRET_KEY_NAME = '[A-Za-z0-9_.-]{0,40}(?:password|passwd|secret|token|api[_-]?key|apikey|private[_-]?key|access[_-]?key|credential)[A-Za-z0-9_.-]{0,40}';
-/** A value: double-quoted with escapes, single-quoted, or bare. Each bounded. */
-const DQ = '"(?:[^"\\\\\\n]|\\\\.){1,1024}"';
-const SQ = "'[^'\\n]{1,1024}'";
-const BARE = '[^\\s"\',;]{1,1024}';
+/**
+ * A value: double-quoted with escapes, single-quoted, or bare. NOT bounded, and
+ * the closing quote is optional: once a secret-named key is recognised, its
+ * value is consumed to the closing quote or the end of the line, so a value of
+ * any length - or one whose quote never closes - is redacted, never let
+ * through (Codex review). A pattern that cannot fail after its key cannot
+ * backtrack, and its matches do not overlap: one pass over the log.
+ */
+// A closing quote counts only when a delimiter follows it; otherwise the quote
+// is the NEXT value's and pairing it would let the text between them through,
+// so the value runs to the end of the line instead.
+const AFTER_QUOTE = '(?=[\\s,;)}\\]]|$)';
+const DQ = `"(?:[^"\\\\\\n]|\\\\.)*"${AFTER_QUOTE}|"[^\\n]*`;
+const SQ = `'[^'\\n]*'${AFTER_QUOTE}|'[^\\n]*`;
+const BARE = '[^\\s"\',;]+';
 
 /**
  * Known secret formats, in the order they are tried. No `\b`: a token embedded
@@ -61,14 +72,14 @@ const PATTERNS: Array<{ kind: string; re: RegExp; replace?: (m: string, ...g: st
   { kind: 'bearer', re: /(Bearer\s{1,8})[A-Za-z0-9._~+/=-]{12,4096}/g, replace: (_m, p) => `${p}[REDACTED:bearer]` },
   {
     kind: 'url-password',
-    re: /(?<![A-Za-z0-9+.-])([a-z][a-z0-9+.-]{0,30}:\/\/[^\s:/@]{1,256}:)[^\s@/]{1,256}(@)/gi,
+    re: /(?<![A-Za-z0-9+.-])([a-z][a-z0-9+.-]{0,30}:\/\/[^\s:/@]{1,256}:)[^\s@/]+(@)/gi,
     replace: (_m, a, b) => `${a}[REDACTED:url-password]${b}`,
   },
   // "name": "value", with escaped quotes inside the value
   {
     kind: 'assigned',
-    re: new RegExp(`("${SECRET_KEY_NAME}"\\s{0,8}:\\s{0,8}")((?:[^"\\\\\\n]|\\\\.){1,1024})(")`, 'gi'),
-    replace: (_m, a, _v, b) => `${a}[REDACTED:assigned]${b}`,
+    re: new RegExp(`("${SECRET_KEY_NAME}"\\s{0,8}:\\s{0,8}")((?:[^"\\\\\\n]|\\\\.)*"${AFTER_QUOTE}|[^\\n]*)`, 'gim'),
+    replace: (_m, a) => `${a}[REDACTED:assigned]"`,
   },
   // name=value / name: value, the value quoted or bare
   {

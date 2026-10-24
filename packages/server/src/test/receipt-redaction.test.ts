@@ -113,3 +113,22 @@ describe('redactLog - what the first version missed', () => {
     expect(r('file:///Users/ana/x and "/Users/ana/y"').text).toBe('file://~/x and "~/y"');
   });
 });
+
+// Codex second pass on the redaction: bounds must never let a recognised secret through.
+describe('redactLog - a recognised secret of any length', () => {
+  it.each([
+    ['a long double-quoted assignment', 'DB_PASSWORD="' + 'x'.repeat(5000) + '"'],
+    ['a long JSON value', '{"password":"' + 'x'.repeat(5000) + '"}'],
+    ['a long URL password', 'https://user:' + 'x'.repeat(5000) + '@host'],
+    ['an unterminated quoted value', 'DB_PASSWORD="' + 'x'.repeat(50) + ' and the line goes on'],
+  ])('is redacted: %s', (_kind, line) => {
+    expect(r(line).text).not.toContain('x'.repeat(20));
+  });
+
+  it('stays linear on many unterminated secret assignments on one huge line', () => {
+    const line = ('password="' + 'x'.repeat(100) + ' ').repeat(100_000);
+    const started = Date.now();
+    expect(r(line).text).not.toContain('x'.repeat(20));
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+});
