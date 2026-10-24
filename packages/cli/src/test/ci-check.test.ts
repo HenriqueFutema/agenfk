@@ -120,7 +120,7 @@ const fullReceipt = (c: any) => ({
         review: { recordId: 'rec-9', reviewer: { client: 'codex', sessionId: 'sess-9' }, lenses: c.lenses, findings: [{ title: 'Off by one', state: 'fixed', reason: 'fixed in abc' }] },
       }
     : {
-        id: c.id, kind: 'verification', card: { id: 'card-root', title: 'Root story', closedBy: { name: 'Dev', email: 'dev@acme.test' } },
+        id: c.id, kind: 'verification', card: { id: 'card-root', title: c.cardTitle ?? 'Root story', closedBy: { name: 'Dev', email: 'dev@acme.test' } },
         execution: { id: 'exec-7', command: 'npm test', commandRevision: c.commandRevision },
       },
 });
@@ -229,6 +229,15 @@ describe('agenfk ci check', () => {
 
   // ── reuse ────────────────────────────────────────────────────────────────
   describe('in Enforce', () => {
+    // CodeQL 169: escaping the pipe but not the backslash let `\|` in a card
+    // title end the summary's table cell.
+    it('keeps a card title with a backslash-pipe inside its summary table cell', async () => {
+      hub = await fakeHub(hubAnswering(lookupBody('enforce', [{ ...candidate(co.tree), cardTitle: 'a \\| b' }])));
+      expect((await check()).exitCode).toBe(0);
+      const row = fs.readFileSync(summaryFile, 'utf8').split('\n').find(l => l.includes('a \\'))!;
+      expect(row).toContain('a \\\\\\| b');
+    });
+
     it('reuses a matching verification receipt: exit 0, report downloaded, outputs and summary written', async () => {
       hub = await fakeHub(hubAnswering(lookupBody('enforce', [candidate(co.tree)])));
       const r = await check();

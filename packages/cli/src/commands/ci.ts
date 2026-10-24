@@ -299,7 +299,9 @@ class EvidenceError extends Error {}
 // ── outputs ─────────────────────────────────────────────────────────────────
 
 const code = (s: unknown) => `\`${String(s ?? '').replace(/`/g, "'")}\``;
-const cell = (s: unknown) => String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+// Backslashes first: `\|` would otherwise come out as an escaped backslash and
+// a live pipe that ends the cell (CodeQL 169).
+const cell = (s: unknown) => String(s ?? '').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 
 function summaryMarkdown(r: CiCheckResult, match: Candidate | null, receipt: any): string {
   const what = r.kind === 'review' ? `review (${r.lens})` : 'verification';

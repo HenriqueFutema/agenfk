@@ -56,6 +56,11 @@ const ROWS: Row[] = [
   // not the path's, so the replacement has to bring its own or the shell reads
   // two words where the command named one file.
   { command: 'node /work/app/run\\ all.sh', output: 'node ./run\\ all.sh', rewritten: [{ from: '/work/app/run all.sh', to: './run\\ all.sh' }] },
+  // Any other unquoted backslash is part of the word as written (a Windows
+  // path brings its own), so the rewrite carries it through untouched: escaping
+  // it again would change what the shell sees (CodeQL 168, dismissed).
+  { command: 'node /work/app/a\\$HOME.sh', output: 'node ./a\\$HOME.sh', rewritten: [{ from: '/work/app/a\\$HOME.sh', to: './a\\$HOME.sh' }] },
+  { command: 'node /work/app/a\\\\b.sh', output: 'node ./a\\\\b.sh', rewritten: [{ from: '/work/app/a\\\\b.sh', to: './a\\\\b.sh' }] },
 ];
 
 describe('a command from this checkout, made relative to it', () => {
