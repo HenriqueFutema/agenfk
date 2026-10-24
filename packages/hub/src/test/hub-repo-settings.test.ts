@@ -554,6 +554,50 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub repository settings (%s)', (
       expect((await adminPut('producers', { repo: REPO_HTTPS, installationId: 'inst-alice', allowed: true })).status).toBe(200);
       expect((await read(keyA, REPO_HTTPS)).body.settings.producers).toEqual(['inst-alice']);
     });
+
+    // GH-256: only event ingest wrote the installations row, so a machine that
+    // had just joined could not be made a producer until it reported.
+    it('a machine that joined by invite can be made a producer before it reports', async () => {
+      await seedRepo();
+      const inv = await supertest(__server).post('/hub/invite/create').set('Cookie', cookieAdmin).send({});
+      const joined = await supertest(__server).post('/hub/invite/redeem')
+        .send({ inviteToken: inv.body.inviteToken, installation: { installationId: 'inst-new', gitEmail: 'new@acme.test' } });
+      expect(joined.status, JSON.stringify(joined.body)).toBe(200);
+
+      const r = await adminPut('producers', { repo: REPO_HTTPS, installationId: 'inst-new', allowed: true });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.producers).toContain('inst-new');
+    });
+
+    it('a machine that joined by device code can be made a producer before it reports', async () => {
+      await seedRepo();
+      const start = await supertest(__server).post('/hub/device/start')
+        .send({ installation: { installationId: 'inst-device', osUser: 'dev' } });
+      const approved = await supertest(__server).post('/hub/device/approve').set('Cookie', cookieAdmin)
+        .send({ userCode: start.body.userCode });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      // Approved but never collected: no machine holds the key, so there is no
+      // installation yet (it would otherwise become a fleet upgrade target).
+      const early = await adminPut('producers', { repo: REPO_HTTPS, installationId: 'inst-device', allowed: true });
+      expect(early.body.code).toBe('unknown_installation');
+
+      const collected = await supertest(__server).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+      expect(collected.body.status).toBe('approved');
+      const r = await adminPut('producers', { repo: REPO_HTTPS, installationId: 'inst-device', allowed: true });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.producers).toContain('inst-device');
+    });
+
+    it('joining under another org\'s installation id does not adopt it', async () => {
+      await seedRepo();
+      const inv = await supertest(__server).post('/hub/invite/create').set('Cookie', cookieAdmin).send({});
+      await supertest(__server).post('/hub/invite/redeem')
+        .send({ inviteToken: inv.body.inviteToken, installation: { installationId: 'inst-other' } });
+
+      const r = await adminPut('producers', { repo: REPO_HTTPS, installationId: 'inst-other', allowed: true });
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+      expect(r.body.code).toBe('unknown_installation');
+    });
   });
 
   // ── admin guard ──────────────────────────────────────────────────────────

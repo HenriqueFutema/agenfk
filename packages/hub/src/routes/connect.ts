@@ -5,6 +5,7 @@ import { publicHubUrl } from '../util/publicUrl.js';
 import { HubServerContext } from '../server.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { upsertInstallation } from '../services/installations.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 
@@ -148,8 +149,11 @@ export function connectRouter(ctx: HubServerContext): Router {
   router.post('/device/poll', asyncRoute(async (req: Request, res: Response) => {
     const { deviceCode } = req.body ?? {};
     if (typeof deviceCode !== 'string' || !deviceCode) { res.status(400).json({ error: 'deviceCode required' }); return; }
-    const row = await ctx.db.get<{ org_id: string | null; token_hash: string | null; approved_at: string | null; expires_at: string }>(
-      'SELECT org_id, token_hash, approved_at, expires_at FROM device_codes WHERE device_code = ?',
+    const row = await ctx.db.get<{
+      org_id: string | null; token_hash: string | null; approved_at: string | null; expires_at: string;
+      installation_id: string | null; os_user: string | null; git_name: string | null; git_email: string | null;
+    }>(
+      'SELECT org_id, token_hash, approved_at, expires_at, installation_id, os_user, git_name, git_email FROM device_codes WHERE device_code = ?',
       [deviceCode],
     );
     if (!row) { res.status(404).json({ error: 'unknown device code' }); return; }
@@ -166,6 +170,22 @@ export function connectRouter(ctx: HubServerContext): Router {
     const token = (ctx as any)._deviceTokens?.get(deviceCode);
     if (!token) { res.status(410).json({ error: 'token already retrieved' }); return; }
     (ctx as any)._deviceTokens.delete(deviceCode);
+    // The machine now holds its key: record the installation, so an admin can
+    // manage it (e.g. make it a producer) before its first event (GH-256).
+    // Not at approve time - a code nobody collects would leave a row that every
+    // fleet upgrade then targets.
+    // Taken out of the map first so a concurrent poll cannot collect it too; put
+    // back if the write fails, so a retry still gets the machine its key.
+    if (row.installation_id) {
+      try {
+        await upsertInstallation(ctx.db, row.org_id, {
+          installationId: row.installation_id, osUser: row.os_user, gitName: row.git_name, gitEmail: row.git_email,
+        });
+      } catch (err) {
+        (ctx as any)._deviceTokens.set(deviceCode, token);
+        throw err;
+      }
+    }
     res.json({
       status: 'approved',
       token,
@@ -271,7 +291,9 @@ export function connectRouter(ctx: HubServerContext): Router {
     // after the key had already been returned.
     const token = await ctx.db.transaction(async () => {
       if (!await burnInviteNonce(ctx.db, parsed.nonce, parsed.orgId)) return null;
-      return issueApiKey(ctx.db, parsed.orgId, label, bind);
+      const issued = await issueApiKey(ctx.db, parsed.orgId, label, bind);
+      if (bind.installationId) await upsertInstallation(ctx.db, parsed.orgId, { ...bind, installationId: bind.installationId });
+      return issued;
     });
     if (!token) { res.status(400).json({ error: 'invite token already used' }); return; }
     res.json({ token, orgId: parsed.orgId, hubUrl: publicHubUrl(req) });
