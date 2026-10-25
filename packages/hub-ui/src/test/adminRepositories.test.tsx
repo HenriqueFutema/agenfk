@@ -305,6 +305,49 @@ describe('Admin → Repositories: one repository', () => {
   });
 });
 
+// GH-276: the Producer column showed the installation's uuid; an admin reads
+// receipts by who made them.
+describe('Admin → Repositories: who produced each receipt', () => {
+  const producerCell = async (cardTitle: string) => {
+    const table = await screen.findByRole('table', { name: /recent receipts/i });
+    const row = (await within(table).findByText(cardTitle)).closest('tr')!;
+    // Columns: Received, Card, Kind, Producer, Status.
+    return within(row).getAllByRole('cell')[3];
+  };
+
+  it('names the producer by its git email, keeping the id beside it', async () => {
+    hubAnswers();
+    renderAt(detailUrl);
+    const cell = await producerCell('Ship receipts');
+    expect(within(cell).getByText('alice@acme.test')).toBeInTheDocument();
+    expect(within(cell).getByText('inst-alice')).toBeInTheDocument();
+  });
+
+  it('falls back to the OS user when the installation has no git email', async () => {
+    hubAnswers({ '/v1/admin/installations': [{ ...INSTALLATIONS[0], gitEmail: null }, INSTALLATIONS[1]] });
+    renderAt(detailUrl);
+    expect(within(await producerCell('Ship receipts')).getByText('alice')).toBeInTheDocument();
+  });
+
+  it('still lists the receipts, by id, when the installations cannot be read', async () => {
+    hubAnswers();
+    const answer = get.getMockImplementation()!;
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/admin/installations')) throw new Error('hub down');
+      return answer(url);
+    });
+    renderAt(detailUrl);
+    expect(await producerCell('Ship receipts')).toHaveTextContent(/^inst-alice$/);
+  });
+
+  it('shows the id alone for an installation the hub no longer lists', async () => {
+    hubAnswers({ '/v1/admin/installations': [INSTALLATIONS[1]] });
+    renderAt(detailUrl);
+    const cell = await producerCell('Ship receipts');
+    expect(cell).toHaveTextContent(/^inst-alice$/);
+  });
+});
+
 // Codex review: `reusable` is decided when a receipt arrives; the allowlist is
 // read NOW. A receipt from a producer removed since is one CI refuses.
 describe('Admin → Repositories: a producer removed since', () => {

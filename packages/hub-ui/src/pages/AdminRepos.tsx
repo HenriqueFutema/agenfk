@@ -22,6 +22,17 @@ interface InstallationOption { id: string; gitEmail: string | null; osUser: stri
 const MODES: ReceiptsMode[] = ['off', 'shadow', 'enforce'];
 const MODE_TONE = { off: 'neutral', shadow: 'info', enforce: 'ok' } as const;
 
+const useInstallations = () => useQuery<InstallationOption[]>({
+  queryKey: ['admin-installations', false, false],
+  queryFn: async () => (await api.get('/v1/admin/installations')).data,
+});
+
+/** Who an installation belongs to, by git email, else OS user; null when the hub does not list it. */
+const installationName = (installations: InstallationOption[] | undefined, id: string): string | null => {
+  const i = (Array.isArray(installations) ? installations : []).find(x => x.id === id);
+  return i?.gitEmail ?? i?.osUser ?? null;
+};
+
 const useRepos = () => useQuery<RepoView[]>({
   queryKey: ['admin-repos'],
   queryFn: async () => ((await api.get('/v1/admin/repos')).data?.repos ?? []) as RepoView[],
@@ -266,10 +277,7 @@ function ModeCard({ settings }: { settings: RepoView }) {
 function ProducersCard({ settings }: { settings: RepoView }) {
   const qc = useQueryClient();
   const { confirm, dialog } = useConfirm();
-  const installations = useQuery<InstallationOption[]>({
-    queryKey: ['admin-installations', false, false],
-    queryFn: async () => (await api.get('/v1/admin/installations')).data,
-  });
+  const installations = useInstallations();
   const [adding, setAdding] = useState('');
   const set = useMutation({
     mutationFn: async (v: { installationId: string; allowed: boolean }) =>
@@ -281,9 +289,8 @@ function ProducersCard({ settings }: { settings: RepoView }) {
       qc.invalidateQueries({ queryKey: ['admin-repo-receipts', settings.remoteUrl] });
     },
   });
-  const byId = new Map((Array.isArray(installations.data) ? installations.data : []).map(i => [i.id, i]));
-  const nameOf = (id: string) => byId.get(id)?.gitEmail ?? byId.get(id)?.osUser ?? id;
-  const candidates = [...byId.values()].filter(i => !settings.producers.includes(i.id));
+  const nameOf = (id: string) => installationName(installations.data, id) ?? id;
+  const candidates = (Array.isArray(installations.data) ? installations.data : []).filter(i => !settings.producers.includes(i.id));
   return (
     <section aria-label="Producers" className={`${cardClass} max-w-form`}>
       {dialog}
@@ -330,6 +337,7 @@ function RecentReceipts({ repo }: { repo: string }) {
     queryKey: ['admin-repo-receipts', repo],
     queryFn: async () => ((await api.get(`/v1/admin/repos/receipts?${repoQuery(repo)}`)).data?.receipts ?? []) as ReceiptView[],
   });
+  const installations = useInstallations();
   return (
     <section className={cardClass}>
       <h3 className="text-body font-semibold text-ink">Recent receipts</h3>
@@ -348,6 +356,7 @@ function RecentReceipts({ repo }: { repo: string }) {
           <tbody className="divide-y divide-border-soft">
             {(receipts.data ?? []).map(r => {
               const standing = receiptStanding(r);
+              const producer = installationName(installations.data, r.installationId);
               return (
               <tr key={r.id}>
                 <td className="px-5 py-2.5 text-small text-ink-tertiary tabular-nums">{utc(r.receivedAt)}</td>
@@ -358,7 +367,14 @@ function RecentReceipts({ repo }: { repo: string }) {
                 <td className="px-2 py-2.5 text-small text-ink-secondary">
                   {r.kind === 'review' ? `Review (${(r.lenses ?? []).join(', ') || 'general'})` : `Verification, revision ${r.commandRevision ?? '?'}`}
                 </td>
-                <td className="px-2 py-2.5 font-mono text-small text-ink-tertiary">{r.installationId}</td>
+                <td className="px-2 py-2.5 text-small">
+                  {producer
+                    ? <>
+                        <span className="text-ink-secondary">{producer}</span>
+                        <span className="ml-1 font-mono text-ink-tertiary">{r.installationId}</span>
+                      </>
+                    : <span className="font-mono text-ink-tertiary">{r.installationId}</span>}
+                </td>
                 <td className="px-5 py-2.5 text-small">
                   {standing.reusable
                     ? <Badge tone="ok">Reusable</Badge>
