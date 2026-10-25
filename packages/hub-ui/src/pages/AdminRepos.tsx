@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
-import { Badge, Callout, QueryError, buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
+import { Badge, Callout, DataTable, QueryError, buttonClass, cardClass, controlClass, useConfirm, type DataColumn } from '../components/ui';
 import {
   MODE_HELP, MODE_LABEL, notReusableWords, receiptStanding, repoQuery, revisionAuthor, utc,
   type ReceiptView, type ReceiptsMode, type RepoView, type RevisionView,
@@ -33,6 +33,27 @@ export function AdminRepos() {
   return repo ? <RepoDetail repo={repo} /> : <RepoList />;
 }
 
+const REPO_COLUMNS: DataColumn<RepoView>[] = [
+  {
+    key: 'repo', header: 'Repository', className: 'font-mono text-small',
+    render: r => (
+      <Link to={`/admin/repos?${repoQuery(r.remoteUrl)}`} aria-label={`Open ${r.remoteUrl}`} className="text-accent-ink hover:underline">
+        {r.remoteUrl}
+      </Link>
+    ),
+  },
+  { key: 'command', header: 'Verify command', className: 'font-mono text-small text-ink-secondary', render: r => r.verifyCommand },
+  { key: 'revision', header: 'Revision', className: 'text-small text-ink-secondary tabular-nums', render: r => `revision ${r.revision}` },
+  {
+    key: 'mode', header: 'CI receipts',
+    render: r => <Badge tone={MODE_TONE[r.receiptsMode] ?? 'neutral'}>{MODE_LABEL[r.receiptsMode] ?? r.receiptsMode}</Badge>,
+  },
+  {
+    key: 'last', header: 'Last receipt', className: 'text-small text-ink-tertiary tabular-nums',
+    render: r => (r.lastReceiptAt ? utc(r.lastReceiptAt) : 'No receipts yet'),
+  },
+];
+
 function RepoList() {
   const repos = useRepos();
   if (repos.isError && !repos.data) return <QueryError error={repos.error} onRetry={() => repos.refetch()} />;
@@ -52,35 +73,20 @@ function RepoList() {
     <section className={cardClass}>
       <h3 className="text-body font-semibold text-ink">Repositories</h3>
       <p className="mt-1 text-small text-ink-tertiary">The verify command each repository runs, and how CI treats its receipts.</p>
-      <div className="mt-3 -mx-5 relative overflow-x-auto">
-        <table className="w-full text-body" aria-label="Repositories">
-          <thead>
-            <tr className="eyebrow text-ink-tertiary">
-              <th className="text-left px-5 py-2">Repository</th>
-              <th className="text-left px-2 py-2">Verify command</th>
-              <th className="text-left px-2 py-2">Revision</th>
-              <th className="text-left px-2 py-2">CI receipts</th>
-              <th className="text-left px-5 py-2">Last receipt</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border-soft">
-            {repos.data.map(r => (
-              <tr key={r.remoteUrl} className="hover:bg-accent-fill transition-colors">
-                <td className="px-5 py-2.5 font-mono text-small">
-                  <Link to={`/admin/repos?${repoQuery(r.remoteUrl)}`} aria-label={`Open ${r.remoteUrl}`} className="text-accent-ink hover:underline">
-                    {r.remoteUrl}
-                  </Link>
-                </td>
-                <td className="px-2 py-2.5 font-mono text-small text-ink-secondary">{r.verifyCommand}</td>
-                <td className="px-2 py-2.5 text-small text-ink-secondary tabular-nums">revision {r.revision}</td>
-                <td className="px-2 py-2.5"><Badge tone={MODE_TONE[r.receiptsMode] ?? 'neutral'}>{MODE_LABEL[r.receiptsMode] ?? r.receiptsMode}</Badge></td>
-                <td className="px-5 py-2.5 text-small text-ink-tertiary tabular-nums">
-                  {r.lastReceiptAt ? utc(r.lastReceiptAt) : 'No receipts yet'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mt-3 -mx-5">
+        <DataTable
+          caption="Repositories"
+          columns={REPO_COLUMNS}
+          rows={repos.data}
+          rowKey={r => r.remoteUrl}
+          search={{
+            label: 'Search repositories',
+            placeholder: 'Search by repository name',
+            matches: (r, q) => r.remoteUrl.toLowerCase().includes(q.toLowerCase()),
+          }}
+          rowHover
+          fillViewport
+        />
       </div>
     </section>
   );
