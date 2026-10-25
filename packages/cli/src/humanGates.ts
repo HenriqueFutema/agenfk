@@ -106,13 +106,19 @@ export function formatCustomChecks(rows: readonly CustomCheckRow[]): string {
 }
 
 /** A failing warning a card left a step with, and the agent's answer (CGLAB-420), as the server lists it. */
-export interface TreeWarningRow { itemId: string; title: string; step: string; check: string; detail: string; answer?: string }
+/** `held` (fe3ca491): whether it held the card. A server from before it says nothing, and the row is kept. */
+export interface TreeWarningRow { itemId: string; title: string; step: string; check: string; detail: string; answer?: string; held?: boolean }
 
 /**
  * CGLAB-420: the warnings the checks raised in a card tree. A PR reviewer sees
  * what the checks doubted and what the agent said, unanswered ones first.
+ *
+ * fe3ca491: only those that HELD the card. A warning that stopped nothing -
+ * every universal check only warns on a flow with no roles - is not news, and
+ * one PR carried 41 identical rows of it. The reviewer's brief keeps them all.
  */
-export function formatTreeWarnings(rows: readonly TreeWarningRow[]): string {
+export function formatTreeWarnings(all: readonly TreeWarningRow[]): string {
+  const rows = all.filter(r => r.held !== false);
   if (!rows.length) return '';
   const open = rows.filter(r => !r.answer).length;
   const sorted = [...rows].sort((a, b) => Number(!!a.answer) - Number(!!b.answer));

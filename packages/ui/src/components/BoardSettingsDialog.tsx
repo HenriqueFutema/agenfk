@@ -10,7 +10,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import { SettingsPanel } from './SettingsPanel';
 
-export function BoardSettingsDialog({ onClose }: { onClose: () => void }): React.ReactElement {
+export function BoardSettingsDialog({ onClose, projectId }: { onClose: () => void; projectId?: string | null }): React.ReactElement {
   // Escape closes it, like every other overlay in the app.
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') onClose(); };
@@ -43,7 +43,7 @@ export function BoardSettingsDialog({ onClose }: { onClose: () => void }): React
         >
           <X size={16} />
         </button>
-        <SettingsPanel />
+        <SettingsPanel projectId={projectId} />
       </div>
     </div>
   );

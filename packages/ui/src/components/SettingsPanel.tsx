@@ -36,7 +36,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
-import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, type LucideIcon } from 'lucide-react';
+import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, FolderCog, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
@@ -51,8 +51,10 @@ import { playAttentionSound, browserSoundDeps } from '../attentionSound';
 import { isNewerVersion } from '../versionCompare';
 import { describeHerdr, type HerdrView } from '../herdrSessions';
 import { HerdrMark } from './HerdrMark';
+import { ProjectSuiteControl, hasSuiteControl } from './ProjectSuiteControl';
 import { API_URL } from '../apiUrl';
 import { api, type AppSettingsDto, type SoundTimingDto } from '../api';
+import type { Project } from '../types';
 
 /**
  * One row: what it is, what it does, and whatever acts on it.
@@ -66,6 +68,27 @@ import { api, type AppSettingsDto, type SoundTimingDto } from '../api';
  * It owns no state. The value comes from the server and goes back to the
  * server, so there is no local copy to drift out of sync with what is stored.
  */
+/** 7ddeaf7c: the project's two suite settings, from the same rows (and the same control) as its project page. */
+function ProjectSuiteRows({ projectId }: { projectId: string }): React.ReactElement {
+  const { data, refetch } = useQuery({ queryKey: ['project-settings', projectId], queryFn: () => api.projectSettings(projectId) });
+  const rows = (data?.rows ?? []).filter(r => r.key === 'verifyAtScope' || r.key === 'exclusiveSuite');
+  return (
+    <>
+      {rows.map(row => (
+        <SettingRow
+          key={row.key}
+          testId={`project-${row.key}-row`}
+          title={row.label}
+          description={row.description}
+          control={hasSuiteControl(row) ? <ProjectSuiteControl key={`${projectId}-${row.key}`} projectId={projectId} row={row} onSaved={refetch} /> : <span className="text-[13px] text-ink-secondary">{row.value}</span>}
+          note={row.warning}
+          meta={row.from}
+        />
+      ))}
+    </>
+  );
+}
+
 function SettingRow({
   testId, title, description, control, note, meta, lead, indent,
 }: {
@@ -225,6 +248,8 @@ interface SettingsSection {
    */
   readonly icon: LucideIcon;
   readonly rows: React.ReactNode;
+  /** What the rows apply to, under the heading. Absent: every project on this installation. */
+  readonly scope?: string;
 }
 
 /**
@@ -345,7 +370,12 @@ function initials(name: string | null, login: string): string {
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
-export function SettingsPanel(): React.ReactElement {
+/**
+ * `projectId`: the project open on the board (7ddeaf7c). With one, the panel
+ * has a Project section for its suite settings - the only place a browser,
+ * which has no project page, can reach them.
+ */
+export function SettingsPanel({ projectId }: { projectId?: string | null } = {}): React.ReactElement {
   const queryClient = useQueryClient();
   const { data: settings, isError: readFailed } = useQuery<AppSettingsDto>({
     queryKey: ['settings'],
@@ -363,6 +393,11 @@ export function SettingsPanel(): React.ReactElement {
     // to pick up a change another client made in the meantime.
     onError: () => { void queryClient.invalidateQueries({ queryKey: ['settings'] }); },
   });
+
+  // CGLAB-670: the Project section names the project its rows change. The board's own
+  // project list, so an open board answers from its cache.
+  const projects = useQuery<Project[]>({ queryKey: ['projects'], queryFn: api.listProjects, enabled: !!projectId });
+  const projectName = projects.data?.find(p => p.id === projectId)?.name;
 
   // 7b640e64: what "Automatic" means on this machine, and how far a number may go.
   const runtime = useQuery({ queryKey: ['settings-runtime'], queryFn: api.getSettingsRuntime });
@@ -934,6 +969,17 @@ export function SettingsPanel(): React.ReactElement {
         />
       ),
     },
+    // 7ddeaf7c: the open project's suite settings, as its own page draws them.
+    ...(projectId ? [{
+      id: 'project',
+      label: 'Project',
+      icon: FolderCog,
+      scope: projectName
+        ? `These apply only to ${projectName}, the project open on the board.`
+        : 'These apply only to the project open on the board.',
+      // Keyed by the project: another project open starts from its own rows, not this one's unsaved state.
+      rows: <ProjectSuiteRows key={projectId} projectId={projectId} />,
+    }] : []),
     {
       id: 'agents',
       label: 'Agents',
@@ -1035,7 +1081,7 @@ export function SettingsPanel(): React.ReactElement {
           <header>
             <h1 className="text-xl font-semibold text-ink">{shown.label}</h1>
             <p className="mt-1 text-[13px] text-ink-tertiary">
-              These apply to every project on this installation.
+              {shown.scope ?? 'These apply to every project on this installation.'}
             </p>
           </header>
 

@@ -174,7 +174,7 @@ async function startServer(): Promise<void> {
   });
 }
 
-function createWindow(url: string): BrowserWindow {
+export function createWindow(url: string): BrowserWindow {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,

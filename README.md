@@ -123,7 +123,7 @@ This will:
 >
 > Your choice is persisted in `~/.agenfk/config.json` and honored on every upgrade, so you only need to pass the flag once. You can also flip it later per-platform with `agenfk integration install <platform> --with-mcp` / `--no-mcp`. When MCP tools are present, agents may use them interchangeably with the CLI — the CLI commands remain the canonical, equivalent path.
 
-> **Requirements**: Node.js 22.5+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
+> **Requirements**: Node.js 22.12+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
 
 **To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup. A default (no `--with-mcp`) upgrade cleanly unregisters any stale agenfk MCP server, so you never end up in a half-state.
 
@@ -354,6 +354,7 @@ AgEnFK ships an optional self-hosted **Corporate Hub** (`packages/hub` + `packag
 *   **Leak-proof tenancy boundary**. The `orgId` stamp on each event is enforced on both sides: the hub answers ingest with **per-event rejection reasons** (`org_mismatch`, `foreign_installation`, …), and a spoke never even queues another org's events for delivery — stale-stamped rows stay put and surface via `agenfk hub status`. Hub refusals are preserved in a local **deadletter file** (`agenfk hub deadletter`) instead of being deleted, stay visible (`agenfk hub status`, the CLI banner, the board) until they are dealt with, and can be sent again with their original ids and dates once the cause is fixed (`agenfk hub deadletter requeue`, which checks the hub binding first). The only way to move queued events across org stamps is `agenfk hub carry-over` — explicit, confirmed, and audited. See [`HUB_ARCHITECTURE.md`](./HUB_ARCHITECTURE.md) §5.6.
 *   **Hub-managed workflow flows**. Define a flow once in **Admin → Flows**, assign it at org / project / installation scope, and every spoke reconciles to that definition on its next poll (per-project ETag-cached). Local writes to a hub-sourced flow are refused so the central definition stays canonical. Project-scoped overrides win over org-default; installation-scoped overrides win over both — useful for piloting a new flow with one team before rolling it out fleet-wide.
 *   **Fleet upgrade orchestration**. Admins issue an upgrade directive against a target version (sourced from a fleet-floor-filtered list of public GitHub releases) and a chosen scope (org-wide or specific installations). Each spoke polls, runs `agenfk upgrade --version <x>`, reports the on-disk outcome, and the **Admin → Upgrades** page renders rollout state with auto-refresh and per-installation reporting versions. Single-pending guard, downgrade confirmation, and an audit log keep the rollout safe.
+*   **CI reuses verified work (receipts)**. Per repository, the hub holds the authoritative verify command and a receipts mode (`off`, `shadow`, `enforce`). In `shadow`/`enforce` a root card's final gate runs that command fresh, and the run and any recorded independent review are published to the hub as write-once receipts. In CI, `agenfk ci check` (or the `actions/ci-check` GitHub Action) compares the PR's merge result with them through a read-only `ci_` token: a matching receipt from an allowed machine lets CI skip the test or review step (exit 0) and shows the original log or findings; anything else runs the step (exit 10). See [`HUB_ARCHITECTURE.md`](./HUB_ARCHITECTURE.md) §13.
 *   **Storage** is SQLite by default (single binary, no external deps) and **Postgres** for enterprise rollouts (`AGENFK_HUB_DB=postgres` with `AGENFK_HUB_PG_URL=postgres://…`). Both backends share the same async `HubDb` interface and run identical test suites under pg-mem.
 *   **User management**. Admins can issue/revoke installation api-keys, invite/promote/deactivate users, and **permanently delete** other users (self-row delete is blocked at the backend so the last admin can't lock themselves out).
 
@@ -552,5 +553,11 @@ Use `agenfk pause <platform>` to disable a specific integration. For example, `a
 ![AgEnFK Dashboard](./docs/dashboard-screenshot.png)
 
 ---
+## License
+
+AgEnFK is licensed under the [Apache License 2.0](./LICENSE).
+
+Copyright (c) 2026 CG/lab.
+
 *Built with ❤️ by the CG/lab AgEnFK Platform Team.*
 *CG/lab - a CAR Group company*

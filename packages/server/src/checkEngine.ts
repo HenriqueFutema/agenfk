@@ -63,7 +63,8 @@ export interface CheckMeta {
 }
 
 /** A failing warning a card left a step with (CGLAB-420). */
-export interface TreeWarning { itemId: string; title: string; step: string; check: string; detail: string; answer?: string }
+/** `held`: it held the card until answered or passed by a person (fe3ca491) - the PR lists only these. */
+export interface TreeWarning { itemId: string; title: string; step: string; check: string; detail: string; answer?: string; held?: boolean }
 
 /** One line per warning, for a reviewer's brief and the check that lists them. */
 export function describeTreeWarnings(ws: readonly TreeWarning[]): string {
@@ -898,6 +899,18 @@ export function needsCapture(resolved: readonly ResolvedCheck[]): boolean {
 
 /** Is this check slow because it talks to a remote (1049ce52)? */
 export const needsNetwork = (c: ResolvedCheck): boolean => !!checkDef(c.id)?.network;
+
+/**
+ * 961f301d: while a step's approval is missing, the slow checks - a suite
+ * capture, a remote fetch, a command run - wait for the verify after it. A
+ * command check in `waitingOn` (its command itself awaits a person's approval)
+ * is judged now, so the person sees what they are asked to approve.
+ */
+export function checksDeferredToApproval(resolved: readonly ResolvedCheck[], waitingOn: readonly ResolvedCheck[]): string[] {
+  return resolved
+    .filter(c => c.applicable && (needsCapture([c]) || needsNetwork(c) || (c.id.startsWith('command-check:') && !waitingOn.includes(c))))
+    .map(c => c.id);
+}
 
 /** Does any applicable check read the step's entry record? */
 export function needsEntryRecord(resolved: readonly ResolvedCheck[]): boolean {

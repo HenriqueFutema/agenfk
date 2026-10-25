@@ -1,9 +1,8 @@
 /**
- * 34ee6b8a: `agenfk approve-file-command` used to read ~/.agenfk/verify-token
- * and approve the repository's command itself - the same token the agent's
- * CLI holds, so an agent refused COMMAND_NEEDS_APPROVAL could approve and run
- * the command it was refused. Approving is a person's act, on the board; the
- * CLI shows what there is to approve and says where.
+ * #260: `agenfk approve-file-command` stays so scripts get an answer, but a
+ * verifyCommand the repository declares needs no approval any more. It shows
+ * what the file declares, says there is nothing to approve, and names hidden
+ * characters, which still keep a command from running.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
@@ -75,24 +74,25 @@ async function run(...args: string[]) {
 }
 
 describe('agenfk approve-file-command', () => {
-  it('never approves, even with --yes: it shows the command and sends a person to the board', async () => {
+  it('approves nothing and says nothing needs approving, even with --yes', async () => {
     const text = await run('p1', '--yes');
     expect(mockedAxios.post).not.toHaveBeenCalled();
     expect(text).toContain('echo from-the-repo');
-    expect(text).toMatch(/on the board/i);
+    expect(text).toMatch(/Nothing to approve: the verifyCommand runs as committed/);
+    expect(text).not.toMatch(/on the board/i);
   });
 
-  it('says the same without --yes', async () => {
+  it('names hidden characters, which still keep the command from running', async () => {
+    fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'p1', verifyCommand: 'npm test\u200B' }));
     const text = await run('p1');
-    expect(mockedAxios.post).not.toHaveBeenCalled();
-    expect(text).toMatch(/on the board/i);
-    expect(text).not.toMatch(/--yes no longer approves/);
+    expect(text).toContain('U+200B');
+    expect(text).not.toMatch(/Nothing to approve/);
   });
 
-  it("says a file's setupCommand is not run here, instead of offering to approve it", async () => {
+  it("says a file's setupCommand is not run here", async () => {
     fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'p1', setupCommand: 'make deps' }));
     const text = await run('p1');
     expect(text).toMatch(/setupCommand is not run on this machine/);
-    expect(text).not.toMatch(/approves the verifyCommand/);
+    expect(text).not.toMatch(/Nothing to approve/);
   });
 });

@@ -2,6 +2,98 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.1.0-beta.1] — 2026-10-24
+
+**CI receipts (RFC-002): verify once, reuse in CI.** Opt-in per repository on the hub. See `HUB_ARCHITECTURE.md` §13.
+
+- **The hub holds each repository's verify command.** The first authorized installation that syncs a repository
+  claims it from its declared command (first writer wins); after that the hub is authoritative and admins revise it,
+  with every revision kept. Commands run from the repository root: absolute paths inside the checkout become
+  repo-relative, and a command naming a path outside it is refused.
+- **Receipts mode per repository: `off` (default), `shadow`, `enforce`.** Off changes nothing. In Shadow and Enforce
+  the root card's final gate runs the command fresh, even when a green of the same tree is on record, and publishes
+  a **verification receipt**. `agenfk review record --lens <name>` publishes a **review receipt** carrying the
+  server's independence verdict, the lenses and the findings. Enforce needs an admin-set Shadow threshold.
+- **Receipts are write-once on the hub**, with the run's log gzipped beside them (32 MiB cap). Only installations on
+  the repository's producer allowlist publish reusable receipts; the client records a receipt as delivered only when
+  the hub acknowledged it. The log is redacted before upload: known secret formats, secret-named assignments and
+  environment values, and the home directory; the local log and its path stay on the machine.
+- **`agenfk ci check` and the `actions/ci-check` GitHub Action.** CI compares the tree of its own checkout (the PR's
+  merge result) with the receipts, found by PR number or by tree, using a read-only `ci_` token an admin mints on the
+  hub (one repository by default). Exit 0 skips the gated steps and downloads the original log or findings; 10 runs
+  them; 1 fails the job under `--policy require`. A hub error or timeout never skips anything.
+- **Not yet:** recording Shadow agreement, gating Enforce on the threshold actually being met, returning a repository
+  to Shadow after a wrong reuse, and sampled re-runs in Enforce. **Use Shadow on this beta.** Shadow never skips a
+  job; leave Enforce off until sampled re-runs land, since nothing yet catches a wrong skip.
+
+**Fixes**
+
+- **A top-level card reuses another top-level card's green of the same tree on close** (#271). Sibling-green reuse
+  only looked under a shared parent, so top-level cards closed one after another each re-ran the full suite. The
+  same conditions still apply: same command, same root, same content; another project's green is never reused.
+- **Settings > Project names the project its settings apply to** (CGLAB-670), instead of claiming every section
+  applies to the whole installation.
+
+## [2.0.0-rc.4] — 2026-10-22
+
+Fourth release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.3` (#262, PR #263; #264, PR #265):
+
+- **The board fits the window.** Step columns share the width down to a 120px floor (was 180px), so an 8-step flow
+  fits a 1,280px window instead of scrolling sideways below ~1,800px.
+- **Compact board mode.** A toggle next to Settings, in the browser and the desktop app, narrows columns to a 96px
+  floor and tightens the cards. An 8-step flow then fits 1,024px. Desktop layout only; the stacked mobile layout
+  keeps its cards.
+- **The board remembers its layout** per viewer: which side columns (Ideas, Paused, Blocked, Archived) are expanded,
+  and whether compact mode is on. They still start collapsed.
+- **Narrow columns stay readable.** Below 170px a column header hides its step icon so the title keeps its room, and
+  card rows wrap instead of running past the card's edge.
+- **Fixed: `exclusiveSuite` could let two suites run at once** when the setting was turned on while a run was
+  starting. A project read that was in flight across the change wrote the old value over it. A change to the
+  setting now wins.
+
+## [2.0.0-rc.3] — 2026-10-21
+
+Third release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.2` (#260, PR #261):
+
+- **A repository-declared `verifyCommand` runs as committed.** The per-machine approval of a command from
+  `.agenfk/project.json` is gone: the approve route, the desktop Approve button and the approval refusals.
+  `agenfk approve-file-command` stays, so scripts don't break, and now says there is nothing to approve. A command
+  holding hidden characters (bidi, zero-width, other invisible ones) is still refused before it runs
+  (`COMMAND_UNREADABLE`), and a change to the declared command is noted on the open cards.
+- **`verifyAt: parent` can reach across worktrees.** A new flow setting, `verifyAtScope`, which a project can
+  override with `agenfk update-project <id> --verify-at-scope project|worktree|none`, MCP `update_project` or the
+  board. The default `worktree` keeps today's behaviour. With `project`, a child in another worktree of the
+  repository closes without running the suite.
+  - The parent's verify is refused (`DEFERRED_CHILD_UNMERGED`) until every such child's close commit is merged
+    into the parent's branch. A squash or rebase merge does not count.
+  - Such a child is refused (`DEFERRED_CLOSE_UNCOMMITTED`) while it has unstaged or untracked work.
+  - Moving a card to another project is refused (`DEFERRED_OBLIGATION_OPEN`) if the move would drop a pending
+    merge.
+- **One suite at a time per project.** `agenfk update-project <id> --exclusive-suite on` runs at most one of that
+  project's suites at once, for suites sharing a database or fixed ports. Other projects are not held back.
+- **The board has a Project section in Settings** for the open project's two suite settings. It is reachable
+  from the browser board, which has no project page, as well as the desktop app. The flow editor has the scope
+  selector.
+- **The PR's "Warnings the checks raised" table lists only warnings that held the card**: ones that had to be
+  answered, answered test removals, and ones a person passed. Advisory warnings no longer flood it, and the
+  section is left out when there are none.
+
+## [2.0.0-rc.2] — 2026-10-21
+
+Second release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
+`2.0.0-rc.1` (#257, PR #258):
+
+- `main`'s commits reach the beta line: the Apache-2.0 license (#248) and the dependency majors `zod` 4
+  (server), `vite` 8 (board and hub UI), `jwks-rsa` 4 and `bcryptjs` 3 (hub), with the npm production and
+  development group bumps. No source change was needed for them.
+- **Node 22.12 or newer is required** (was 22.5). `jwks-rsa` 4 loads the ESM-only `jose` 6 with `require()`,
+  so a hub on 22.5–22.11 failed at startup. A test now checks that the advertised floor runs every installed
+  runtime dependency.
+- The license text ships in `agenfk-dist.tar.gz`, `agenfk-hub-dist.tar.gz`, the hub image and the desktop app.
+- The README and CONTRIBUTING state the Node 22.12 floor.
+
 ## [2.0.0-rc.1] — 2026-10-20
 
 First release candidate for 2.0.0. Its release notes are the `2.0.0` section below. Changes since
@@ -18,10 +110,10 @@ First release candidate for 2.0.0. Its release notes are the `2.0.0` section bel
 - `agenfk flow install` accepts community-registry flows again (#252).
 - `agenfk hub deadletter requeue` and surfaced refusals (#223).
 
-## [2.0.0] — Unreleased
+## [2.0.0] — 2026-10-22
 
-Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12` and `2.0.0-beta.1`
-through `2.0.0-beta.46`. 2.0 moves workflow enforcement into the server. A card moves forward only through
+Stable, cumulative over `1.1.20`: everything in `1.1.21-beta.1` through `1.1.21-beta.12`, `2.0.0-beta.1`
+through `2.0.0-beta.46`, and `2.0.0-rc.1` through `2.0.0-rc.4`. 2.0 moves workflow enforcement into the server. A card moves forward only through
 `agenfk verify`, each step carries a role and checks the server runs from recorded evidence, and the final step
 runs the project's own verify command. The line also brings the desktop app, a board served from the API's own
 port, project ids kept out of version control, and hub-side flow adherence.
@@ -46,16 +138,17 @@ port, project ids kept out of version control, and hub-side flow adherence.
   command, which can only add a check.
   *Affects:* anyone who relied on `agenfk verify <id> --evidence x "<cmd>"` to choose what runs at the close.
   *Migrate:* set the command once: `agenfk update-project <id> --verify-command "<cmd>"`, or `verifyCommand`
-  in `.agenfk/project.json` (see the approval note below).
+  in `.agenfk/project.json` (see the note below).
   <!-- verified: packages/server/src/server.ts:9716-9719, :8135 ignoredCommandNote -->
 
-- **A repository-declared verify command needs a person's approval.** `.agenfk/project.json` can now carry
-  shared settings, and a `verifyCommand` from that file wins over the stored one. It runs only after someone
-  approves it on the project's Settings tab on the board; the approval is pinned to a SHA-256 fingerprint of
-  the exact command, so an edit to it needs approving again. Until then the final verify is refused with
-  `COMMAND_NEEDS_APPROVAL`. The CLI cannot approve.
-  *Migrate:* approve the command on the board the first time a close asks for it.
-  <!-- verified: packages/server/src/server.ts:9269 unapprovedFileVerify, :9711-9714 -->
+- **A repository can declare its own verify command.** `.agenfk/project.json` can now carry shared settings, and
+  a `verifyCommand` from that file wins over the stored one. It runs as committed, like the rest of the
+  repository's code: there is no per-machine approval (#260). A command holding characters a screen cannot show
+  faithfully (bidi overrides, zero-width or other invisible characters) is refused with `COMMAND_UNREADABLE` and
+  never runs. A change to the declared command is written on the open cards, as a change of the stored one is.
+  *Migrate:* to share one command across the team, commit it in `.agenfk/project.json`; review changes to it in
+  pull requests like any other code.
+  <!-- verified: packages/core/src/fileCommand.ts unreadableFileCommand; packages/server/src/server.ts unreadableFileVerify, observeDeclaredVerifyCommand -->
 
 - **One origin: the API and the board share one port (CGLAB-165).** The server serves the built board itself;
   `agenfk up` no longer starts `vite preview`. The board is at the API's port (`http://localhost:3000` by
@@ -160,8 +253,14 @@ port, project ids kept out of version control, and hub-side flow adherence.
   bracket query syntax (`?from[a]=b`) is no longer parsed into objects.
   <!-- verified: packages/hub/src/server.ts:411, :455, :486; packages/hub/package.json:28 -->
 
-Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in `node:sqlite`.
-<!-- verified: package.json:54; packages/storage-sqlite/src/index.ts:31 (same in v1.1.20) -->
+- **Node 22.12 or newer.** The floor rises from `>=22.5.0` to `>=22.12.0` (root, `create` and, newly, the hub
+  package). The hub's `jwks-rsa` 4 loads the ESM-only `jose` 6 with `require()`, which Node enables by default
+  from 22.12; on 22.5–22.11 the hub fails at startup with `ERR_REQUIRE_ESM`, even with Entra sign-in off.
+  *Migrate:* upgrade Node to 22.12 or later before upgrading AgEnFK. The published hub image already runs Node 26.
+  <!-- verified: node_modules/jwks-rsa/package.json engines; packages/cli/src/test/node-floor-covers-dependencies.test.ts -->
+
+Not changed: storage is still the built-in `node:sqlite`.
+<!-- verified: packages/storage-sqlite/src/index.ts:31 (same in v1.1.20) -->
 
 ### Upgrading from 1.1.x
 
@@ -169,7 +268,7 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
    reports (`AGENFK_DB_PATH` can override `config.json`), then `agenfk down` and copy that file and any `-wal`
    and `-shm` files beside it somewhere safe. 2.0 migrates the database at first start; 1.1.20 still reads
    and writes it afterwards, so this copy is a safety net, not a requirement.
-2. Upgrade: `agenfk upgrade --version 2.0.0`. Naming the version is safest: 1.1.x picks "latest" by publish
+2. Check `node -v` reports 22.12 or later, then upgrade: `agenfk upgrade --version 2.0.0`. Naming the version is safest: 1.1.x picks "latest" by publish
    date, not by version.
 3. The first upgrade is run by your old CLI. It downloads and extracts 2.0, then runs 2.0's `install.mjs`.
    In practice:
@@ -183,8 +282,8 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
 4. `agenfk restart`, then open the board with `agenfk ui` (it is on the API's port now).
 5. In each repository: `agenfk init` to move `projectId` into `.agenfk/local.json`, then commit `.gitignore`
    and `.agenfk/project.json`.
-6. Make sure each project has a verify command (`agenfk update-project <id> --verify-command "<cmd>"`). If it
-   is declared in `project.json`, approve it on the project's Settings tab.
+6. Make sure each project has a verify command: `agenfk update-project <id> --verify-command "<cmd>"`, or one
+   committed in `.agenfk/project.json` for the whole team.
 7. If you copied rules into a project with `agenfk skills install --project`, run it again there.
 8. Hub-joined users: reconnect JIRA through the hub ("Connect JIRA" on the board) after an admin configures it
    under hub Admin → JIRA.
@@ -218,7 +317,12 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
   (`--test-report-related-command`), Markdown edits no test names skip the suite, the close stands on a green
   already on record, siblings share runs, and suite runs are queued server-wide (`maxConcurrentSuiteRuns`).
 - `agenfk verify --plan` and the gatekeeper say what leaving a step will run before it runs.
-- `verifyAt: parent` runs the suite once at the top-level card.
+- `verifyAt: parent` runs the suite once at the top-level card. With `verifyAtScope: project` (on the flow, or
+  `agenfk update-project <id> --verify-at-scope project`) a card in another worktree defers too; the parent's
+  verify then waits until its close commit is merged into the parent's branch (`DEFERRED_CHILD_UNMERGED`).
+- `agenfk update-project <id> --exclusive-suite on` runs one of a project's suites at a time, for suites that
+  share a database or fixed ports, without holding other projects back.
+- A PR's "Warnings the checks raised" lists only the warnings that held a card.
 - A failed verify command leaves the card where it is instead of rolling it back.
 - `agenfk update <id> --worktree <path>|none|inherit` chooses where a card runs; verify and the close commit
   run in the card's worktree.
@@ -251,6 +355,9 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
 - One visual system with the hub and flow editor, neutral dark mode, visible focus, AA contrast.
 - Created and updated dates on cards, a date filter, Settings in the browser board, drill-down into any card
   with children.
+- The board fits the window: columns share the width down to a 120px floor, so an 8-step flow fits 1,280px; a
+  compact mode fits it in 1,024px. The board remembers compact mode and which side columns are expanded.
+- A Project section in Settings, in the browser and the desktop app, for the open project's suite settings.
 
 **Installer and CLI**
 - Two-line upgrades, one-line `up`/`down`/`restart`/`kill`; step-by-step logs behind `--debuglog`.
@@ -298,6 +405,13 @@ Not changed: the Node floor stays `>=22.5.0`, and storage is still the built-in 
 - Hub and server rate limiting runs on `express-rate-limit`.
 - `figlet` is removed with the ASCII banners.
 - `js-yaml` is declared in the root lockfile.
+- The majors that landed on `main` after 1.1.20 now ship: `zod` 4 (server), `vite` 8 (board and hub UI),
+  `jwks-rsa` 4 and `bcryptjs` 3 (hub), with the npm production and development group bumps (#257).
+
+### License
+
+- AgEnFK is licensed under Apache-2.0 instead of ISC. Every package declares it, and the release tarballs
+  and the hub image now carry the license text (#257).
 
 
 ## [2.0.0-beta.46] — 2026-10-16

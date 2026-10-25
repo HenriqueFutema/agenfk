@@ -302,7 +302,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_project",
-        description: "Update an existing project's name, description, or verifyCommand.",
+        description: "Update an existing project's name, description, verifyCommand, or suite settings (verifyAtScope, exclusiveSuite).",
         inputSchema: {
           type: "object",
           properties: {
@@ -310,6 +310,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             name: { type: "string", description: "New project name." },
             description: { type: "string", description: "New project description." },
             verifyCommand: { type: "string", description: "The command to run for test_changes (e.g. 'npm run build && npm test'). Once set, test_changes will always use this command to gate TEST → DONE." },
+            verifyAtScope: { type: ["string", "null"], enum: ["worktree", "project", null], description: "Overrides the flow's verifyAtScope for this project: with verifyAt 'parent', 'project' lets a card in another worktree defer its suite run to its parent (whose verify then waits until that work is merged), 'worktree' only one in the parent's tree. null goes back to the flow's." },
+            exclusiveSuite: { type: "boolean", description: "Run at most one of this project's suites at a time, for suites that share a database or fixed ports. Other projects are not held back." },
           },
           required: ["id"],
         },
@@ -677,6 +679,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
             },
             verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
+            verifyAtScope: { type: "string", enum: ["worktree", "project"], description: "With verifyAt 'parent': which children defer to their open parent - only those in the parent's own tree ('worktree', default), or also those in another worktree of the repository ('project'; the parent's verify is then refused until their close commits are merged into its tree). A project may override it." },
             projectId: { type: "string", description: "Optional: if provided, immediately activate the new flow for this project." },
           },
           required: ["name", "steps"],
@@ -692,6 +695,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             name: { type: "string" },
             description: { type: "string" },
             verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
+            verifyAtScope: { type: "string", enum: ["worktree", "project"], description: "With verifyAt 'parent': which children defer to their open parent - only those in the parent's own tree ('worktree', default), or also those in another worktree of the repository ('project'; the parent's verify is then refused until their close commits are merged into its tree). A project may override it." },
             steps: {
               type: "array",
               items: {
@@ -772,6 +776,8 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string().optional(),
           description: z.string().optional(),
           verifyCommand: z.string().optional(),
+          verifyAtScope: z.enum(['worktree', 'project']).nullable().optional(),
+          exclusiveSuite: z.boolean().optional(),
         }).parse(request.params.arguments);
         let data: unknown;
         if (Object.keys(updates).length > 0) {
@@ -1215,6 +1221,7 @@ async function callToolHandler(request: any): Promise<any> {
           description: z.string().optional(),
           steps: z.array(FlowStepToolSchema),
           verifyAt: z.enum(['leaf', 'parent']).optional(),
+          verifyAtScope: z.enum(['worktree', 'project']).optional(),
           projectId: z.string().optional(),
         }).parse(request.params.arguments);
         const { projectId, ...flowBody } = args;
@@ -1232,6 +1239,7 @@ async function callToolHandler(request: any): Promise<any> {
           description: z.string().optional(),
           steps: z.array(FlowStepToolSchema).optional(),
           verifyAt: z.enum(['leaf', 'parent']).optional(),
+          verifyAtScope: z.enum(['worktree', 'project']).optional(),
         }).parse(request.params.arguments);
         const { id, ...updates } = args;
         try {

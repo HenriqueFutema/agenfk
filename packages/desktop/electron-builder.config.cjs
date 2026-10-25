@@ -129,6 +129,12 @@ module.exports = {
     { from: '../ui/dist', to: 'packages/ui/dist' },
   ],
 
+  // Apache-2.0 section 4(a): the installed app carries AgEnFK's license text,
+  // beside the executable rather than inside the archive (#257).
+  extraFiles: [
+    { from: '../../LICENSE', to: 'LICENSE' },
+  ],
+
   mac: {
     icon: APP_ICON,
     /*

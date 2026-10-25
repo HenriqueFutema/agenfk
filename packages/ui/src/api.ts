@@ -265,20 +265,8 @@ export const api = {
       from: string; how?: string; warning?: string;
     }>;
       /* What the repository asks this machine to run, and whether a person here approved it (34ee6b8a). */
-      fileCommands?: Array<{ key: string; command: string; fingerprint: string; approved: boolean; hidden?: string[] }>;
+      fileCommands?: Array<{ key: string; command: string; hidden?: string[] }>;
     };
-  },
-  /**
-   * A person approving a command the repository declares - the board's act,
-   * never the agent's: the server refuses the internal token here (34ee6b8a).
-   */
-  approveFileCommand: async (projectId: string, command: string) => {
-    const { data } = await axios.post(
-      `${API_URL}/projects/${projectId}/approve-file-command`,
-      { command },
-      { headers: { 'x-agenfk-ui': '1' } },
-    );
-    return data as { approved: boolean; fingerprint: string; authority: string };
   },
   reviewProposal: async (proposal: unknown) => {
     try {
@@ -712,7 +700,7 @@ export const api = {
    */
   updateProject: async (
     id: string,
-    updates: { name?: string; description?: string; autoWorktree?: boolean },
+    updates: { name?: string; description?: string; autoWorktree?: boolean; verifyAtScope?: 'worktree' | 'project' | null; exclusiveSuite?: boolean },
   ): Promise<unknown> => {
     try {
       const { data } = await axios.put(`${API_URL}/projects/${id}`, updates);

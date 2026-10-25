@@ -565,6 +565,93 @@ const SCHEMA_PG = `
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_jira_oauth_pending_completion ON jira_oauth_pending(completion_hash);
+
+  -- Repository settings (RFC-002). Mirrors the SQLite DDL above; see the
+  -- comment there for what each column is for. Timestamps stay TEXT rather
+  -- than TIMESTAMPTZ on purpose: the app writes the ISO string new Date()
+  -- .toISOString() produces on both backends, so a row read off one replica
+  -- reads identically off the other, and the revision trail compares as
+  -- strings in one order.
+  CREATE TABLE IF NOT EXISTS repo_settings (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    verify_command TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    receipts_mode TEXT NOT NULL DEFAULT 'off' CHECK (receipts_mode IN ('off','shadow','enforce')),
+    shadow_threshold INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_settings_org ON repo_settings(org_id);
+
+  CREATE TABLE IF NOT EXISTS repo_command_revisions (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    verify_command TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('init','admin')),
+    actor_user_id TEXT,
+    actor_email TEXT,
+    installation_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, remote_url, revision)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_command_revisions_repo
+    ON repo_command_revisions(org_id, remote_url);
+
+  CREATE TABLE IF NOT EXISTS repo_producers (
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    added_by_email TEXT,
+    PRIMARY KEY (org_id, remote_url, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_repo_producers_repo ON repo_producers(org_id, remote_url);
+
+  -- Receipts (RFC-002). Mirrors the SQLite DDL above; see the comment there
+  -- for what each column is for. reusable stays a 1/0 INTEGER rather than a
+  -- BOOLEAN so both backends hand the same value back, and command_revision
+  -- / report_bytes stay nullable integers - NULL means "the receipt carries
+  -- no such number", which is not zero and not an empty string.
+  CREATE TABLE IF NOT EXISTS receipts (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('verification','review')),
+    installation_id TEXT NOT NULL,
+    card_id TEXT,
+    content_tree TEXT,
+    command_revision INTEGER,
+    body_json TEXT NOT NULL,
+    body_hash TEXT NOT NULL,
+    reusable INTEGER NOT NULL,
+    not_reusable_reason TEXT,
+    report_gz_b64 TEXT,
+    report_bytes INTEGER,
+    received_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_receipts_repo
+    ON receipts(org_id, remote_url, kind, content_tree);
+
+  CREATE INDEX IF NOT EXISTS idx_receipts_card
+    ON receipts(org_id, remote_url, kind, card_id, received_at);
+  CREATE INDEX IF NOT EXISTS idx_receipts_recent
+    ON receipts(org_id, remote_url, received_at);
+
+  -- CI read tokens (RFC-002). Mirrors the SQLite DDL above; see the comment
+  -- there. remote_url NULL is an org-wide token, never "no repository".
+  CREATE TABLE IF NOT EXISTS ci_tokens (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    remote_url TEXT,
+    label TEXT,
+    created_at TEXT NOT NULL,
+    created_by_email TEXT,
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ci_tokens_org ON ci_tokens(org_id);
 `;
 
 /**

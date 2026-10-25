@@ -27,3 +27,40 @@ export function verifyAtError(value: unknown): string | null {
 export function flowVerifyAt(flow: { verifyAt?: unknown } | null | undefined): VerifyAt {
   return flow?.verifyAt === 'parent' ? 'parent' : 'leaf';
 }
+
+/**
+ * How far 'parent' reaches (7ddeaf7c).
+ *
+ *  - 'worktree' (the default, and the behaviour before this setting existed):
+ *    a card defers only to a parent whose work lives in the SAME tree, because
+ *    the parent's verify tests the parent's tree.
+ *  - 'project': a card in another worktree defers too. Its work is then not in
+ *    the tree the parent's verify runs on until it is merged there, so that
+ *    verify is refused until every such child's close commit is reachable from
+ *    the parent's HEAD.
+ *
+ * Why it exists: a project that cuts a worktree per card got nothing from
+ * 'parent' - every child ran the full suite, and suites sharing one database
+ * broke each other. The flow says it; a project may override it, because how a
+ * repository lays out its worktrees is the repository's business, not the
+ * flow's (one hub flow serves projects of both kinds).
+ */
+export type VerifyAtScope = 'worktree' | 'project';
+
+const isScope = (value: unknown): value is VerifyAtScope => value === 'worktree' || value === 'project';
+
+/** Why `value` is not a verifyAtScope, or null when it is (absence included). */
+export function verifyAtScopeError(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  return isScope(value) ? null : `verifyAtScope must be 'worktree' or 'project', not ${JSON.stringify(value)}.`;
+}
+
+/** The scope in force: the project's own value, else the flow's, else 'worktree'. Anything unknown is skipped. */
+export function effectiveVerifyAtScope(
+  flow: { verifyAtScope?: unknown } | null | undefined,
+  project: { verifyAtScope?: unknown } | null | undefined,
+): VerifyAtScope {
+  if (isScope(project?.verifyAtScope)) return project.verifyAtScope;
+  if (isScope(flow?.verifyAtScope)) return flow.verifyAtScope;
+  return 'worktree';
+}

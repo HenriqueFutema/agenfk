@@ -18,7 +18,7 @@ export { PageHeader } from './PageHeader';
 export { PeriodControl } from './PeriodControl';
 export { LocalTime } from './LocalTime';
 export { DateRange } from './DateRange';
-export { DataTable } from './DataTable';
+export { DataTable, FILL_VIEWPORT_MIN } from './DataTable';
 export type { DataColumn } from './DataTable';
 export { ConfirmDialog, useConfirm } from './ConfirmDialog';
 export type { ConfirmOptions, ConfirmDialogProps } from './ConfirmDialog';

@@ -13,6 +13,8 @@ import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import type { Flow } from '@agenfk/core';
 import { flowChecksErrors, normalizeFlowSteps } from '@agenfk/core';
 import type { HubConfig } from './types.js';
+import { syncRepoSettings, declaredVerifyCommand } from './repoSettingsSync.js';
+import { publishPendingReceipts } from './receiptPublisher.js';
 
 export type FetchLike = (url: string, opts: any) => Promise<{
   status: number;
@@ -142,6 +144,8 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
     // every sync, because updateFlow merges and an omitted key would keep 'parent'
     // after the org turned it off. Anything unknown is the default.
     verifyAt: remote.verifyAt === 'parent' ? 'parent' : 'leaf',
+    // 7ddeaf7c: and how far 'parent' reaches, written every sync for the same reason.
+    verifyAtScope: remote.verifyAtScope === 'project' ? 'project' : 'worktree',
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     source: 'hub',
@@ -167,40 +171,6 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
 
   emit('flow:updated', { flowId: localId, projectId: projectId ?? undefined });
   return { outcome: 'updated', etag, localFlowId: localId };
-}
-
-// ── Backwards-compat single-shot reconciler ─────────────────────────────────
-// Kept as a thin wrapper for callers that don't yet thread project context.
-
-export interface ReconcileArgs {
-  storage: SQLiteStorageProvider;
-  hubConfig: HubConfig;
-  lastEtag: string | null;
-  fetchImpl: FetchLike;
-  emit: (event: string, payload: any) => void;
-}
-
-export async function reconcileHubFlow(args: ReconcileArgs): Promise<ReconcileOutcome> {
-  const result = await reconcileProjectFlow({
-    storage: args.storage,
-    hubConfig: args.hubConfig,
-    projectId: null,
-    lastEtag: args.lastEtag,
-    fetchImpl: args.fetchImpl,
-    emit: args.emit,
-  });
-  // Org-scope path retains the old behaviour of re-binding every project to the
-  // org-default flow — the per-project loop is the new normal but this keeps
-  // the (test-only) single-shot path working.
-  if (result.outcome === 'updated') {
-    const projects = await args.storage.listProjects();
-    for (const p of projects) {
-      if (p.flowId !== result.localFlowId) {
-        await args.storage.updateProject(p.id, { flowId: result.localFlowId });
-      }
-    }
-  }
-  return result;
 }
 
 // ── Per-tick polling ────────────────────────────────────────────────────────
@@ -244,6 +214,44 @@ export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
       continue;
     }
     if (result.etag) args.etagCache.set(project.id, result.etag);
+
+    // RFC-002: the hub's authoritative repository settings, after the flow
+    // reconcile so a hub outage on one channel never blocks the other. Only a
+    // project with a git remote can be keyed on the hub, and its settings ride
+    // their own ETag cache key so a 304 on the flow does not skip them.
+    if (remoteUrl) {
+      try {
+        const repoResult = await syncRepoSettings({
+          storage: args.storage,
+          hubConfig: args.hubConfig,
+          projectId: project.id,
+          remoteUrl,
+          localCommand: declaredVerifyCommand((project as any).projectRoot) ?? (typeof (project as any).verifyCommand === 'string' && (project as any).verifyCommand ? (project as any).verifyCommand : null),
+          projectRoot: (project as any).projectRoot ?? null,
+          lastEtag: args.etagCache.get('repo:' + project.id) ?? null,
+          fetchImpl: args.fetchImpl,
+        });
+        if (repoResult.etag) args.etagCache.set('repo:' + project.id, repoResult.etag);
+      } catch (e) {
+        // Contained per project, exactly like the flow reconcile above.
+        console.error(`[HUB_REPO_SETTINGS] Unexpected error for project ${project.id}:`, (e as Error).message);
+      }
+    }
+  }
+
+  // RFC-002: receipts a card is still holding go to the hub now. After the
+  // per-project loop and in its own try/catch: publishing is per CARD, not per
+  // project, so it has nothing to do with the reconcile above, and a hub that
+  // is unreachable on the flow channel must not be the reason a receipt is
+  // never sent (nor a throw here the reason a flow never reconciled).
+  try {
+    await publishPendingReceipts({
+      storage: args.storage,
+      hubConfig: args.hubConfig,
+      fetchImpl: args.fetchImpl,
+    });
+  } catch (e) {
+    console.error('[HUB_RECEIPTS] publish failed:', (e as Error).message);
   }
 }
 

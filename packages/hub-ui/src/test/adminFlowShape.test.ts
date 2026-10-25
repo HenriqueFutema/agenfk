@@ -8,6 +8,12 @@ describe('flattenAdminFlow', () => {
     expect(flattenAdminFlow(base).verifyAt).toBeUndefined();
   });
 
+  it("keeps the definition's verifyAtScope too, or a hub save would reset it to the default (7ddeaf7c)", () => {
+    const base = { id: 'f1', name: 'F', version: 1, definition: { name: 'F', steps: [], verifyAt: 'parent' } };
+    expect(flattenAdminFlow({ ...base, definition: { ...base.definition, verifyAtScope: 'project' } }).verifyAtScope).toBe('project');
+    expect(flattenAdminFlow(base).verifyAtScope).toBeUndefined();
+  });
+
   it('lifts steps + name + description out of the nested definition envelope', () => {
     const row = {
       id: 'f1',

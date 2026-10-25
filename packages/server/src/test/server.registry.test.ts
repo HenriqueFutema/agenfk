@@ -191,6 +191,16 @@ describe('POST /registry/flows/install — anchor handling', () => {
     expect(res.body.verifyAt).toBe('parent');
   });
 
+  it('keeps the flow-level verifyAtScope of the registry flow (7ddeaf7c)', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: { content: Buffer.from(JSON.stringify({
+      name: 'Scope Verify Flow', verifyAt: 'parent', verifyAtScope: 'project',
+      steps: [{ name: 'WORK', label: 'Work', order: 1, exitCriteria: '' }],
+    })).toString('base64') } });
+    const res = await agent().post('/registry/flows/install').send({ filename: 'scope-verify.json' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.verifyAtScope).toBe('project');
+  });
+
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = INSTALL_DB;
     await removeTestDb(INSTALL_DB, closeStorage);

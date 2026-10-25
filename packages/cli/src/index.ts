@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, unreadableFileCommand, readLocalProjectFile, resolveProjectIdentity, linkedWorktreeOf, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets, VERIFY_COMMAND_FLAG, SETUP_COMMAND_FLAG } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -26,6 +26,7 @@ import { registryFlowToLocal } from './registryFlowFile.js';
 import { ghPrCreateArgs } from './prArgs.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
+import { registerCiCommands } from './commands/ci.js';
 import { toonEncode } from './toon.js';
 import { releaseHint } from './releaseHint.js';
 import { ensureLocalIgnored, stripLegacyProjectId, readLegacyProjectId, projectFileTracked, writeLocalProjectId, LOCAL_FILE_REL } from './localProject.js';
@@ -650,6 +651,7 @@ program
 ;
 
 registerHubCommands(program);
+registerCiCommands(program);
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).
 program.hook('preAction', (thisCommand, actionCommand) => {
@@ -2207,23 +2209,15 @@ program
 
 program
   .command('approve-file-command <projectId>')
-  .description('Show the commands this project declares in .agenfk/project.json, and where a person approves them (the board)')
+  .description('Show the commands this project declares in .agenfk/project.json (they run as committed: no approval since 2.0.0-rc.3)')
   // Kept so a script passing it gets the explanation below instead of an unknown-option error.
-  .option('-y, --yes', 'no longer approves: approving is done by a person on the board')
+  .option('-y, --yes', 'no longer does anything: a declared command needs no approval')
   .action(async (projectId: string, options: { yes?: boolean }) => {
     /*
-     * The way OUT of the refusal - for a person.
-     *
-     * A project may declare its own verifyCommand in the repository, which is
-     * what lets configuration travel - and is also how cloning a repo could
-     * hand this machine a command it runs. So the server refuses to run one
-     * until somebody here has read it.
-     *
-     * This command used to do the approving, with ~/.agenfk/verify-token: the
-     * token the agent's own CLI holds, so the agent the refusal was addressed
-     * to could approve and run the command itself (34ee6b8a). Approving is now
-     * a person's act on the board; this prints what there is to read and
-     * where to approve it.
+     * Kept so scripts and docs that call it get an answer instead of an unknown
+     * command. A verifyCommand the repository declares used to need a person's
+     * approval per machine; since #260 it runs as committed, like the rest of
+     * the repository's code. This shows what the file declares.
      */
     try {
       const { data: project } = await axios.get(`${API_URL}/projects/${projectId}`);
@@ -2245,18 +2239,18 @@ program
         .map(key => ({ key, command: value.settings[key] }))
         .filter((c): c is { key: 'verifyCommand' | 'setupCommand'; command: string } => Boolean(c.command));
       if (commands.length === 0) {
-        console.log(chalk.gray('This repository declares no commands, so there is nothing to approve.'));
+        console.log(chalk.gray('This repository declares no commands.'));
         return;
       }
 
       console.log(chalk.bold(`\n${filePath} declares:`));
       for (const { key, command } of commands) console.log(`  ${chalk.cyan(key)}: ${command}`);
-      if (options.yes) console.log(chalk.yellow('\n--yes no longer approves anything.'));
-      if (commands.some(c => c.key === 'verifyCommand')) {
-        console.log(chalk.yellow(
-          '\nA person approves the verifyCommand on the board: open the project\'s Settings in `agenfk ui`, read it, and press Approve. '
-          + 'An agent cannot approve it.',
-        ));
+      const verify = commands.find(c => c.key === 'verifyCommand');
+      if (verify) {
+        const unreadable = unreadableFileCommand(verify);
+        console.log(unreadable
+          ? chalk.red(`\n${unreadable.reason}`)
+          : chalk.green('\nNothing to approve: the verifyCommand runs as committed, like the rest of the repository\'s code.'));
       }
       // Said, so nobody goes looking for an approval that would change nothing.
       if (commands.some(c => c.key === 'setupCommand')) {
@@ -2270,11 +2264,11 @@ program
 
 program
   .command('update-project <id>')
-  .description('Update a project\'s name, description, verify command, or project root (MCP fallback: update_project)')
+  .description('Update a project\'s name, description, verify command, project root, or suite settings (MCP fallback: update_project)')
   .option('--name <name>', 'New project name')
   .option('--description <text>', 'New project description')
-  .option('--verify-command <cmd>', 'Project-level verification command')
-  .option('--setup-command <cmd>', 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
+  .option(`${VERIFY_COMMAND_FLAG} <cmd>`, 'Project-level verification command')
+  .option(`${SETUP_COMMAND_FLAG} <cmd>`, 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
   .option('--project-root <path>', 'Absolute path to the repository this project lives in')
   .option('--test-report-format <format>', 'How per-test results are read: vitest-json | junit-xml (with --test-report-command and --test-report-path)')
   .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
@@ -2283,9 +2277,30 @@ program
   .option('--test-report-related-command <cmd>', 'The runner\'s related-tests command with {files} (e.g. "npx vitest related --run {files}"): a step that changed code runs only the tests it affects; "none" clears it')
   .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing. The final step skips the verify command for them too: do not cover files that command checks (a markdown lint, prettier --check)')
   .option('--test-report <none>', 'Pass "none" to clear the test report setting')
+  .option('--verify-at-scope <scope>', 'With the flow\'s verifyAt "parent": "project" lets a card in another worktree defer its suite run to its parent (whose verify then waits until that work is merged), "worktree" only one in the parent\'s tree; "none" goes back to the flow\'s setting')
+  .option('--exclusive-suite <on|off>', 'Run at most one of this project\'s suites at a time (for suites that share a database or fixed ports); other projects are not held back')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
+      // 7ddeaf7c: plain choices, so they go on the open route with name and description.
+      if (options.verifyAtScope !== undefined) {
+        const scope = String(options.verifyAtScope);
+        if (!['worktree', 'project', 'none'].includes(scope)) {
+          console.error(chalk.red(`--verify-at-scope must be worktree, project or none, not "${scope}".`));
+          process.exit(1);
+          return;
+        }
+        updates.verifyAtScope = scope === 'none' ? null : scope;
+      }
+      if (options.exclusiveSuite !== undefined) {
+        const value = String(options.exclusiveSuite);
+        if (value !== 'on' && value !== 'off') {
+          console.error(chalk.red(`--exclusive-suite must be on or off, not "${value}".`));
+          process.exit(1);
+          return;
+        }
+        updates.exclusiveSuite = value === 'on';
+      }
       const wantsTestReport = options.testReport !== undefined || options.testReportFormat !== undefined
         || options.testReportCommand !== undefined || options.testReportPath !== undefined
         || options.testReportSurface !== undefined || options.testReportReuseIgnore !== undefined
@@ -2295,7 +2310,7 @@ program
       if (options.verifyCommand === undefined && options.projectRoot === undefined
           && options.setupCommand === undefined && !wantsTestReport
           && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root, --test-report-*.'));
+        console.error(chalk.yellow(`Nothing to update. Pass at least one of --name, --description, ${VERIFY_COMMAND_FLAG}, ${SETUP_COMMAND_FLAG}, --project-root, --test-report-*, --verify-at-scope, --exclusive-suite.`));
         process.exit(1);
         return;
       }
@@ -4368,6 +4383,7 @@ reviewCmd
   .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
   .option('--range <from..to>', 'The commits the review covered. Leave it out (or pass auto) and the server uses where the card began, up to HEAD - uncommitted work included')
   .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "severity"?: "HIGH"|"MEDIUM"|"LOW", "reason"? } ([] when nothing was found)')
+  .option('--lens <name>', 'A lens the review covered (repeatable; default general)', (v: string, prev: string[] = []) => [...prev, v])
   .action(async (id, options) => {
     let findings: unknown;
     try { findings = JSON.parse(options.findings); } catch {
@@ -4384,7 +4400,7 @@ reviewCmd
     const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
     try {
       const { data } = await axios.post(`${API_URL}/items/${id}/review-records`,
-        { transcript: options.transcript, range: options.range ?? 'auto', findings },
+        { transcript: options.transcript, range: options.range ?? 'auto', findings, ...(options.lens ? { lenses: options.lens } : {}) },
         { headers: { 'x-agenfk-internal': verifyToken } });
       const who = data?.reviewer ? `${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}` : 'the reviewer';
       const over = data?.range?.from && data?.range?.to ? ` over ${String(data.range.from).slice(0, 12)}..${String(data.range.to).slice(0, 12)}` : '';

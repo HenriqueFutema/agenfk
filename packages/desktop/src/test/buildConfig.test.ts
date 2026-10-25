@@ -113,6 +113,16 @@ describe('extraResources — everything the app needs at runtime', () => {
   });
 });
 
+describe('license', () => {
+  it("ships AgEnFK's Apache-2.0 license text with the installed app (#257)", () => {
+    const entries: { from?: string; to?: string }[] = config.extraFiles ?? [];
+    const license = entries.find((e) => e.to === 'LICENSE');
+    expect(license, 'extraFiles must copy LICENSE into the app').toBeTruthy();
+    const source = path.resolve(__dirname, '../..', license!.from!);
+    expect(fs.readFileSync(source, 'utf8')).toMatch(/Apache License\s+Version 2\.0/);
+  });
+});
+
 describe('bundle hygiene', () => {
   it('does not ship tests or TypeScript sources', () => {
     const files: string[] = config.files ?? [];

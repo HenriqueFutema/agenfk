@@ -211,6 +211,29 @@ describe('agenfk update-project <id>', () => {
     expect(mockedAxios.put.mock.calls.every(c => !String(c[0]).endsWith('/projects/proj-1'))).toBe(true);
   });
 
+  // 7ddeaf7c: plain choices, not shell strings, so they go on the open route with name/description.
+  it('PUTs --verify-at-scope and --exclusive-suite on the open route', async () => {
+    mockedAxios.put.mockResolvedValue({ data: { id: 'proj-1' } });
+    await program.parseAsync(['node', 'agenfk', 'update-project', 'proj-1', '--verify-at-scope', 'project', '--exclusive-suite', 'on']);
+    expect(mockedAxios.put).toHaveBeenCalledWith(`${API}/projects/proj-1`, { verifyAtScope: 'project', exclusiveSuite: true });
+  });
+
+  it("--verify-at-scope none clears the project's own scope, and --exclusive-suite off turns it off", async () => {
+    mockedAxios.put.mockResolvedValue({ data: { id: 'proj-1' } });
+    await program.parseAsync(['node', 'agenfk', 'update-project', 'proj-1', '--verify-at-scope', 'none', '--exclusive-suite', 'off']);
+    expect(mockedAxios.put).toHaveBeenCalledWith(`${API}/projects/proj-1`, { verifyAtScope: null, exclusiveSuite: false });
+  });
+
+  it('refuses a scope or a switch value it does not know, sending nothing', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit'); }) as never);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(program.parseAsync(['node', 'agenfk', 'update-project', 'proj-1', '--verify-at-scope', 'repo'])).rejects.toThrow('exit');
+      await expect(program.parseAsync(['node', 'agenfk', 'update-project', 'proj-1', '--exclusive-suite', 'maybe'])).rejects.toThrow('exit');
+      expect(mockedAxios.put).not.toHaveBeenCalled();
+    } finally { exit.mockRestore(); err.mockRestore(); }
+  });
+
   it('resolves a relative project root against the CALLER cwd', async () => {
     // The server has a different cwd entirely, so a relative path sent as
     // typed would land somewhere the person cannot see.
