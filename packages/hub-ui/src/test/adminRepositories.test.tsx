@@ -25,6 +25,7 @@ import React from 'react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminRepos } from '../pages/AdminRepos';
+import { FILL_VIEWPORT_MIN } from '../components/ui';
 import { AdminLayout, AdminKeys } from '../pages/Admin';
 import { api } from '../api';
 import { answerConfirm, forbidWindowConfirm } from './helpers/confirmDialog';
@@ -137,6 +138,80 @@ describe('Admin → Repositories: the list', () => {
     expect(await screen.findByRole('heading', { name: REPO })).toBeInTheDocument();
     await waitFor(() => expect(get).toHaveBeenCalledWith(`/v1/admin/repos/revisions?repo=${encodeURIComponent(REPO)}`));
     expect(get).toHaveBeenCalledWith(`/v1/admin/repos/receipts?repo=${encodeURIComponent(REPO)}`);
+  });
+});
+
+// GH-273: an org with many repositories got a page as long as the list, and no
+// way to find one by name.
+describe('Admin → Repositories: finding a repository', () => {
+  const rowsShown = () => within(screen.getByRole('table', { name: 'Repositories' })).getAllByRole('row').slice(1);
+  const search = () => screen.getByRole('searchbox', { name: /search repositories/i });
+
+  it('filters by part of the name, ignoring case', async () => {
+    hubAnswers();
+    renderAt('/admin/repos');
+    await screen.findByText(REPO);
+    fireEvent.change(search(), { target: { value: 'WIDG' } });
+    expect(rowsShown()).toHaveLength(1);
+    expect(screen.getByText(REPO2)).toBeInTheDocument();
+    expect(screen.queryByText(REPO)).not.toBeInTheDocument();
+  });
+
+  it('keeps every repository that contains the text', async () => {
+    hubAnswers();
+    renderAt('/admin/repos');
+    await screen.findByText(REPO);
+    fireEvent.change(search(), { target: { value: 'acme/' } });
+    expect(rowsShown()).toHaveLength(2);
+  });
+
+  it('says so when nothing matches', async () => {
+    hubAnswers();
+    renderAt('/admin/repos');
+    await screen.findByText(REPO);
+    fireEvent.change(search(), { target: { value: 'nothing-like-it' } });
+    expect(screen.getByText(/no rows match/i)).toBeInTheDocument();
+  });
+});
+
+describe('Admin → Repositories: the list ends at the bottom of the window', () => {
+  const setWindowHeight = (h: number) => Object.defineProperty(window, 'innerHeight', { configurable: true, value: h });
+  /** The box the rows scroll in: the table's own parent. */
+  const scrollBox = () => screen.getByRole('table', { name: 'Repositories' }).parentElement as HTMLElement;
+  let realHeight: number;
+  beforeEach(() => {
+    realHeight = window.innerHeight;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ top: 300 } as DOMRect);
+  });
+  afterEach(() => setWindowHeight(realHeight));
+
+  // Outside the app shell (no scrolling pane, no layout CSS in jsdom) the box
+  // reaches the bottom of the window itself.
+  it('scrolls the rows inside a box that reaches the bottom of the window', async () => {
+    setWindowHeight(900);
+    hubAnswers();
+    renderAt('/admin/repos');
+    await screen.findByText(REPO);
+    expect(scrollBox().style.maxHeight).toBe(`${900 - 300}px`);
+    expect(scrollBox().style.overflowY).toBe('auto');
+  });
+
+  it('follows the window when it is resized', async () => {
+    setWindowHeight(900);
+    hubAnswers();
+    renderAt('/admin/repos');
+    await screen.findByText(REPO);
+    setWindowHeight(1200);
+    fireEvent(window, new Event('resize'));
+    await waitFor(() => expect(scrollBox().style.maxHeight).toBe(`${1200 - 300}px`));
+  });
+
+  it('keeps a usable height in a very short window', async () => {
+    setWindowHeight(350);
+    hubAnswers();
+    renderAt('/admin/repos');
+    await screen.findByText(REPO);
+    expect(scrollBox().style.maxHeight).toBe(`${FILL_VIEWPORT_MIN}px`);
   });
 });
 
