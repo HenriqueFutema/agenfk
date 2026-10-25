@@ -511,66 +511,238 @@ describe('agenfk ci check', () => {
 });
 
 // ── the GitHub Action ──────────────────────────────────────────────────────
+//
+// GH-278: the action used to run `npx agenfk@<version>`, but agenfk is not on
+// npm (E404), so it failed for everyone. It now installs the pinned release's
+// agenfk-dist.tar.gz and calls the built CLI. Its steps run here for real under
+// bash, with curl, npm and node stubbed: curl serves a fixture tarball, npm and
+// node record what they were asked to do.
 describe.skipIf(process.platform === 'win32')('the ci-check GitHub Action', () => {
   const actionPath = path.join(REPO_ROOT, 'actions', 'ci-check', 'action.yml');
+  const RELEASES = 'https://github.com/cglab-public/agenfk/releases';
 
-  /** Run the action's check step with a stub npx that exits `code`, as the CLI would. */
-  function runStep(code: number, env: Record<string, string>) {
+  /**
+   * Run the action's steps in order with the given inputs. `cliExit` is the
+   * CLI's exit code and `cliOutputs` what it writes to GITHUB_OUTPUT (as ci
+   * check does); `download`, `tarOk`, `npmOk` say whether each install stage
+   * works. An `agenfk-sha256` input of 'MATCH' stands for the tarball's real digest.
+   */
+  function runAction(inputs: Record<string, string>, {
+    cliExit = 0, download = true, tarOk = true, npmOk = true,
+    cliOutputs = {} as Record<string, string>, cliPrints = '',
+  } = {}) {
     const action: any = yaml.load(fs.readFileSync(actionPath, 'utf8'));
     expect(action.runs.using).toBe('composite');
-    const step = action.runs.steps.find((s: any) => s.id === 'check');
-    expect(step, 'a step with id "check"').toBeTruthy();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-action-'));
     const bin = path.join(dir, 'bin');
+    const temp = path.join(dir, 'runner-temp');
     fs.mkdirSync(bin);
-    const argvFile = path.join(dir, 'argv');
-    fs.writeFileSync(path.join(bin, 'npx'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\nexit ${code}\n`, { mode: 0o755 });
-    const out = path.join(dir, 'out');
-    fs.writeFileSync(out, '');
-    // The step's own env block, with the inputs this test plays.
-    const stepEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(step.env ?? {})) {
-      const m = String(v).match(/^\$\{\{\s*inputs\.([\w-]+)\s*\}\}$/);
-      stepEnv[k] = m ? (env[m[1]] ?? '') : String(v);
+    fs.mkdirSync(temp);
+    // The release tarball: just the built CLI's entry point.
+    const pkg = path.join(dir, 'pkg');
+    fs.mkdirSync(path.join(pkg, 'packages/cli/dist'), { recursive: true });
+    fs.writeFileSync(path.join(pkg, 'packages/cli/dist/index.js'), '');
+    fs.writeFileSync(path.join(pkg, 'package.json'), '{}');
+    const tarball = path.join(dir, 'agenfk-dist.tar.gz');
+    execFileSync('tar', ['-czf', tarball, '-C', pkg, '.']);
+    const tarballSha = execFileSync('shasum', ['-a', '256', tarball], { encoding: 'utf8' }).split(' ')[0];
+    const log = (name: string) => path.join(dir, `${name}.argv`);
+    // tar: the real one, unless this run plays an archive that will not unpack.
+    if (!tarOk) fs.writeFileSync(path.join(bin, 'tar'), '#!/bin/sh\nexit 2\n', { mode: 0o755 });
+    // curl: record the URL, then write the tarball where -o says (or fail like curl -f).
+    fs.writeFileSync(path.join(bin, 'curl'), `#!/bin/sh
+printf '%s\n' "$@" > "${log('curl')}"
+${download ? '' : 'exit 22'}
+while [ $# -gt 0 ]; do if [ "$1" = "-o" ]; then cp "${tarball}" "$2"; fi; shift; done
+`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh
+printf '%s\n' "$PWD" "$@" > "${log('npm')}"
+${npmOk ? '' : 'exit 1'}
+`, { mode: 0o755 });
+    // node plays the CLI: records its argv, writes its outputs, prints, exits.
+    const outputLines = Object.entries(cliOutputs).map(([k, v]) => `echo '${k}=${v}' >> "$GITHUB_OUTPUT"`).join('\n');
+    fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh
+printf '%s\n' "$@" > "${log('node')}"
+${outputLines}
+${cliPrints ? `echo '${cliPrints}'` : ''}
+exit ${cliExit}
+`, { mode: 0o755 });
+
+    const outputs: Record<string, Record<string, string>> = {};
+    let status: number | null = 0;
+    let stderr = '';
+    let stdout = '';
+    for (const step of action.runs.steps) {
+      const out = path.join(dir, `${step.id}.out`);
+      fs.writeFileSync(out, '');
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(step.env ?? {})) {
+        const input = String(v).match(/^\$\{\{\s*inputs\.([\w-]+)\s*\}\}$/);
+        const prior = String(v).match(/^\$\{\{\s*steps\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}$/);
+        const given = input ? (inputs[input[1]] ?? '') : '';
+        env[k] = input ? (given === 'MATCH' ? tarballSha : given) : prior ? (outputs[prior[1]]?.[prior[2]] ?? '') : String(v);
+      }
+      const r = spawnSync('bash', ['-e', '-c', step.run], {
+        env: { PATH: `${bin}:/usr/bin:/bin`, GITHUB_OUTPUT: out, RUNNER_TEMP: temp, ...env },
+        encoding: 'utf8',
+      });
+      outputs[step.id] = Object.fromEntries(fs.readFileSync(out, 'utf8').split('\n').filter(l => l.includes('=')).map(l => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+      status = r.status;
+      stderr += r.stderr;
+      stdout += r.stdout;
+      if (status !== 0) break;
     }
-    const r = spawnSync('bash', ['-e', '-c', step.run], {
-      env: { PATH: `${bin}:/usr/bin:/bin`, GITHUB_OUTPUT: out, ...stepEnv },
-      encoding: 'utf8',
-    });
-    const argv = fs.existsSync(argvFile) ? fs.readFileSync(argvFile, 'utf8').split('\n').filter(Boolean) : [];
+    const argv = (name: string) => fs.existsSync(log(name)) ? fs.readFileSync(log(name), 'utf8').split('\n').filter(Boolean) : [];
+    const result = { status, stderr, stdout, outputs, curl: argv('curl'), npm: argv('npm'), node: argv('node'), temp };
     fs.rmSync(dir, { recursive: true, force: true });
-    return { status: r.status, argv, stderr: r.stderr };
+    return result;
   }
 
+  it('downloads the pinned release, not a package from npm', () => {
+    const r = runAction({ kind: 'verification', 'agenfk-version': '2.1.0-beta.1' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.curl).toContain(`${RELEASES}/download/v2.1.0-beta.1/agenfk-dist.tar.gz`);
+  });
+
+  it('takes the version with or without its leading v', () => {
+    expect(runAction({ kind: 'verification', 'agenfk-version': 'v2.1.0' }).curl).toContain(`${RELEASES}/download/v2.1.0/agenfk-dist.tar.gz`);
+  });
+
+  it('downloads the latest release when no version is pinned', () => {
+    expect(runAction({ kind: 'verification', 'agenfk-version': '' }).curl).toContain(`${RELEASES}/latest/download/agenfk-dist.tar.gz`);
+    expect(runAction({ kind: 'verification', 'agenfk-version': 'latest' }).curl).toContain(`${RELEASES}/latest/download/agenfk-dist.tar.gz`);
+  });
+
+  it('installs only the release\'s runtime dependencies, running none of their scripts', () => {
+    const r = runAction({ kind: 'verification', 'agenfk-version': '2.1.0' });
+    expect(r.npm[0].startsWith(r.temp)).toBe(true);
+    expect(r.npm.slice(1)).toEqual(expect.arrayContaining(['ci', '--omit=dev', '--ignore-scripts']));
+  });
+
+  it('calls the built CLI, never the installer entry point', () => {
+    const r = runAction({ kind: 'verification', 'agenfk-version': '2.1.0' });
+    expect(r.node[0]).toMatch(/packages\/cli\/dist\/index\.js$/);
+    expect(r.node.join(' ')).not.toMatch(/bin\/agenfk\.js/);
+    expect(r.node.slice(1, 3)).toEqual(['ci', 'check']);
+  });
+
   it('passes on exit 0 and exit 10, so only the steps it gates are skipped', () => {
-    expect(runStep(0, { kind: 'verification' }).status).toBe(0);
-    expect(runStep(10, { kind: 'verification' }).status).toBe(0);
+    expect(runAction({ kind: 'verification' }, { cliExit: 0 }).status).toBe(0);
+    expect(runAction({ kind: 'verification' }, { cliExit: 10 }).status).toBe(0);
   });
 
   it('fails the job on exit 1, when the policy requires a receipt', () => {
-    expect(runStep(1, { kind: 'verification', policy: 'require' }).status).toBe(1);
+    expect(runAction({ kind: 'verification', policy: 'require' }, { cliExit: 1, cliOutputs: { run: 'true', decision: 'block' } }).status).toBe(1);
+  });
+
+  // Codex review (second pass): exit 1 is also what an unknown command or a
+  // crash returns. Only a written `decision=block` makes it an answer.
+  it('runs the gated steps when the CLI exits 1 without deciding (a release with no ci check)', () => {
+    const r = runAction({ kind: 'verification' }, { cliExit: 1 });
+    expect(r.status).toBe(0);
+    expect(r.outputs.check.run).toBe('true');
+  });
+
+  it('never leaves run=false behind a CLI that failed after writing it', () => {
+    const r = runAction({ kind: 'verification' }, { cliExit: 1, cliOutputs: { run: 'false', decision: 'reuse' } });
+    expect(r.status).toBe(0);
+    expect(r.outputs.check.run).toBe('true');
+  });
+
+  it('says a digest mismatch is one, so a caller that tolerates the check failing can still refuse it', () => {
+    const r = runAction({ kind: 'verification', 'agenfk-version': '2.1.0', 'agenfk-sha256': 'a'.repeat(64) });
+    expect(r.outputs.install.integrity).toBe('mismatch');
+    const action: any = yaml.load(fs.readFileSync(actionPath, 'utf8'));
+    expect(action.outputs.integrity.value).toMatch(/steps\.install\.outputs\.integrity/);
+  });
+
+  it('runs the gated steps when the release cannot be downloaded', () => {
+    const r = runAction({ kind: 'verification' }, { download: false });
+    expect(r.status).toBe(0);
+    expect(r.outputs.check?.run).toBe('true');
+    expect(r.node).toEqual([]);
+  });
+
+  it('fails the job when the release cannot be downloaded and the policy requires a receipt', () => {
+    expect(runAction({ kind: 'verification', policy: 'require' }, { download: false }).status).toBe(1);
+  });
+
+  it('passes the CLI\'s answer through, so a reuse reaches the gate as run=false', () => {
+    const r = runAction({ kind: 'verification' }, { cliExit: 0, cliOutputs: { run: 'false', decision: 'reuse' } });
+    expect(r.status).toBe(0);
+    expect(r.outputs.check.run).toBe('false');
+    expect(r.outputs.check.decision).toBe('reuse');
+  });
+
+  it('runs the gated steps when the archive cannot be unpacked', () => {
+    const r = runAction({ kind: 'verification' }, { tarOk: false });
+    expect(r.status).toBe(0);
+    expect(r.outputs.check.run).toBe('true');
+    expect(r.node).toEqual([]);
+  });
+
+  it('runs the gated steps when the release\'s dependencies cannot be installed', () => {
+    const r = runAction({ kind: 'verification' }, { npmOk: false });
+    expect(r.status).toBe(0);
+    expect(r.outputs.check.run).toBe('true');
+    expect(r.node).toEqual([]);
+  });
+
+  // Codex review: `latest` is the newest STABLE release, which can predate `ci check`.
+  it('runs the gated steps when the CLI fails in a way that is not an answer', () => {
+    const r = runAction({ kind: 'verification' }, { cliExit: 2 });
+    expect(r.status).toBe(0);
+    expect(r.outputs.check.run).toBe('true');
+  });
+
+  it('fails the job when the CLI fails that way and the policy requires a receipt', () => {
+    expect(runAction({ kind: 'verification', policy: 'require' }, { cliExit: 2 }).status).not.toBe(0);
+  });
+
+  // Codex review: a version names a release; a digest pins its bytes.
+  it('runs the release when its digest matches the one pinned', () => {
+    const r = runAction({ kind: 'verification', 'agenfk-version': '2.1.0', 'agenfk-sha256': 'MATCH' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.node.slice(1, 3)).toEqual(['ci', 'check']);
+  });
+
+  it('fails the job, running nothing from it, when the release does not match its pinned digest', () => {
+    const r = runAction({ kind: 'verification', 'agenfk-version': '2.1.0', 'agenfk-sha256': 'a'.repeat(64) });
+    expect(r.status).not.toBe(0);
+    expect(r.npm).toEqual([]);
+    expect(r.node).toEqual([]);
+  });
+
+  // Codex review: GitHub reads workflow commands from a step's output, and the
+  // CLI echoes inputs in its diagnostics.
+  it('ignores workflow commands in what the CLI prints', () => {
+    const r = runAction({ kind: 'verification' }, { cliPrints: '::warning::injected' });
+    const lines = r.stdout.split('\n');
+    const stop = lines.findIndex(l => /^::stop-commands::\S+$/.test(l));
+    expect(stop, r.stdout).toBeGreaterThanOrEqual(0);
+    const token = lines[stop].slice('::stop-commands::'.length);
+    const injected = lines.indexOf('::warning::injected');
+    expect(injected).toBeGreaterThan(stop);
+    expect(lines.indexOf(`::${token}::`)).toBeGreaterThan(injected);
   });
 
   it('runs agenfk ci check with the kind, lens and policy it was given', () => {
-    const { argv } = runStep(0, { kind: 'review', lens: 'security', policy: 'require', 'agenfk-version': '2.1.0' });
-    expect(argv[0]).toMatch(/^(-y|--yes)$/);
-    expect(argv).toContain('agenfk@2.1.0');
-    const at = argv.indexOf('ci');
-    expect(argv.slice(at, at + 2)).toEqual(['ci', 'check']);
-    expect(argv[argv.indexOf('--kind') + 1]).toBe('review');
-    expect(argv[argv.indexOf('--lens') + 1]).toBe('security');
-    expect(argv[argv.indexOf('--policy') + 1]).toBe('require');
+    const { node } = runAction({ kind: 'review', lens: 'security', policy: 'require', 'agenfk-version': '2.1.0' });
+    expect(node[node.indexOf('--kind') + 1]).toBe('review');
+    expect(node[node.indexOf('--lens') + 1]).toBe('security');
+    expect(node[node.indexOf('--policy') + 1]).toBe('require');
   });
 
   it('passes no --lens when none was given', () => {
-    const { argv } = runStep(0, { kind: 'verification' });
-    expect(argv).not.toContain('--lens');
+    expect(runAction({ kind: 'verification' }).node).not.toContain('--lens');
   });
 
   it('never splices an input into the script, so an input cannot run code', () => {
-    const { argv, status } = runStep(0, { kind: 'verification', lens: '$(touch /tmp/agenfk-pwned)"; exit 3; "' });
+    const { node, status } = runAction({ kind: 'verification', lens: '$(touch /tmp/agenfk-pwned)"; exit 3; "' });
     expect(status).toBe(0);
-    expect(argv[argv.indexOf('--lens') + 1]).toBe('$(touch /tmp/agenfk-pwned)"; exit 3; "');
+    expect(node[node.indexOf('--lens') + 1]).toBe('$(touch /tmp/agenfk-pwned)"; exit 3; "');
+    const v = runAction({ kind: 'verification', 'agenfk-version': '1.0"; exit 3; "' });
+    expect(v.status).not.toBe(3);
   });
 
   it('exposes the step\'s run and decision outputs as the action\'s', () => {
