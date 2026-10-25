@@ -690,8 +690,7 @@ indicator, hints), `packages/storage-sqlite/src/index.ts`
 gates, reporting), `packages/hub/src/routes/events.ts` (rejections, ping
 binding, backdated rollups). The deadletter path is
 a contract between flusher and CLI (`defaultDeadletterPath()`),
-drift-pinned by tests in both packages; the docs↔code facts above are
-pinned by `packages/hub/src/test/hub-docs-tenancy.test.ts`.
+drift-pinned by tests in both packages.
 
 ---
 

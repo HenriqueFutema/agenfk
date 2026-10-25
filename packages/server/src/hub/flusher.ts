@@ -25,8 +25,10 @@ const MAX_BACKOFF_MS = 5 * 60_000;
  * `hub deadletter` commands duplicate this path expression (packages/cli/src/
  * commands/hub.ts deadletterFile) — the line format is shared through
  * @agenfk/core (hubDeadletter.ts), the path is not, so rename here and the CLI
- * reader must move with it (hub-carryover-deadletter.test.ts pins the literal
- * against drift).
+ * reader must move with it. The literal is pinned against drift by
+ * packages/server/src/test/flusher-org-boundary.test.ts ("defaultDeadletterPath
+ * is the ~/.agenfk/hub-deadletter.jsonl contract the CLI reads") and the CLI
+ * side by packages/cli/src/test/hub-carryover-actions.test.ts.
  */
 export function defaultDeadletterPath(): string {
   return path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl');

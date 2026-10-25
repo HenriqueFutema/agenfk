@@ -173,40 +173,6 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
   return { outcome: 'updated', etag, localFlowId: localId };
 }
 
-// ── Backwards-compat single-shot reconciler ─────────────────────────────────
-// Kept as a thin wrapper for callers that don't yet thread project context.
-
-export interface ReconcileArgs {
-  storage: SQLiteStorageProvider;
-  hubConfig: HubConfig;
-  lastEtag: string | null;
-  fetchImpl: FetchLike;
-  emit: (event: string, payload: any) => void;
-}
-
-export async function reconcileHubFlow(args: ReconcileArgs): Promise<ReconcileOutcome> {
-  const result = await reconcileProjectFlow({
-    storage: args.storage,
-    hubConfig: args.hubConfig,
-    projectId: null,
-    lastEtag: args.lastEtag,
-    fetchImpl: args.fetchImpl,
-    emit: args.emit,
-  });
-  // Org-scope path retains the old behaviour of re-binding every project to the
-  // org-default flow — the per-project loop is the new normal but this keeps
-  // the (test-only) single-shot path working.
-  if (result.outcome === 'updated') {
-    const projects = await args.storage.listProjects();
-    for (const p of projects) {
-      if (p.flowId !== result.localFlowId) {
-        await args.storage.updateProject(p.id, { flowId: result.localFlowId });
-      }
-    }
-  }
-  return result;
-}
-
 // ── Per-tick polling ────────────────────────────────────────────────────────
 
 export interface RunTickArgs {

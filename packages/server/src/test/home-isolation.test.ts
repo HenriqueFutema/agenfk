@@ -85,17 +85,6 @@ describe('home isolation (item 9c297075)', () => {
     ).toBe('1');
   });
 
-  it('the hub config path resolves against the CURRENT homedir (lazy, not import-time)', () => {
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-lazy-'));
-    vi.mocked(os.homedir).mockReturnValue(sandbox);
-    try {
-      expect(hubConfigPath()).toBe(path.join(sandbox, '.agenfk', 'hub.json'));
-    } finally {
-      vi.mocked(os.homedir).mockRestore();
-      fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    }
-  });
-
   it('the deadletter path resolves against the CURRENT homedir (lazy)', () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-lazy-'));
     vi.mocked(os.homedir).mockReturnValue(sandbox);

@@ -157,16 +157,8 @@ describe('3ffc9651: a capture reuses a green taken at the same tree state, clean
     expect(t.count()).toBe(2);
   });
 
-  it('two cards capturing one identical dirty tree at once run the suite once', async () => {
-    const t = await captureSetup(800);
-    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'mid-edit\n');
-    const [a, b] = [await t.card(), await t.card()];
-    const [ra, rb] = await Promise.all([capture(a), capture(b)]);
-    expect(ra.status, JSON.stringify(ra.body)).toBe(200);
-    expect(rb.status, JSON.stringify(rb.body)).toBe(200);
-    expect(t.count()).toBe(1);
-    expect([ra.body, rb.body].filter(r => r.reusedFrom)).toHaveLength(1);
-  });
+  // Two cards capturing one identical dirty tree at once run the suite once: close-green-reuse.test.ts
+  // "a dirty tree with the same content is shared: one run, the waiting card takes its record".
 });
 
 /** A STORY with TASK children on the step before DONE, whose verify command counts its runs outside the tree. */
@@ -189,21 +181,8 @@ const validate = (id: string) => agent().post(`/items/${id}/validate`).set(inter
 const testRecordsOf = (item: any): any[] => (Array.isArray(item?.tests) ? item.tests : []);
 
 describe('3ffc9651: the final verify propagates a sibling green recorded at the same tree state', () => {
-  it('siblings on one DIRTY tree: the first runs the command, the next propagates', async () => {
-    const t = await verifySetup();
-    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'another agent is mid-edit\n');
-    const a = await t.child();
-    const ra = await validate(a);
-    expect(ra.body.status, JSON.stringify(ra.body)).toBe('DONE');
-    expect(t.count()).toBe(1);
-
-    const b = await t.child();
-    const rb = await validate(b);
-    expect(rb.body.status, JSON.stringify(rb.body)).toBe('DONE');
-    expect(rb.body.output, 'the sibling ran the command on the very state the first one verified').toBe('Sibling propagation');
-    expect(t.count()).toBe(1);
-  });
-
+  // Siblings on one dirty tree, the first running the command and the next propagating: "a chain of siblings,
+  // each closing with its own commit" below starts on a dirty tree (b.js and c.js are not committed yet).
   // 83c1cbca (second review of 6caae168, finding 1): a tree state an older build recorded is not compared - before
   // `--relative`, a subdirectory project's uncommitted edit to a tracked file hashed as the committed file.
   it('a sibling green whose tree state an older build recorded does not pass the final step', async () => {
@@ -350,16 +329,8 @@ describe('GH-271: a top-level card reuses another top-level card\'s green of the
     expect(t.count()).toBe(2);
   });
 
-  it('changed content is another tree: the next top-level card runs its own', async () => {
-    const t = await topLevelSetup();
-    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'one\n');
-    expect((await validate(await t.card())).body.status).toBe('DONE');
-    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'two\n');
-    const rb = await validate(await t.card());
-    expect(rb.body.status).toBe('DONE');
-    expect(rb.body.output).not.toBe('Sibling propagation');
-    expect(t.count()).toBe(2);
-  });
+  // Changed content is another tree for a top-level card too: the same tree-state comparison as
+  // "the dirty content changed after the first sibling verified: the next runs its own".
 });
 
 /** A flow START -> GATE (a person approves) -> WORK -> END, with a STORY and TASK children on WORK. */

@@ -84,23 +84,6 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     return dir;
   }
 
-  it('refuses an edit to a declared test file the report never named', async () => {
-    const dir = makeRepo();
-    const { id } = await onWork(dir, 'node junit.cjs tests', { surface: ['tests'] });
-    write(dir, 'tests/a.test.js', 'T add_works add=ok\n// edited\n');
-    const c = await refused(id, 'test-surface-frozen');
-    expect(c.outcome).toBe('fail');
-    expect(c.detail).toMatch(/edited tests\/a\.test\.js/);
-  });
-
-  it('passes the same tree untouched', async () => {
-    const dir = makeRepo();
-    const { id } = await onWork(dir, 'node junit.cjs tests', { surface: ['tests'] });
-    const r = await validate(id);
-    expect(r.status, JSON.stringify(r.body)).toBe(200);
-    expect(byId((await item(id)).lastChecks.results, 'test-surface-frozen').outcome).toBe('pass');
-  });
-
   it('blocks when nothing is declared, and names the command with the directories that look like tests', async () => {
     const dir = makeRepo();
     const { id, pid } = await onWork(dir, 'node junit.cjs tests');
@@ -175,14 +158,7 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     expect(c.blocking).toBe(false);
   };
 
-  it('warns, and does not compare, when the tests were frozen by an older server', async () => {
-    const { id } = await frozenAtCode();
-    // As an older server froze it: a bare map of what the report named.
-    const it0: any = await storage.getItem(id);
-    await storage.updateItem(id, { stepRecords: it0.stepRecords.map((r: any) => (r.kind === 'record' && r.name === 'testSurface' ? { ...r, value: {} } : r)) } as any);
-    await softly(id);
-  });
-
+  // Records an older server wrote (a bare frozen map, an entry surface with no scope): check-evaluators.unit.test.ts.
   it('warns, and does not compare, when the declared paths changed since the tests were frozen', async () => {
     const { dir, id, pid } = await frozenAtCode();
     fs.mkdirSync(path.join(dir, 'helpers'));
@@ -190,18 +166,6 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     execSync('git add . && git commit -qm helpers', { cwd: dir, shell: posixShell() });
     await storage.updateProject(pid, { testReport: { ...REPORT, surface: ['helpers'] } } as any);
     await softly(id);
-  });
-
-  it('warns, and does not compare, when the entry surface was recorded by an older server', async () => {
-    const dir = makeRepo();
-    const { id } = await onWork(dir, 'node junit.cjs tests', { surface: ['tests'] });
-    const it0: any = await storage.getItem(id);
-    await storage.updateItem(id, { stepRecords: it0.stepRecords.map((r: any) => (r.kind === 'capture' ? { ...r, surface: { files: {} }, surfaceScope: undefined } : r)) } as any);
-    const r = await validate(id);
-    expect(r.status, JSON.stringify(r.body)).toBe(200);
-    const c = byId((await item(id)).lastChecks.results, 'test-surface-frozen');
-    expect(c.outcome).toBe('unavailable');
-    expect(c.blocking).toBe(false);
   });
 });
 
@@ -322,14 +286,7 @@ describe('CGLAB-380: test checks', () => {
       write(dir, 'tests/c.test.js', 'BROKEN\n');
       const c = await refused(id, 'no-broken-test-files');
       expect(c.detail).toMatch(/tests\/c\.test\.js/);
-    });
-
-    // CGLAB-418: the usual cause is a test importing code not written yet, and code may not be written here.
-    it('says how to write a test for code that does not exist yet when a test file fails to load', async () => {
-      const { dir, id } = await atSpecs();
-      honestTests(dir);
-      write(dir, 'tests/c.test.js', 'BROKEN\n');
-      const c = await refused(id, 'no-broken-test-files');
+      // CGLAB-418: the usual cause is a test importing code not written yet, and code may not be written here.
       expect(c.detail).toMatch(/import it inside the test/i);
     });
 

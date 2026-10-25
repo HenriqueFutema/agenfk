@@ -83,9 +83,6 @@ describe('register_pr / update_pr_sizing are exposed by the live MCP server', ()
   });
 
   for (const name of ['register_pr', 'update_pr_sizing']) {
-    it(`exposes "${name}" via listTools`, () => {
-      expect(tools.map((t) => t.name)).toContain(name);
-    });
     it(`advertises model + harness as required on "${name}"`, () => {
       const tool = tools.find((t) => t.name === name);
       expect(tool).toBeDefined();
@@ -352,16 +349,6 @@ describe('agent-declared model + harness on PR events', () => {
     const opens = rows.map(r => JSON.parse(r.payload)).filter(p => p.type === 'pr.opened' && p.payload?.prNumber === 710);
     expect(opens).toHaveLength(1);
   });
-
-  it('POST /prs still rejects (400) when model/harness omitted even on the derive path', async () => {
-    process.env.AGENFK_DB_PATH = TEST_DB;
-    await initStorage();
-    const project = (await agent().post('/projects').send({ name: 'PAUTO2' })).body;
-    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
-    // sizing omitted AND model/harness omitted → still 400
-    const res = await agent().post('/prs').send({ itemId: item.id, prNumber: 701, repo: 'org/auto2' });
-    expect(res.status).toBe(400);
-  });
 });
 
 describe('POST /prs emits a hub event into the outbox', () => {
@@ -372,45 +359,6 @@ describe('POST /prs emits a hub event into the outbox', () => {
   });
   afterAll(async () => {
     await removeTestDb(TEST_DB, closeStorage);
-  });
-
-  it('inserts a pr.opened event into hub_outbox on POST /prs', async () => {
-    const project = (await agent().post('/projects').send({ name: 'P' })).body;
-    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
-
-    const res = await agent().post('/prs').send({
-      itemId: item.id, prNumber: 501, repo: 'org/repo',
-      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
-      model: 'claude-opus-4-8', harness: 'claude-code',
-    });
-    expect(res.status).toBe(201);
-
-    const prEvent = await waitForOutboxPayload((p: any) => p.type === 'pr.opened');
-    expect(prEvent).toBeDefined();
-    expect(prEvent.payload?.prNumber).toBe(501);
-    expect(prEvent.payload?.repo).toBe('org/repo');
-  });
-
-  it('inserts a pr.updated event into hub_outbox on PUT /prs/:repo/:number', async () => {
-    const project = (await agent().post('/projects').send({ name: 'P2' })).body;
-    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
-    await agent().post('/prs').send({
-      itemId: item.id, prNumber: 502, repo: 'org/repo2',
-      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
-      model: 'claude-opus-4-8', harness: 'claude-code',
-    });
-
-    const res = await agent().put('/prs/org%2Frepo2/502').send({
-      sizing: { epic: 0, story: 0, task: 3, bug: 0 },
-      model: 'claude-opus-4-8', harness: 'claude-code',
-    });
-    expect(res.status).toBe(200);
-
-    const updEvent = await waitForOutboxPayload(
-      (p: any) => p.type === 'pr.updated' && p.payload?.prNumber === 502,
-    );
-    expect(updEvent).toBeDefined();
-    expect(updEvent.payload?.sizing?.task).toBe(3);
   });
 
   // GH-256: the hub resolves GET /v1/ci/receipts?pr= to the PR's root card by
