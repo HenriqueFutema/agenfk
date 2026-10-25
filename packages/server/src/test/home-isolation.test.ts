@@ -51,6 +51,18 @@ describe('home isolation (item 9c297075)', () => {
     expect(fs.existsSync(path.join(process.env.HOME!, '.agenfk'))).toBe(true);
   });
 
+  // GH-274: the server, hub and cli files run beside each other, so a worker's HOME is its own.
+  it("this worker's HOME is its own directory inside the run's sandbox, with its own test databases", () => {
+    const run = process.env.AGENFK_TEST_RUN_HOME;
+    expect(run, 'AGENFK_TEST_RUN_HOME unset: the run sandbox is not named for the workers').toBeTruthy();
+    expect(process.env.VITEST_POOL_ID).toBeTruthy();
+    // Under a frozen C environ (Stryker's threads) the worker keeps the run's home: see pinWorkerHome.
+    if (process.env.AGENFK_SPAWN_PIN === '1' && os.homedir() === run) return;
+    expect(process.env.HOME).toBe(path.join(run!, `worker-${process.env.VITEST_POOL_ID}`));
+    expect(os.homedir()).toBe(process.env.HOME);
+    expect(process.env.AGENFK_TEST_DB_DIR).toBe(path.join(process.env.HOME!, 'test-dbs'));
+  });
+
   it('os.homedir() honors the pinned HOME — or the run was launched via the spawn-time Stryker guard', () => {
     // Probe the libuv linkage directly: re-point the JS-level HOME and check
     // whether os.homedir() follows.
