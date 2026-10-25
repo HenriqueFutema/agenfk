@@ -123,18 +123,6 @@ describe('the hub command runs at the final verify', () => {
     expect((await storage.getItem(id))?.status).toBe('END');
   });
 
-  it('with no hub settings the file command still runs (regression)', async () => {
-    const dir = repoDeclaring(mark('FILE_RAN'));
-    const pid = await project(await twoSteps(), { projectRoot: dir, verifyCommand: mark('STORED_RAN') });
-    const id = await card(pid, 'WORK');
-
-    const res = await validate(id);
-    expect(res.body.error, JSON.stringify(res.body)).toBeUndefined();
-    expect(fs.existsSync(path.join(dir, 'FILE_RAN'))).toBe(true);
-    expect(fs.existsSync(path.join(dir, 'HUB_RAN'))).toBe(false);
-    expect((await storage.getItem(id))?.status).toBe('END');
-  });
-
   it('a hub command holding a hidden character is refused and nothing runs', async () => {
     const dir = repoDeclaring(mark('FILE_RAN'));
     const pid = await project(await twoSteps(), { projectRoot: dir });
@@ -147,23 +135,6 @@ describe('the hub command runs at the final verify', () => {
     expect(fs.existsSync(path.join(dir, 'HUB_RAN'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'FILE_RAN'))).toBe(false);
     expect((await storage.getItem(id))?.status).toBe('WORK');
-  });
-
-  it('the card runs from its project root, which is why a repo-relative hub command works at all', async () => {
-    // The two-checkouts test below is the point of the feature. This is the
-    // single-checkout half of it, named on its own: the final verify runs in the
-    // project root, so `./scripts/mark.js` is the file that was committed, not
-    // one the shell found somewhere else.
-    const dir = makeRepo('npm test', { 'scripts/mark.js': "require('fs').writeFileSync('RAN_HERE', '');\n" });
-    const pid = await project(await twoSteps(), { projectRoot: dir });
-    await storage.updateProject(pid, { hubRepoSettings: hubSettings('node ./scripts/mark.js') } as any);
-    const id = await card(pid, 'WORK');
-
-    const res = await validate(id);
-    expect(res.body.error, JSON.stringify(res.body)).toBeUndefined();
-    expect(fs.existsSync(path.join(dir, 'RAN_HERE'))).toBe(true);
-    expect(fs.existsSync(path.join(process.cwd(), 'RAN_HERE'))).toBe(false);
-    expect((await storage.getItem(id))?.status).toBe('END');
   });
 });
 

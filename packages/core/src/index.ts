@@ -33,3 +33,4 @@ export * from './commandPaths';
 export * from './privateFile';
 export * from './hubDeadletter';
 export * from './releaseChannel';
+export * from './commandFacts';

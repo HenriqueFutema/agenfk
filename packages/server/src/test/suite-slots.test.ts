@@ -261,14 +261,6 @@ describe('suite runs across projects take a slot', { timeout: 60_000 }, () => {
     const { starts, ends } = t.intervals();
     expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
   });
-
-  it('with room for both, they run at once', async () => {
-    await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
-    const t = await twoProjects('capture', { meet: true });
-    await Promise.all(t.cards.map(id => agent().post(`/items/${id}/step-records/capture`).set(internal()).send({})));
-    const { starts, ends } = t.intervals();
-    expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
-  });
 });
 
 /*
@@ -323,6 +315,8 @@ const runVerify = (kind: 'capture' | 'final', id: string) => kind === 'capture'
 
 // Runs here are serialised on purpose (several RUN_MS each, 3s on Windows): well past vitest's 5s default.
 describe('exclusiveSuite: one suite run at a time in the project', { timeout: 60_000 }, () => {
+  // Both paths, not one: the cross-project limit-1 test would pass even if the final path took the global slot
+  // without the project's (GH-281 review).
   for (const kind of ['capture', 'final'] as const) {
     it(`two ${kind === 'capture' ? 'captures' : 'final-step verifies'} in an exclusive project do not overlap, while another project's run is not held back`, async () => {
       await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });

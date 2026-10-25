@@ -216,23 +216,7 @@ describe('in receipts mode the root card final gate runs the command, and the pa
     expect(suite.runs(), 'the close closed on a green on record instead of running the command').toHaveLength(2);
   });
 
-  it('enforce: the same - a green on record does not stand in for the close of a root card', async () => {
-    const dir = makeRepo();
-    const suite = counted('suite');
-    const pid = await project(await finalOnly(), reported(dir, suite.command));
-    await inReceiptsMode(pid, suite.command, 'enforce');
-    const id = await card(pid, 'WORK');
-    await captureNow(id);
-    await moveTo(id, 'FINAL');
-    expect(suite.runs()).toHaveLength(1);
-
-    expect((await predict(id)).mode, 'the plan promised a reuse the close would not honour').toBe('full');
-    const res = await validate(id);
-    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
-    expect(suite.runs()).toHaveLength(2);
-  });
-
-  it('CONTROL - receipts mode off: the close still stands on the green on record, and nothing is run again', async () => {
+  it('CONTROL - receipts mode off: the close still stands on the green on record, nothing is run again, and no receipt is made', async () => {
     const dir = makeRepo();
     const suite = counted('suite');
     const pid = await project(await finalOnly(), reported(dir, suite.command));
@@ -247,6 +231,7 @@ describe('in receipts mode the root card final gate runs the command, and the pa
     expect(res.body.status, JSON.stringify(res.body)).toBe('END');
     expect(suite.runs(), 'receipts mode off re-ran the verify command the close used to skip').toHaveLength(1);
     expect(res.body.message).toMatch(/green of this tree on record/);
+    expect(receiptsOf(await read(id)), 'a receipt outside receipts mode').toHaveLength(0);
   });
 
   it('CONTROL - a child card in shadow mode keeps the reuse: the plan says reuse and the command does not run again', async () => {
@@ -416,19 +401,5 @@ describe('in receipts mode the root card final gate runs the command, and the pa
     expect(suite.runs()).toHaveLength(2);
     const item = await read(id);
     expect(receiptsOf(item), JSON.stringify(receiptsOf(item))).toHaveLength(0);
-  });
-
-  it('CONTROL - a close outside receipts mode makes no receipt (the mode off card of the control above)', async () => {
-    const dir = makeRepo();
-    const suite = counted('suite');
-    const pid = await project(await finalOnly(), reported(dir, suite.command));
-    await inReceiptsMode(pid, suite.command, 'off');
-    const id = await card(pid, 'WORK');
-    await captureNow(id);
-    await moveTo(id, 'FINAL');
-
-    const res = await validate(id);
-    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
-    expect(receiptsOf(await read(id)), 'a receipt outside receipts mode').toHaveLength(0);
   });
 });

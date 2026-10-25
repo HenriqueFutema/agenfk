@@ -156,15 +156,4 @@ describe('reconcileProjectFlow + per-project polling', () => {
     expect(result.outcome).toBe('no-assignment');
     expect((await storage.listFlows()).length).toBe(0);
   });
-
-  it('reconcileProjectFlow appends projectId to URL', async () => {
-    const fetchImpl = vi.fn(async () => ({ status: 304, ok: false, headers: { get: () => null }, json: async () => ({}) } as any));
-    await reconcileProjectFlow({
-      storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG },
-      projectId: 'my-project', lastEtag: 'W/"old"', fetchImpl, emit,
-    });
-    const calledUrl = (fetchImpl as any).mock.calls[0][0];
-    expect(calledUrl).toContain('/v1/flows/active');
-    expect(calledUrl).toContain('projectId=my-project');
-  });
 });

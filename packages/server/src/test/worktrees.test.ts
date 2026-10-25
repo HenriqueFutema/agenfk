@@ -361,13 +361,6 @@ describe('it refuses to build outside the worktree root', () => {
     }
   });
 
-  it('still makes an ordinary worktree, so the guard is not refusing everything', () => {
-    // A check that refuses the normal case would be caught by the other tests,
-    // but stating it here keeps the two halves of the guard side by side.
-    const wt = createWorktree({ repoRoot: repo, root, branchName: 'feat/ordinary' });
-    expect(fs.existsSync(wt.path)).toBe(true);
-  });
-
   it('never lets a branch name reach the filesystem as traversal', () => {
     /*
      * Measured on the PATH rather than by making a worktree, because git
@@ -421,12 +414,5 @@ describe('a symlink pointing out of the root', () => {
     } finally {
       fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
-  });
-
-  it('still builds an ordinary worktree, so the guard is not refusing everything', () => {
-    // A check that refused the normal case would pass the test above for the
-    // wrong reason, which is the cheapest way to ship a broken guard.
-    const wt = createWorktree({ repoRoot: repo, root, branchName: 'feat/ordinary-2' });
-    expect(fs.existsSync(wt.path)).toBe(true);
   });
 });

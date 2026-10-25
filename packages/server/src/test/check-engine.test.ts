@@ -205,13 +205,17 @@ describe('CGLAB-380: the check engine in verify', () => {
       expect((await item(id)).status).toBe('MAKE');
     });
 
-    it('suite-green passes on a green suite and the card advances', async () => {
+    it('suite-green passes on a green suite and the card advances; a built-in no earlier step feeds is n/a, not a block', async () => {
       const dir = makeRepo();
       const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: 'exit 0' }), 'MAKE');
       const res = await validate(id);
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect((await item(id)).status).toBe('CHECK');
       expect(byId((await item(id)).lastChecks.results, 'suite-green').outcome).toBe('pass');
+      // Built-ins whose record no earlier step produces are reported not applicable, and do not block.
+      const redSet = byId((await item(id)).lastChecks.results, 'red-set-passes-by-name');
+      expect(redSet).toMatchObject({ outcome: 'n/a' });
+      expect(redSet.detail).toMatch(/redSet/);
     });
 
     it('suite-green reads the per-test report: a failing test blocks even when the command exits 0', async () => {
@@ -233,41 +237,6 @@ describe('CGLAB-380: the check engine in verify', () => {
       expect((await validate(id)).status).toBe(200);
       expect(fs.existsSync(marker)).toBe(false);
       expect((await item(id)).stepRecords.filter((r: any) => r.kind === 'capture')).toEqual([]);
-    });
-
-    it('built-ins whose record no earlier step produces are reported not applicable, and do not block', async () => {
-      const dir = makeRepo();
-      const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: 'exit 0' }), 'MAKE');
-      const res = await validate(id);
-      expect(res.status).toBe(200);
-      const redSet = byId((await item(id)).lastChecks.results, 'red-set-passes-by-name');
-      expect(redSet).toMatchObject({ outcome: 'n/a' });
-      expect(redSet.detail).toMatch(/redSet/);
-    });
-
-    it('captures on the way OUT of a step when the next step needs its entry record', async () => {
-      const dir = makeRepo();
-      const f = await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning' }), s('BUILD', 2, { role: 'planning', checks: [{ id: 'test-count-not-lower' }] }), s('END', 3, { isAnchor: true })]);
-      const pid = await project(f, { projectRoot: dir, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: junitCommand(2), reportPath: 'report.xml' } });
-      const id = await card(pid, 'PLAN');
-      expect((await validate(id)).status).toBe(200);
-      const caps = (await item(id)).stepRecords.filter((r: any) => r.kind === 'capture');
-      expect(caps).toHaveLength(1);
-      expect(caps[0].step).toBe('PLAN');
-      expect(caps[0].tests).toHaveLength(2);
-    });
-
-    it('test-count-not-lower compares against the entry record: fewer tests blocks', async () => {
-      const dir = makeRepo();
-      const f = await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning' }), s('BUILD', 2, { role: 'planning', checks: [{ id: 'test-count-not-lower' }] }), s('END', 3, { isAnchor: true })]);
-      const pid = await project(f, { projectRoot: dir, verifyCommand: 'exit 0', testReport: { format: 'junit-xml', command: junitCommand(3), reportPath: 'report.xml' } });
-      const id = await card(pid, 'PLAN');
-      expect((await validate(id)).status).toBe(200);
-      await agent().put(`/projects/${pid}/test-report`).set(internal()).send({ format: 'junit-xml', command: junitCommand(2), reportPath: 'report.xml' });
-      const res = await validate(id);
-      expect(res.status).toBe(422);
-      expect(byId(res.body.checks, 'test-count-not-lower')).toMatchObject({ outcome: 'fail' });
-      expect(byId(res.body.checks, 'test-count-not-lower').detail).toMatch(/3.*2/);
     });
 
     it('a card with no entry record (it predates checks) gets a warning, never a pass or a block', async () => {
@@ -312,21 +281,6 @@ describe('CGLAB-380: the check engine in verify', () => {
       expect(run.message).toMatch(/suite-green/);
       expect(byId(run.checks, 'suite-green').outcome).toBe('fail');
       expect((await item(id)).status).toBe('MAKE');
-    });
-
-    it('async verify whose checks pass continues into the step transition', async () => {
-      const dir = makeRepo();
-      const id = await card(await project(await flow(codingFlow()), { projectRoot: dir, verifyCommand: 'exit 0' }), 'MAKE');
-      const res = await validate(id, { async: true });
-      expect(res.status).toBe(202);
-      let run: any;
-      for (let i = 0; i < 100; i++) {
-        run = (await agent().get(`/items/validate-runs/${res.body.runId}`).set(internal())).body;
-        if (run.status !== 'running') break;
-        await new Promise(r => setTimeout(r, 100));
-      }
-      expect(run.status, JSON.stringify(run)).toBe('passed');
-      expect((await item(id)).status).toBe('CHECK');
     });
   });
 

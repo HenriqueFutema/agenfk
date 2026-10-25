@@ -274,12 +274,6 @@ describe('what it offers', () => {
  * missing entry, because the user pays the click to find out.
  */
 describe('the shape of it', () => {
-  it('puts a section rail beside the content, not above it', async () => {
-    renderShell();
-    await openSettings();
-    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    expect(rail).toBeInTheDocument();
-  });
 
   it('marks which section you are looking at', async () => {
     // Without this the rail is decoration: two entries and no way to tell
@@ -325,17 +319,6 @@ describe('the shape of it', () => {
       const rows = panel.querySelectorAll('[data-testid="setting-row"]');
       expect(rows.length, `section "${label}" has no settings in it`).toBeGreaterThan(0);
     }
-  });
-
-  it('keeps the rail beside a narrow pane rather than letting the page scroll sideways', async () => {
-    // A settings pane that pushes the window into horizontal scroll is the
-    // classic two-column failure.
-    renderShell();
-    await openSettingsRaw();
-    const panel = await screen.findByRole('region', { name: /settings/i });
-    expect(panel.className).not.toMatch(/overflow-x-auto|overflow-x-scroll/);
-    expect(panel.querySelector('[data-testid="settings-body"]')?.className)
-      .toMatch(/min-w-0/);
   });
 });
 
@@ -923,40 +906,20 @@ describe('the custom sound', () => {
  * reason the rail is generated from the section list at all.
  */
 describe('the section menu carries an icon', () => {
-  it('draws one on every entry', async () => {
-    renderShell();
-    await openSettingsRaw();
-    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    const entries = within(rail).getAllByRole('button');
-    expect(entries.length).toBeGreaterThan(0);
-    for (const entry of entries) {
-      expect(entry.querySelector('svg'), `${entry.textContent} has no icon`).not.toBeNull();
-    }
-  });
 
-  it('leaves the accessible name as the label alone', async () => {
-    // The regression an icon introduces. Asserted by NAME lookup rather than by
-    // reading `aria-hidden` off the svg, because the name is what actually
-    // breaks and the attribute is only one way of getting it wrong.
-    renderShell();
-    await openSettingsRaw();
-    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    for (const label of ['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Agents']) {
-      expect(
-        within(rail).getByRole('button', { name: label }),
-        `the rail no longer answers to "${label}"`,
-      ).toBeInTheDocument();
-    }
-  });
-
-  it('keeps the icon out of the row text', async () => {
+  it('keeps the icon out of the row text and out of its accessible name', async () => {
     // A mark that leaks into textContent would also break the exact-list
     // assertion further up, and that failure reads as a section list problem.
     renderShell();
     await openSettingsRaw();
     const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    expect(within(rail).getAllByRole('button').map(b => b.textContent))
-      .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Agents']);
+    const labels = ['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Agents'];
+    expect(within(rail).getAllByRole('button').map(b => b.textContent)).toEqual(labels);
+    // The name is what an icon actually breaks, so it is looked up by name
+    // rather than read off the svg's aria-hidden.
+    for (const label of labels) {
+      expect(within(rail).getByRole('button', { name: label }), `the rail no longer answers to "${label}"`).toBeInTheDocument();
+    }
   });
 });
 

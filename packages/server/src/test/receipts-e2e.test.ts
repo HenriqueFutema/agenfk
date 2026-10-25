@@ -356,19 +356,8 @@ describe('RFC-002 end to end: local verify + review -> hub -> CI reuse (84ad6d8c
   });
 
   describe('every way a skip would be a lie runs the step instead', () => {
-    it('the content changed after the receipt', async () => {
-      const { p, pr } = await certified();
-      const token = await mintCiToken();
-      const co = ciCheckout(p);
-      fs.writeFileSync(path.join(co, 'src.js'), 'export const a = 2;\n');
-      git(co, 'git commit -qam change');
-      // Through the PR the card's receipt is found, and refused for its tree.
-      const job = await ciJob(co, { kind: 'verification', token, pr });
-      expect(job.result.reason).toBe('tree_mismatch');
-      expect(job.exitCode).toBe(10);
-      expect(p.runs(), 'CI ran the suite itself').toBe(2);
-    });
-
+    // Content that changed after the receipt is refused for its tree (tree_mismatch): "the base moved, so the merge result
+    // is not the tree that was tested" below, and ci-check.test.ts "runs the step when no receipt has this checkout's tree".
     it('the base moved, so the merge result is not the tree that was tested', async () => {
       const { p, pr } = await certified();
       const token = await mintCiToken();
@@ -412,15 +401,7 @@ describe('RFC-002 end to end: local verify + review -> hub -> CI reuse (84ad6d8c
       }
     });
 
-    it('the review did not perform the lens the job stands for', async () => {
-      const { p } = await certified({ review: { lenses: ['general'] } });
-      const token = await mintCiToken();
-      reviewAgentRuns = 0;
-      const job = await ciJob(ciCheckout(p), { kind: 'review', lens: 'security', token });
-      expect(job.exitCode).toBe(10);
-      expect(reviewAgentRuns, 'the security review agent ran').toBe(1);
-    });
-
+    // A review that did not perform the job's lens: ci-check.test.ts "does not let a review stand in for a lens it did not perform".
     it('the review was not independent: its receipt is published but cannot be reused', async () => {
       const { p, item } = await certified({ review: { session: 'author-session' } });
       expect(item.reviewReceipts[0].reusable).toBe(false);
@@ -464,19 +445,8 @@ describe('RFC-002 end to end: local verify + review -> hub -> CI reuse (84ad6d8c
       expect(p.runs(), 'a blocked job runs nothing').toBe(1);
     });
 
-    it('the hub is down when CI asks: the step runs, and is never skipped', async () => {
-      const { p } = await certified();
-      const token = await mintCiToken();
-      const dead = http.createServer();
-      await new Promise<void>(r => dead.listen(0, '127.0.0.1', () => r()));
-      const deadUrl = `http://127.0.0.1:${(dead.address() as any).port}`;
-      await new Promise<void>(r => dead.close(() => r()));
-      const job = await ciJob(ciCheckout(p), { kind: 'verification', token, hub: deadUrl });
-      expect(job.result.reason).toBe('hub_unavailable');
-      expect(job.exitCode).toBe(10);
-      expect(p.runs()).toBe(2);
-    });
-
+    // The hub down when CI asks (hub_unavailable, the step runs): ci-check.test.ts "runs the step when the hub answers with an error"
+    // and "runs the step when the hub does not answer in time".
     it('the hub is down when the producer publishes: the receipt stays pending, and CI runs the step', async () => {
       const p = makeProducer();
       const id = await rootCard(p);

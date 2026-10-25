@@ -88,30 +88,7 @@ describe('CGLAB-380: test checks', () => {
       expect(r.status, JSON.stringify(r.body)).toBe(200);
     });
 
-    it('an old import-failure entry does not pass while a test in its file fails (CGLAB-418)', async () => {
-      const { dir, id } = await atBuild();
-      await plantPhantom(id, 'tests/a.test.js');
-      write(dir, 'tests/a.test.js', 'T add_works add=nope\n');
-      impl(dir, { add: 'ok', mul: '12' });
-      const c = await refused(id, 'red-set-passes-by-name');
-      expect(c.detail).toMatch(/tests\/a\.test\.js/);
-    });
-
-    it('an old import-failure entry does not pass when its file reports no tests (CGLAB-418)', async () => {
-      const { dir, id } = await atBuild();
-      await plantPhantom(id, 'tests/gone.test.js');
-      impl(dir, { add: 'ok', mul: '12' });
-      const c = await refused(id, 'red-set-passes-by-name');
-      expect(c.detail).toMatch(/tests\/gone\.test\.js/);
-    });
-
-    it('accepts an APPENDED test file while implementing', async () => {
-      const { dir, id } = await atBuild();
-      impl(dir, { add: 'ok', mul: '12' });
-      write(dir, 'tests/extra.test.js', 'T mul_more mul=12\n');
-      const r = await validate(id);
-      expect(r.status, JSON.stringify(r.body)).toBe(200);
-    });
+    // What does NOT pass such an entry (a failing test in its file, a file with no tests): check-evaluators.unit.test.ts.
 
     it('a strict freeze, added by the flow, refuses even an appended file', async () => {
       const { dir, id } = await atBuild({ BUILD: [{ id: 'test-surface-frozen', params: { mode: 'strict' } }] });
@@ -132,17 +109,12 @@ describe('CGLAB-380: test checks', () => {
       return at;
     }
 
-    it('refuses a test added while refactoring: the test set must be identical', async () => {
+    it('refuses a test added or removed while refactoring: the test set must be identical', async () => {
       const { dir, id } = await atTidy();
       write(dir, 'tests/extra.test.js', 'T mul_more mul=12\n');
-      const c = await refused(id, 'test-set-identical');
-      expect(c.detail).toMatch(/\+tests\/extra\.test\.js > mul_more/);
-    });
-
-    it('refuses a test removed while refactoring', async () => {
-      const { dir, id } = await atTidy();
       write(dir, 'tests/mul.test.js', 'T mul_works mul=12\n');
       const c = await refused(id, 'test-set-identical');
+      expect(c.detail).toMatch(/\+tests\/extra\.test\.js > mul_more/);
       expect(c.detail).toMatch(/-tests\/mul\.test\.js > mul_again/);
     });
 

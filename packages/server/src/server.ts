@@ -12,12 +12,12 @@ import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApprova
 import { suggestTestReport, withTestFiles, quoteArg } from './testReportHint';
 import { SuiteSlots, suiteRunLimit, waitingLine, projectWaitingLine, type SuiteWait } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
-import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
+import { capturedGreen, checksDeferredToApproval, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, hiddenCharacters, unreadableFileCommand, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, verifyAtScopeError, effectiveVerifyAtScope, INACTIVE_STATUSES, computeFlowAdherence, flowIdsInHistories, validateRequeueFilters, indicatorHint, NO_VERIFY_COMMAND, VERIFY_COMMAND_FLAG } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -4628,11 +4628,11 @@ function hubVerifyCommandOf(project: any): string | null {
 }
 
 /** RFC-002: a project whose hub settings are Shadow or Enforce: its root cards close on a fresh run and leave receipts. */
-function receiptsModeOf(project: any): 'shadow' | 'enforce' | null {
+export function receiptsModeOf(project: any): 'shadow' | 'enforce' | null {
   const m = project?.hubRepoSettings?.receiptsMode;
   return m === 'shadow' || m === 'enforce' ? m : null;
 }
-const freshRootClose = (item: any, project: any) => !item?.parentId && !!receiptsModeOf(project);
+export const freshRootClose = (item: any, project: any) => !item?.parentId && !!receiptsModeOf(project);
 
 /**
  * The command the FINAL verify runs: the hub's command when the hub has one,
@@ -4790,9 +4790,9 @@ interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: stri
  * a36047ea: a change to one of these can move ANY test's result - the runner
  * config, the dependencies, a setup file - so it always means the whole suite.
  */
-const WHOLE_SUITE_FILE = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|tsconfig[^/]*\.json|jsconfig\.json|\.babelrc[^/]*|babel\.config\.[^/]+|[^/]*\.config\.[cm]?[jt]s|vitest\.workspace\.[^/]+|[^/]*setup[^/]*\.[cm]?[jt]sx?|conftest\.py|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?)$/i;
+export const WHOLE_SUITE_FILE = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|tsconfig[^/]*\.json|jsconfig\.json|\.babelrc[^/]*|babel\.config\.[^/]+|[^/]*\.config\.[cm]?[jt]s|vitest\.workspace\.[^/]+|[^/]*setup[^/]*\.[cm]?[jt]sx?|conftest\.py|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?)$/i;
 /** A file a related-tests command follows through imports: JS and TS sources (de5e5a03). */
-const GRAPH_FILE = /\.[cm]?[jt]sx?$/i;
+export const GRAPH_FILE = /\.[cm]?[jt]sx?$/i;
 
 /**
  * a36047ea — when a step changed code, not just tests: the project's related-
@@ -4874,7 +4874,7 @@ const OUTSIDE_MAX_FILES = 2000;
  * run over an entry needs this unchanged since it: the entry's results were
  * taken with that work beside it.
  */
-function outsideState(root: string, head: string): string | null {
+export function outsideState(root: string, head: string): string | null {
   const beside = outsideEntries(root, head);
   return beside === null ? null : beside.length ? hashEntries(beside) : '';
 }
@@ -9104,7 +9104,7 @@ export interface LeavePlan {
   /** Why the card will be held instead of advancing, when it will be. */
   held?: string;
   /** Why verify will refuse before running anything: no verify command on the final step, or no tree to run in. */
-  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_UNREADABLE' | 'DEFERRED_CHILD_UNMERGED' | 'NO_TREE';
+  refuses?: typeof NO_VERIFY_COMMAND | 'COMMAND_UNREADABLE' | 'DEFERRED_CHILD_UNMERGED' | 'NO_TREE';
   /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
   narrowing: string[];
   /** One line for the agent. */
@@ -9148,7 +9148,7 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown;
   const captureUnreadable = cap.runs && effective.fromFile && !!effective.command && !!unreadableFileVerify(project, effective.command);
   // 7ddeaf7c: the close a deferred child's unmerged work holds back, as the verify refuses it.
   const unmerged = final && !toParent && item.id ? await unmergedDeferredWork(item, project) : [];
-  const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
+  const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? NO_VERIFY_COMMAND
     : (final && !toParent && unreadableFileVerify(project)) || captureUnreadable ? 'COMMAND_UNREADABLE'
     : unmerged.length ? 'DEFERRED_CHILD_UNMERGED'
     : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
@@ -9171,7 +9171,7 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown;
   const parts: string[] = [];
   // Not the command itself: the plan says it is refused, not what to run instead (34ee6b8a).
   if (refuses === 'COMMAND_UNREADABLE') parts.push(`Leaving ${step} runs the repository's own verify command, which holds characters a screen cannot show faithfully: verify will refuse, and run nothing, until they are removed from .agenfk/project.json.`);
-  else if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
+  else if (refuses === NO_VERIFY_COMMAND) parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> ${VERIFY_COMMAND_FLAG} "<cmd>"\`).`);
   else if (refuses === 'DEFERRED_CHILD_UNMERGED') parts.push(`Leaving ${step} runs the project's suite over everything this card's children did, but work deferred to it from another worktree is not in this card's tree yet: ${describeUnmerged(unmerged)}. Verify will refuse, and run nothing, until it is merged into this card's branch.`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
@@ -9508,9 +9508,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   let unreadable: { message: string; command?: string } | undefined;
   // 961f301d: waiting on a person, the slow checks wait too (see waitsOnPerson).
   const waitingOn = opts?.personFirst ? awaitingPersonCommands(resolved, flow, project) : [];
-  const deferToApproval = opts?.personFirst
-    ? resolved.filter(c => c.applicable && (needsCapture([c]) || needsNetwork(c) || (c.id.startsWith('command-check:') && !waitingOn.includes(c)))).map(c => c.id)
-    : [];
+  const deferToApproval = opts?.personFirst ? checksDeferredToApproval(resolved, waitingOn) : [];
   const entryHoldDetail = entryHoldDetailOf(next);
   // One read decides both the capture and the hold (review): a person's override of it, as the hold will honour it.
   // 37a292a7: the same predicate the leave plan reads.
@@ -10325,8 +10323,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
-      error: "NO_VERIFY_COMMAND",
-      message: "No verifyCommand is configured for this project, and on this step the server runs only the project's own. Set one with update_project({ id, verifyCommand }) or `agenfk update-project <id> --verify-command \"<cmd>\"`."
+      error: NO_VERIFY_COMMAND,
+      message: `No verifyCommand is configured for this project, and on this step the server runs only the project's own. Set one with update_project({ id, verifyCommand }) or \`agenfk update-project <id> ${VERIFY_COMMAND_FLAG} "<cmd>"\`.`
     });
   }
   const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
