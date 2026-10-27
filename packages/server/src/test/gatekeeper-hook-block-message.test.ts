@@ -7,9 +7,10 @@
  *     ("unknown option '--type'"), and `agenfk verify <id>` without the
  *     --evidence the CLI requires.
  *
- * The contract test below pulls every `agenfk …` command out of the message the
- * hook actually prints and checks it against the built CLI's own --help, so a
- * renamed command or option breaks this test instead of the agent.
+ * The contract test below pulls every `agenfk …` command out of the messages the
+ * hook actually prints — no active task, and a project this machine has not
+ * linked — and checks each against the built CLI's own --help, so a renamed
+ * command or option breaks this test instead of the agent.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, spawnSync } from 'child_process';
@@ -27,12 +28,17 @@ const CLI_DIST = path.resolve(__dirname, '../../../cli/dist/index.js');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-gk-message-'));
 const projectDir = path.join(home, 'repo');
 const editedFile = path.join(projectDir, 'src', 'app.ts');
+// A fresh clone: the shared project.json only, no local.json naming its id.
+const unlinkedFile = path.join(home, 'clone', 'src', 'app.ts');
 let server: http.Server;
 
 beforeAll(async () => {
   fs.mkdirSync(path.join(projectDir, '.agenfk'), { recursive: true });
   fs.mkdirSync(path.dirname(editedFile), { recursive: true });
   fs.writeFileSync(path.join(projectDir, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'proj' }));
+  fs.mkdirSync(path.join(home, 'clone', '.agenfk'), { recursive: true });
+  fs.mkdirSync(path.dirname(unlinkedFile), { recursive: true });
+  fs.writeFileSync(path.join(home, 'clone', '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: 'npm test' }));
   // No items at all, so every edit is blocked and the message is printed.
   server = http.createServer((req, res) => {
     res.writeHead(req.url?.startsWith('/items') ? 200 : 404, { 'content-type': 'application/json' });
@@ -62,6 +68,7 @@ function blockReason(payload: object): Promise<string> {
 }
 
 const claudeCodeEdit = { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: editedFile } };
+const unlinkedEdit = { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: unlinkedFile } };
 
 describe('gatekeeper block message', () => {
   it('names the tool from the payload Claude Code sends', async () => {
@@ -77,6 +84,11 @@ describe('gatekeeper block message', () => {
 
   it('keeps the prefix the OpenCode adapter matches on', async () => {
     expect(await blockReason(claudeCodeEdit)).toMatch(/^AgenFK WORKFLOW VIOLATION:/);
+    expect(await blockReason(unlinkedEdit)).toMatch(/^AgenFK WORKFLOW VIOLATION:/);
+  });
+
+  it('names the tool in the not-linked message too', async () => {
+    expect(await blockReason(unlinkedEdit)).toContain('No task can authorize Write here:');
   });
 });
 
@@ -99,11 +111,12 @@ describe('every command in the block message is real CLI syntax', () => {
       env: { ...process.env, HOME: home, USERPROFILE: home, NODE_ENV: 'production', VITEST: '' },
     });
 
-  it('suggests commands the CLI accepts, with options it defines', async () => {
+  /** Every command in `reason` is a CLI command, and every option it passes is one the command defines. */
+  const expectRealCommands = (reason: string, subs: string[]) => {
     expect(fs.existsSync(CLI_DIST), 'packages/cli/dist/index.js missing — run `npm run build` before `npm test`').toBe(true);
-    const commands = commandsIn(await blockReason(claudeCodeEdit));
+    const commands = commandsIn(reason);
     // Guard: an extraction that finds nothing would make the loop below vacuous.
-    expect(commands.map((c) => c.sub)).toEqual(['create', 'verify']);
+    expect(commands.map((c) => c.sub)).toEqual(subs);
 
     for (const { line, sub, flags } of commands) {
       const res = help(sub);
@@ -114,6 +127,14 @@ describe('every command in the block message is real CLI syntax', () => {
         expect(res.stdout, `${line}: the CLI has no ${flag} option`).toContain(flag);
       }
     }
+  };
+
+  it('suggests commands the CLI accepts, with options it defines', async () => {
+    expectRealCommands(await blockReason(claudeCodeEdit), ['create', 'verify']);
+  });
+
+  it('suggests real commands to link a project this machine has not linked', async () => {
+    expectRealCommands(await blockReason(unlinkedEdit), ['list-projects', 'init', 'init']);
   });
 
   it('passes the --evidence that verify requires', async () => {

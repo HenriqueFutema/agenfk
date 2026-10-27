@@ -23,6 +23,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { resolveProjectIdentity } from '@agenfk/core';
+import { makeUnreadable, readsThroughDenials } from './helpers/unreadableDir';
 // @ts-ignore — .mjs hook has no .d.ts; findAgenFKProject is a plain JS export.
 import { findAgenFKProject } from '../../../../bin/agenfk-gatekeeper.mjs';
 
@@ -63,6 +64,36 @@ fs.mkdirSync(path.join(worktreeTop, 'src'), { recursive: true });
 fs.writeFileSync(path.join(worktreeTop, '.git'), `gitdir: ${path.join(home, 'repo-a', '.git', 'worktrees', 'feature')}\n`);
 fs.writeFileSync(path.join(worktreeTop, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: 'npm test' }));
 
+// A linked worktree of a checkout this machine has not linked either: no id anywhere.
+const unlinkedMain = path.join(home, 'repo-unlinked-main');
+const unlinkedWorktree = path.join(home, 'repo-unlinked-feature');
+const fileInUnlinkedWorktree = path.join(unlinkedWorktree, 'src', 'app.ts');
+fs.mkdirSync(path.join(unlinkedMain, '.agenfk'), { recursive: true });
+fs.writeFileSync(path.join(unlinkedMain, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: 'npm test' }));
+fs.mkdirSync(path.join(unlinkedMain, '.git', 'worktrees', 'feature'), { recursive: true });
+fs.writeFileSync(path.join(unlinkedMain, '.git', 'config'), '[core]\n\tbare = false\n');
+fs.mkdirSync(path.join(unlinkedWorktree, '.agenfk'), { recursive: true });
+fs.mkdirSync(path.join(unlinkedWorktree, 'src'), { recursive: true });
+fs.writeFileSync(path.join(unlinkedWorktree, '.git'), `gitdir: ${path.join(unlinkedMain, '.git', 'worktrees', 'feature')}\n`);
+fs.writeFileSync(path.join(unlinkedWorktree, '.agenfk', 'project.json'), JSON.stringify({ verifyCommand: 'npm test' }));
+
+// A linked project D with an unusable local.json in a subdirectory. Core skips a
+// marker it cannot read and resolves D; the hook must too, not stop at the
+// subdirectory with no id. The oversized and unreadable markers name a VALID id,
+// so reading them anyway would also land on the wrong project.
+makeProject('repo-d', { local: { projectId: 'proj-d' } });
+const brokenMarker = (sub: string, write: (localJson: string) => void) => {
+  const dir = path.join(home, 'repo-d', sub);
+  fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+  write(path.join(dir, '.agenfk', 'local.json'));
+  return path.join(dir, 'app.ts');
+};
+const fileUnderDirMarker = brokenMarker('as-directory', (f) => fs.mkdirSync(f));
+const fileUnderBigMarker = brokenMarker('oversized', (f) =>
+  fs.writeFileSync(f, JSON.stringify({ projectId: 'proj-big', pad: 'x'.repeat(64 * 1024) })));
+const fileUnderLockedMarker = brokenMarker('unreadable', (f) => fs.writeFileSync(f, JSON.stringify({ projectId: 'proj-locked' })));
+const lockedMarker = path.join(home, 'repo-d', 'unreadable', '.agenfk', 'local.json');
+
 let items: unknown[] = [];
 let requested: string[] = [];
 let server: http.Server;
@@ -92,21 +123,23 @@ afterAll(async () => {
 beforeEach(() => { requested = []; });
 
 // Async spawn (NOT spawnSync): the stub runs in this process's event loop.
-// The payload is what Claude Code sends before an Edit.
-function edit(filePath: string): Promise<'blocked' | 'allowed'> {
+// The payload is what Claude Code sends before an Edit. Resolves with the block
+// reason, or null when the edit is let through.
+function hookReason(filePath: string): Promise<string | null> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK], {
       env: { ...process.env, HOME: home, USERPROFILE: home, AGENFK_API_URL: '' },
     });
     let stdout = '';
     child.stdout.on('data', (c) => (stdout += c));
-    child.on('close', () => resolve(stdout.includes('"decision":"block"') ? 'blocked' : 'allowed'));
+    child.on('close', () => resolve(stdout.includes('"decision":"block"') ? JSON.parse(stdout).reason : null));
     child.stdin.write(JSON.stringify({
       hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: filePath },
     }));
     child.stdin.end();
   });
 }
+const edit = async (filePath: string) => ((await hookReason(filePath)) === null ? 'allowed' : 'blocked');
 
 const activeInA = [
   { id: 't1', projectId: 'proj-a', status: 'IN_PROGRESS' },
@@ -151,10 +184,45 @@ describe('gatekeeper hook — project scope', () => {
     expect(await edit(fileInLegacy)).toBe('allowed');
   });
 
-  it('counts every project for a project this machine has not linked, as before', async () => {
+  it('blocks a project this machine has not linked, without asking the server, and says how to link it', async () => {
+    // A task elsewhere used to authorize this: with no id, every project's items counted.
     items = activeInA;
-    expect(await edit(fileInUnlinked)).toBe('allowed');
-    expect(requested).toEqual(['/items']);
+    const reason = await hookReason(fileInUnlinked);
+    expect(reason).toMatch(/^AgenFK WORKFLOW VIOLATION: /);
+    expect(reason).toContain(`${path.join(home, 'repo-unlinked')} is an AgEnFK project not linked on this machine`);
+    expect(reason).toContain('agenfk init --project <id>');
+    expect(reason).toContain('agenfk list-projects');
+    expect(requested).toEqual([]);
+  });
+
+  it('blocks a worktree of a checkout this machine has not linked, pointing at the main checkout', async () => {
+    items = activeInA;
+    const reason = await hookReason(fileInUnlinkedWorktree);
+    expect(reason).toContain(`this is a git worktree of ${unlinkedMain}, which is not linked`);
+    expect(reason).toContain(`cd ${unlinkedMain} && agenfk init --project <id>`);
+    expect(requested).toEqual([]);
+  });
+
+  it("skips an unusable marker in a subdirectory and scopes to the real project above it", async () => {
+    for (const file of [fileUnderDirMarker, fileUnderBigMarker]) {
+      items = activeInA;
+      requested = [];
+      expect(await edit(file), file).toBe('blocked');
+      expect(requested).toEqual(['/items?projectId=proj-d']);
+      items = [{ id: 't6', projectId: 'proj-d', status: 'IN_PROGRESS' }];
+      expect(await edit(file), file).toBe('allowed');
+    }
+  });
+
+  it.skipIf(readsThroughDenials())('skips an unreadable marker too', async () => {
+    const restore = makeUnreadable(lockedMarker);
+    try {
+      items = [{ id: 't7', projectId: 'proj-d', status: 'IN_PROGRESS' }];
+      expect(await edit(fileUnderLockedMarker)).toBe('allowed');
+      expect(requested).toEqual(['/items?projectId=proj-d']);
+    } finally {
+      restore();
+    }
   });
 
   it('does not enforce, or even ask, outside an AgEnFK project', async () => {
@@ -171,6 +239,9 @@ describe("the hook's project resolution matches @agenfk/core", () => {
     ['legacy projectId in project.json', fileInLegacy],
     ['unlinked project', fileInUnlinked],
     ['linked worktree', fileInWorktree],
+    ['worktree of an unlinked checkout', fileInUnlinkedWorktree],
+    ['a directory named local.json in a subdirectory', fileUnderDirMarker],
+    ['an oversized local.json in a subdirectory', fileUnderBigMarker],
     ['outside any project', fileOutside],
   ])('%s', (_label, file) => {
     const core = resolveProjectIdentity(path.dirname(file));
@@ -179,9 +250,22 @@ describe("the hook's project resolution matches @agenfk/core", () => {
       .toEqual(core && { root: core.root, projectId: core.projectId });
   });
 
-  it('still treats an unreadable local.json as a managed project', () => {
+  it.skipIf(readsThroughDenials())('an unreadable local.json in a subdirectory', () => {
+    const restore = makeUnreadable(lockedMarker);
+    try {
+      const core = resolveProjectIdentity(path.dirname(fileUnderLockedMarker));
+      expect(findAgenFKProject(fileUnderLockedMarker)).toEqual({ root: core!.root, projectId: core!.projectId });
+      expect(core).toMatchObject({ root: path.join(home, 'repo-d'), projectId: 'proj-d' });
+    } finally {
+      restore();
+    }
+  });
+
+  it('still treats an unparsable local.json as a managed project, as core does', () => {
     const file = makeProject('repo-broken', {});
     fs.writeFileSync(path.join(home, 'repo-broken', '.agenfk', 'local.json'), '{ not json');
+    // Readable, so it marks the project; it names no id, so the project is unlinked.
     expect(findAgenFKProject(file)).toEqual({ root: path.join(home, 'repo-broken'), projectId: null });
+    expect(resolveProjectIdentity(path.dirname(file))).toMatchObject({ root: path.join(home, 'repo-broken'), projectId: null });
   });
 });

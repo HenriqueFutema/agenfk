@@ -72,12 +72,6 @@ function normalizePath(p) {
     return p;
 }
 
-// A project's .agenfk holds project.json (shared settings) or local.json (this
-// machine's id, CGLAB-625) - either marks it, since project.json is optional.
-function marksProject(dir) {
-    return fs.existsSync(path.join(dir, '.agenfk', 'project.json')) || fs.existsSync(path.join(dir, '.agenfk', 'local.json'));
-}
-
 /*
  * Which project a path belongs to — the same answer as @agenfk/core's
  * resolveProjectIdentity, which the CLI's `agenfk gatekeeper` uses. This hook is
@@ -85,27 +79,44 @@ function marksProject(dir) {
  * gatekeeper-hook-project-scope.test.ts checks the two agree.
  */
 
-/** The id a local.json (or a legacy project.json) names, or null. */
-function readProjectIdFile(file) {
+/**
+ * A small regular file's text, or null — core's readSmallFile. A marker counts
+ * only when it can be read: a directory, an oversized or an unreadable
+ * local.json used to stop the walk short of the real project and leave the
+ * edit without an id. A FIFO here would also block a sync read for ever.
+ */
+function readSmallFile(file) {
     try {
         const st = fs.statSync(file);
-        // A FIFO would block this sync read for ever; the files are tiny.
         if (!st.isFile() || st.size > 64 * 1024) return null;
-        const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-        const id = parsed.projectId;
-        return typeof id === 'string' && id.trim() ? id.trim() : null;
+        return fs.readFileSync(file, 'utf8');
     } catch {
         return null;
     }
 }
 
-/** The nearest dir at or above `startDir` that marks a project, and the id it names. */
+/** The id a local.json (or a legacy project.json) names, or null — core's readLocalProjectFile. */
+function readProjectId(raw) {
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { return null; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const id = parsed.projectId;
+    return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+/**
+ * The nearest dir at or above `startDir` whose .agenfk holds local.json (this
+ * machine's id, CGLAB-625) or project.json (shared settings, optional), and the
+ * id it names — core's nearest(). The id comes from local.json, else from a
+ * legacy projectId still in project.json.
+ */
 function nearestProject(startDir) {
     for (let dir = path.resolve(startDir); ; dir = path.dirname(dir)) {
-        if (marksProject(dir)) {
-            const projectId = readProjectIdFile(path.join(dir, '.agenfk', 'local.json'))
-                ?? readProjectIdFile(path.join(dir, '.agenfk', 'project.json'));
+        const local = readSmallFile(path.join(dir, '.agenfk', 'local.json'));
+        const shared = readSmallFile(path.join(dir, '.agenfk', 'project.json'));
+        if (local !== null || shared !== null) {
+            const projectId = (local !== null ? readProjectId(local) : null)
+                ?? (shared !== null ? readProjectId(shared) : null);
             return { root: dir, projectId };
         }
         if (path.dirname(dir) === dir) return null;
@@ -159,21 +170,34 @@ export function findAgenFKProject(filePath) {
     return found;
 }
 
+/**
+ * Why an edit in a project this machine has not linked is refused, and how to
+ * link it — the CLI's wording (requireCwdProject), worktree case included. These
+ * lines are run verbatim by an agent; gatekeeper-hook-block-message.test.ts
+ * checks them against the CLI.
+ */
+function notLinkedReason(project, filePath, toolName) {
+    const wt = linkedWorktreeOf(path.dirname(path.resolve(normalizePath(filePath))));
+    const head = `AgenFK WORKFLOW VIOLATION: No task can authorize ${toolName} here: `;
+    if (wt) {
+        const inMain = path.join(wt.main, path.relative(wt.top, project.root));
+        return `${head}this is a git worktree of ${wt.main}, which is not linked to an AgEnFK project on this machine.\n\nLink the main checkout:\n  1. Find its id:  agenfk list-projects\n  2. Link it:      cd ${inMain} && agenfk init --project <id>\n\nThen create and start a task, and retry your change.`;
+    }
+    return `${head}${project.root} is an AgEnFK project not linked on this machine: its .agenfk/local.json is missing or names no projectId.\n\nFrom inside the project's directory:\n  1. Find its id:  agenfk list-projects\n  2. Link it:      agenfk init --project <id>   (or create a project with agenfk init <name>)\n\nThen create and start a task, and retry your change.`;
+}
+
 // Statuses that are never considered "active coding" regardless of flow name.
 const INACTIVE_STATUSES = new Set(['TODO', 'DONE', 'BLOCKED', 'PAUSED', 'IDEAS', 'ARCHIVED', 'TRASHED']);
 
 // Only the edited file's project counts. Asking for every project's items let an
 // active task in repo A authorize edits in repo B — the hooks are global, so one
-// open task anywhere switched enforcement off everywhere — while the CLI's
-// `agenfk gatekeeper` already scoped to the current project and refused the same
-// edit. With no projectId (a project this machine has not linked) all items
-// count, as before.
+// open task anywhere switched enforcement off everywhere. A project this machine
+// has not linked never gets here: main() blocks it first.
 async function checkInProgress(projectId) {
     return new Promise((resolve) => {
         // No status filter, so custom coding-step names (e.g. 'create_unit_tests'
         // in a TDD flow) are recognised as active.
-        const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
-        const req = http.get(`${API_URL}/items${query}`, { timeout: 2000 }, (res) => {
+        const req = http.get(`${API_URL}/items?projectId=${encodeURIComponent(projectId)}`, { timeout: 2000 }, (res) => {
             if (res.statusCode !== 200) {
                 resolve(true); // Graceful skip on API issues
                 return;
@@ -188,7 +212,7 @@ async function checkInProgress(projectId) {
                     // may outlive the server it was installed with, and a server
                     // that ignores ?projectId= must not reopen the leak.
                     const hasActive = Array.isArray(items) && items.some(i =>
-                        (!projectId || i.projectId === projectId) &&
+                        i.projectId === projectId &&
                         !INACTIVE_STATUSES.has((i.status ?? '').toUpperCase())
                     );
                     resolve(hasActive);
@@ -228,10 +252,16 @@ async function main() {
         fs.unlinkSync(skipFlagPath); // Stale flag — clean up and enforce normally
     }
 
+    const toolName = toolIntent?.tool_name || toolIntent?.tool || 'unknown tool';
+
+    if (!project.projectId) {
+        process.stdout.write(JSON.stringify({ decision: 'block', reason: notLinkedReason(project, filePath, toolName) }));
+        process.exit(0);
+    }
+
     const hasInProgress = await checkInProgress(project.projectId);
 
     if (!hasInProgress) {
-        const toolName = toolIntent?.tool_name || toolIntent?.tool || 'unknown tool';
         const reason = `AgenFK WORKFLOW VIOLATION: No task is actively being worked on in this file's project while attempting to use ${toolName}.\n\nBefore modifying files you must have a task OF THIS PROJECT in an active coding step (e.g. IN_PROGRESS, create_unit_tests, or your flow's first working step) — an active task in another project does not count.\n\nFrom inside the project's directory (so the task is filed in this project):\n  1. Create a task:  agenfk create task "<title>"\n  2. Start it:       agenfk verify <id> --evidence "<your plan>"  (advances from TODO to the coding step)\n\nThen retry your change.`;
 
         process.stdout.write(JSON.stringify({
